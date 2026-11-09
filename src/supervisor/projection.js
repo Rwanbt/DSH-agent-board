@@ -21,7 +21,7 @@
  * @module dsh-agent-board/supervisor/projection
  */
 
-import { ERROR_TURN_KINDS, STATUS, STATUS_RANK, truncate } from '../contracts/model.js'
+import { ERROR_TURN_KINDS, INTERRUPTED_TURN_KINDS, STATUS, STATUS_RANK, truncate } from '../contracts/model.js'
 
 const PENDING_ACTION = Object.freeze({
   approval: 'approval',
@@ -87,28 +87,80 @@ export function isSubagentRow(row) {
 }
 
 /**
- * Classify one agent. `live` is its unified status entry, `turnEnd` the last
- * turn/end fact the host recorded, `ack` the persisted read cursor.
+ * Classify one agent and explain why. `live` is its unified status entry,
+ * `turnEnd` the last turn/end fact the host recorded, `ack` the persisted read
+ * cursor, `assignment` the board assignment bound to that session.
+ *
+ * The returned `reason`/`source`/`at` triple is what the UI shows in the card
+ * details: a status without provenance is not allowed to be invented.
+ *
+ * @returns {{status:string, reason:string, source:string, at:number|null}}
  */
-export function classifyStatus({ row, live, turnEnd, ack }) {
-  if (row === undefined && live === undefined) return STATUS.UNKNOWN
-  if (expectedActionOf(live, row) !== null) return STATUS.WAITING_USER
-  if (row?.running === true || live?.running === true) return STATUS.RUNNING
+export function classifyStatusDetailed({ row, live, turnEnd, ack, assignment }) {
   const end = turnEnd !== null && typeof turnEnd === 'object' ? turnEnd : null
-  if (end !== null && ERROR_TURN_KINDS.includes(end.kind) && end.recoveredAt === undefined) return STATUS.FAILED
-  if (end !== null && Number.isFinite(Number(end.at))) {
-    const seenAt = Number(ack?.seenAt)
-    if (Number.isFinite(seenAt) && seenAt >= Number(end.at)) return STATUS.FINISHED_READ
-    return STATUS.FINISHED_UNREAD
-  }
-  if (live?.completionUnread === true) return STATUS.FINISHED_UNREAD
-  // Native durable fact (session projection): the last turn ended in error.
+  const seenAt = Number(ack?.seenAt)
+  const hasSeen = Number.isFinite(seenAt)
+  const updatedAt = Number(row?.updatedAt)
   const nativeEnd = nativeTurnEndOf(row)
-  if (nativeEnd !== null && ERROR_TURN_KINDS.includes(nativeEnd.reason)) return STATUS.FAILED
-  // A turn that completed before the board observed it is history, not "new".
-  if (nativeEnd !== null) return STATUS.FINISHED_READ
-  if (row === undefined) return STATUS.UNKNOWN
-  return STATUS.IDLE
+
+  if (row === undefined && live === undefined && assignment === undefined) {
+    return { status: STATUS.UNKNOWN, reason: 'no_row_and_no_live_status', source: 'none', at: null }
+  }
+  const action = expectedActionOf(live, row)
+  if (action !== null) {
+    return { status: STATUS.WAITING_USER, reason: `pending_interaction:${action}`, source: live?.pendingInteraction !== undefined ? 'host_status' : 'session_projection', at: null }
+  }
+  if (row?.running === true || live?.running === true) {
+    return { status: STATUS.RUNNING, reason: 'turn_in_progress', source: row?.running === true ? 'session_row' : 'host_status', at: null }
+  }
+  if (assignment?.status === 'recovering') {
+    return { status: STATUS.RECOVERING, reason: `route_recovery:${truncate(String(assignment.reason ?? 'provider_failure'), 120)}`, source: 'assignment', at: Number(assignment.recoveringAt) || null }
+  }
+  // Failure truth: the host-recorded turn end wins, then the native lifecycle
+  // fact. A recovered failure (a later turn started) is no longer a failure.
+  if (end !== null && ERROR_TURN_KINDS.includes(end.kind) && end.recoveredAt === undefined) {
+    const covered = hasSeen && Number.isFinite(Number(end.at)) && seenAt >= Number(end.at)
+    return { status: STATUS.FAILED, reason: `turn_end:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null, _seen: covered }
+  }
+  if ((end === null || end.recoveredAt !== undefined) && nativeEnd !== null && ERROR_TURN_KINDS.includes(nativeEnd.reason)) {
+    // Native-only failure: the host may have missed the event (restart). There
+    // is no board ack that could have covered it, so it stays unread/visible.
+    return { status: STATUS.FAILED, reason: `native_turn_end:${nativeEnd.reason}`, source: 'session_projection', at: null, _seen: false }
+  }
+  if (end !== null && Number.isFinite(Number(end.at))) {
+    if (INTERRUPTED_TURN_KINDS.includes(end.kind)) {
+      return { status: STATUS.IDLE, reason: `turn_ended:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null }
+    }
+    if (hasSeen && seenAt >= Number(end.at)) {
+      return { status: STATUS.FINISHED_READ, reason: `ack_after_turn:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null }
+    }
+    return { status: STATUS.FINISHED_UNREAD, reason: `turn_end:${end.kind}_not_acknowledged`, source: 'host_turn_end', at: Number(end.at) || null }
+  }
+  if (live?.completionUnread === true) {
+    // The native runtime also tracks unread completions. An explicit board ack
+    // that is newer than the session's last activity covers it; otherwise the
+    // pill would be impossible to clear.
+    if (hasSeen && Number.isFinite(updatedAt) && seenAt >= updatedAt) {
+      return { status: STATUS.FINISHED_READ, reason: 'ack_after_native_activity', source: 'host_status', at: seenAt }
+    }
+    return { status: STATUS.FINISHED_UNREAD, reason: 'native_completion_unread', source: 'host_status', at: null }
+  }
+  if (nativeEnd !== null) {
+    // A turn that completed before the board observed it is history, not "new".
+    return { status: STATUS.FINISHED_READ, reason: `native_history:${nativeEnd.reason}`, source: 'session_projection', at: null }
+  }
+  if (row?.agentAvailable === false) {
+    return { status: STATUS.UNAVAILABLE, reason: 'agent_not_available', source: 'session_row', at: null }
+  }
+  if (row === undefined) {
+    return { status: STATUS.UNKNOWN, reason: 'no_row_for_session', source: 'none', at: null }
+  }
+  return { status: STATUS.IDLE, reason: 'no_activity', source: 'session_row', at: null }
+}
+
+/** Backward-compatible status-only view of {@link classifyStatusDetailed}. */
+export function classifyStatus(input) {
+  return classifyStatusDetailed(input).status
 }
 
 /** `projectionValues.mobilePushLifecycle.lastTurnEnd` = { turn, reason } when present. */
@@ -186,7 +238,19 @@ export function previewOf(hostState, sessionId, assignment, row, running = false
   const end = hostState?.turnEnd?.[sessionId]
   const hostText = preview !== undefined && typeof preview.text === 'string' ? preview.text.trim() : ''
   if (hostText !== '' && !running && end !== undefined && Number(end.at) >= Number(preview.at)) {
-    return { text: truncate(hostText, 600), at: Number(preview.at) || null, final: true, source: 'host' }
+    // The captured segment is only a FINAL answer when the turn that closed it
+    // actually completed. An error/aborted/unknown turn ends with a partial
+    // segment, and an intermediate segment must never be labelled final.
+    const kind = typeof end.kind === 'string' ? end.kind : 'unknown'
+    const completed = !ERROR_TURN_KINDS.includes(kind) && !INTERRUPTED_TURN_KINDS.includes(kind) && kind !== 'unknown'
+    return {
+      text: truncate(hostText, 600),
+      at: Number(preview.at) || null,
+      final: completed,
+      partial: !completed,
+      turnEndKind: kind,
+      source: 'host',
+    }
   }
   const outline = row?.projectionValues?.turnOutline
   if (Array.isArray(outline)) {
@@ -194,15 +258,15 @@ export function previewOf(hostState, sessionId, assignment, row, running = false
       const entry = outline[index]
       const isOpenTurn = running && index === outline.length - 1
       if (!isOpenTurn && typeof entry?.response === 'string' && entry.response.trim() !== '') {
-        return { text: truncate(entry.response.trim(), 600), at: null, final: true, source: 'outline', turn: Number(entry.turn) || null }
+        return { text: truncate(entry.response.trim(), 600), at: null, final: true, partial: false, source: 'outline', turn: Number(entry.turn) || null }
       }
     }
   }
   const checkpointText = assignment?.checkpoint?.lastText
   if (!running && typeof checkpointText === 'string' && checkpointText !== '') {
-    return { text: truncate(checkpointText, 600), at: Number(assignment?.checkpoint?.at) || null, final: true, source: 'checkpoint' }
+    return { text: truncate(checkpointText, 600), at: Number(assignment?.checkpoint?.at) || null, final: true, partial: false, source: 'checkpoint' }
   }
-  return { text: '', at: null, final: false, source: null }
+  return { text: '', at: null, final: false, partial: false, source: null }
 }
 
 /** Last non-empty line of an answer, without markdown decoration. */
@@ -339,13 +403,18 @@ export function buildProjection({ list, statusMap, hostState = {}, workspaces = 
     const turnEnd = hostState.turnEnd?.[node.id] ?? null
     const ack = hostState.acks?.[node.id] ?? null
     const assignment = assignmentsBySession.get(node.id) ?? null
-    const status = classifyStatus({ row, live, turnEnd, ack })
+    const detail = classifyStatusDetailed({ row, live, turnEnd, ack, assignment })
+    const status = detail.status
     const parentId = row !== undefined ? parentIdOf(row) : null
     const project = row !== undefined ? resolveProject(row, workspaceIndex) : UNASSIGNED_PROJECT
     const resolvedParent = parentId ?? (catalogParentOf.get(node.id) ?? null)
     const ownRunning = row?.running === true || live?.running === true
     const preview = previewOf(hostState, node.id, assignment, row, ownRunning)
     const stats = row?.projectionValues?.sessionStats
+    // Explicit acknowledgement covers a failure only when a cursor exists and
+    // it is at/after the recorded failure. A native-only failure has no such
+    // cursor: it stays visible instead of silently leaving the home view.
+    const seen = status === STATUS.FAILED ? detail._seen === true : status !== STATUS.FINISHED_UNREAD
     out.push({
       id: node.id,
       parentId: resolvedParent,
@@ -357,7 +426,10 @@ export function buildProjection({ list, statusMap, hostState = {}, workspaces = 
       cwd: typeof row?.cwd === 'string' ? row.cwd : null,
       origin: typeof row?.origin === 'string' ? row.origin : (resolvedParent !== null ? 'subagent' : 'main'),
       status,
-      seen: status === STATUS.FAILED ? (Number(ack?.seenAt) >= Number(turnEnd?.at ?? Infinity) || turnEnd === null) : status !== STATUS.FINISHED_UNREAD,
+      statusReason: detail.reason,
+      statusSource: detail.source,
+      statusAt: detail.at,
+      seen,
       expectedAction: expectedActionOf(live, row),
       waitingDetail: waitingDetailOf(row),
       model: modelOf(row, assignment),
@@ -369,12 +441,19 @@ export function buildProjection({ list, statusMap, hostState = {}, workspaces = 
       goal: typeof row?.projectionValues?.goal?.goal?.objective === 'string' ? truncate(row.projectionValues.goal.goal.objective, 240) : null,
       unread: status === STATUS.FINISHED_UNREAD,
       waiting: status === STATUS.WAITING_USER,
+      recovering: status === STATUS.RECOVERING,
       failed: status === STATUS.FAILED,
+      unavailable: status === STATUS.UNAVAILABLE,
       archived: archived.has(node.id),
       blank: row?.blank === true,
+      // Native fact: the user currently has this session open in the main view.
+      // The panel uses it to acknowledge reading done outside the board.
+      viewing: Number(row?.retainedBy?.mainView) > 0,
+      agentAvailable: typeof row?.agentAvailable === 'boolean' ? row.agentAvailable : null,
       updatedAt: Number(row?.updatedAt) || null,
       assignmentId: assignment?.id ?? null,
       taskId: assignment?.taskId ?? null,
+      assignmentStatus: assignment?.status ?? null,
       previousSessionId: assignment?.previousSessionId ?? null,
       routeHistory: Array.isArray(assignment?.routeHistory) ? assignment.routeHistory : [],
       children: [],
@@ -428,11 +507,13 @@ export function summarize(nodes) {
     total: nodes.length,
     running: 0,
     waiting_user: 0,
+    recovering: 0,
     finished_unread: 0,
     finished_read: 0,
     failed: 0,
     idle: 0,
     unknown: 0,
+    unavailable: 0,
   }
   for (const node of nodes) {
     if (counts[node.status] !== undefined) counts[node.status] += 1

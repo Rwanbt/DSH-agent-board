@@ -19,29 +19,55 @@ window.__ModuleLoader__.load({
 
 const SCHEMA_VERSION = 1
 
-/** Native-ish agent statuses. Never derived from elapsed time alone. */
+/**
+ * Native-ish agent statuses. Never derived from elapsed time alone.
+ *
+ * Five different facts are kept apart on purpose:
+ *   - session state      -> `unavailable` (the runtime says the agent is gone)
+ *   - turn state         -> `running` / `finished_*` / `failed`
+ *   - agent state        -> `waiting_user` / `recovering`
+ *   - task state         -> the Task Board ledger (never mirrored as a status)
+ *   - user read state    -> `finished_unread` vs `finished_read` (persisted ack)
+ */
 const STATUS = Object.freeze({
   RUNNING: 'running',
   WAITING_USER: 'waiting_user',
+  RECOVERING: 'recovering',
   FINISHED_UNREAD: 'finished_unread',
   FINISHED_READ: 'finished_read',
   FAILED: 'failed',
   IDLE: 'idle',
   UNKNOWN: 'unknown',
+  UNAVAILABLE: 'unavailable',
 })
 
 const STATUS_VALUES = Object.freeze(Object.values(STATUS))
+
+/** Statuses that mean "the user still has something to look at". */
+const ATTENTION_STATUSES = Object.freeze([
+  STATUS.WAITING_USER,
+  STATUS.FAILED,
+  STATUS.FINISHED_UNREAD,
+  STATUS.RECOVERING,
+])
 
 /** Ranking used for stable ordering (lower = shown first). */
 const STATUS_RANK = Object.freeze({
   [STATUS.WAITING_USER]: 0,
   [STATUS.RUNNING]: 1,
-  [STATUS.FINISHED_UNREAD]: 2,
-  [STATUS.FAILED]: 3,
-  [STATUS.IDLE]: 4,
-  [STATUS.FINISHED_READ]: 5,
-  [STATUS.UNKNOWN]: 6,
+  [STATUS.RECOVERING]: 2,
+  [STATUS.FINISHED_UNREAD]: 3,
+  [STATUS.FAILED]: 4,
+  [STATUS.IDLE]: 5,
+  [STATUS.FINISHED_READ]: 6,
+  [STATUS.UNKNOWN]: 7,
+  [STATUS.UNAVAILABLE]: 8,
 })
+
+/** Turn-end kinds that must be surfaced as a failure, not as "finished". */
+const ERROR_TURN_KINDS = Object.freeze(['error', 'failed'])
+/** Turn-end kinds that mean the work was interrupted, not completed. */
+const INTERRUPTED_TURN_KINDS = Object.freeze(['aborted', 'blocked'])
 
 /** Orchestration modes. Default is always `off`. */
 const MODES = Object.freeze({
@@ -52,8 +78,61 @@ const MODES = Object.freeze({
 
 const MODE_VALUES = Object.freeze(Object.values(MODES))
 
-/** Turn-end kinds that must be surfaced as a failure, not as "finished". */
-const ERROR_TURN_KINDS = Object.freeze(['error', 'failed'])
+/** Default limits. Every one is configurable through the board API. */
+const DEFAULT_POLICY = Object.freeze({
+  mode: MODES.OFF,
+  maxConcurrent: 2,
+  maxRetries: 2,
+  maxSwitches: 2,
+  proposalTtlMs: 30 * 60 * 1000,
+  leaseTtlMs: 10 * 60 * 1000,
+  allowedWorkspaces: [],
+  allowedProviders: [],
+  // A card may ask for a permission level; the operator's mandate decides which
+  // levels this board may grant. `danger-full-access` is never inherited by default.
+  allowedPermissions: ['read-only', 'workspace-write'],
+  allowCloudFallback: false,
+  autoResumeOnRestart: false,
+  serializeSameWorkspace: false,
+  routeChain: [],
+  autonomyBudget: { maxTasksPerHour: 6 },
+})
+
+const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
+
+function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
+  const mode = isMode(input.mode) ? input.mode : fallback.mode
+  const maxConcurrent = clampInt(input.maxConcurrent, 0, 8, fallback.maxConcurrent)
+  const maxSwitches = clampInt(input.maxSwitches, 0, 5, fallback.maxSwitches)
+  return {
+    mode,
+    maxConcurrent,
+    maxRetries: clampInt(input.maxRetries, 0, 5, fallback.maxRetries ?? 2),
+    maxSwitches,
+    proposalTtlMs: clampInt(input.proposalTtlMs, 60_000, 86_400_000, fallback.proposalTtlMs),
+    leaseTtlMs: clampInt(input.leaseTtlMs, 30_000, 86_400_000, fallback.leaseTtlMs),
+    allowedWorkspaces: uniqueStrings(input.allowedWorkspaces ?? fallback.allowedWorkspaces),
+    allowedProviders: uniqueStrings(input.allowedProviders ?? fallback.allowedProviders),
+    allowedPermissions: uniqueStrings(input.allowedPermissions ?? fallback.allowedPermissions)
+      .filter(level => PERMISSION_LEVELS.includes(level)),
+    allowCloudFallback: input.allowCloudFallback === true,
+    autoResumeOnRestart: input.autoResumeOnRestart === true,
+    serializeSameWorkspace: input.serializeSameWorkspace === true,
+    routeChain: normalizeRouteChain(input.routeChain ?? fallback.routeChain),
+    autonomyBudget: {
+      maxTasksPerHour: clampInt(input.autonomyBudget?.maxTasksPerHour, 0, 100, fallback.autonomyBudget.maxTasksPerHour),
+    },
+  }
+}
+
+/** The permission level this board is allowed to grant for a card, or null. */
+function allowedPermissionOf(policy, requested) {
+  if (typeof requested !== 'string' || requested === '') return null
+  const allowed = Array.isArray(policy?.allowedPermissions) ? policy.allowedPermissions : DEFAULT_POLICY.allowedPermissions
+  return allowed.includes(requested) ? requested : null
+}
+
+/** Orchestration modes. Default is always `off`. */
 
 function isMode(value) {
   return typeof value === 'string' && MODE_VALUES.includes(value)
@@ -136,40 +215,6 @@ function textOfContent(content) {
 function requireString(value, field) {
   if (typeof value !== 'string' || value === '') throw new Error(`agent-board: ${field} must be a non-empty string`)
   return value
-}
-
-/** Default limits. Every one is configurable through the board API. */
-const DEFAULT_POLICY = Object.freeze({
-  mode: MODES.OFF,
-  maxConcurrent: 2,
-  maxSwitches: 2,
-  proposalTtlMs: 30 * 60 * 1000,
-  leaseTtlMs: 10 * 60 * 1000,
-  allowedWorkspaces: [],
-  allowedProviders: [],
-  allowCloudFallback: false,
-  routeChain: [],
-  autonomyBudget: { maxTasksPerHour: 6 },
-})
-
-function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
-  const mode = isMode(input.mode) ? input.mode : fallback.mode
-  const maxConcurrent = clampInt(input.maxConcurrent, 0, 8, fallback.maxConcurrent)
-  const maxSwitches = clampInt(input.maxSwitches, 0, 5, fallback.maxSwitches)
-  return {
-    mode,
-    maxConcurrent,
-    maxSwitches,
-    proposalTtlMs: clampInt(input.proposalTtlMs, 60_000, 86_400_000, fallback.proposalTtlMs),
-    leaseTtlMs: clampInt(input.leaseTtlMs, 30_000, 86_400_000, fallback.leaseTtlMs),
-    allowedWorkspaces: uniqueStrings(input.allowedWorkspaces ?? fallback.allowedWorkspaces),
-    allowedProviders: uniqueStrings(input.allowedProviders ?? fallback.allowedProviders),
-    allowCloudFallback: input.allowCloudFallback === true,
-    routeChain: normalizeRouteChain(input.routeChain ?? fallback.routeChain),
-    autonomyBudget: {
-      maxTasksPerHour: clampInt(input.autonomyBudget?.maxTasksPerHour, 0, 100, fallback.autonomyBudget.maxTasksPerHour),
-    },
-  }
 }
 
 function normalizeRouteChain(chain) {
@@ -294,28 +339,80 @@ function isSubagentRow(row) {
 }
 
 /**
- * Classify one agent. `live` is its unified status entry, `turnEnd` the last
- * turn/end fact the host recorded, `ack` the persisted read cursor.
+ * Classify one agent and explain why. `live` is its unified status entry,
+ * `turnEnd` the last turn/end fact the host recorded, `ack` the persisted read
+ * cursor, `assignment` the board assignment bound to that session.
+ *
+ * The returned `reason`/`source`/`at` triple is what the UI shows in the card
+ * details: a status without provenance is not allowed to be invented.
+ *
+ * @returns {{status:string, reason:string, source:string, at:number|null}}
  */
-function classifyStatus({ row, live, turnEnd, ack }) {
-  if (row === undefined && live === undefined) return STATUS.UNKNOWN
-  if (expectedActionOf(live, row) !== null) return STATUS.WAITING_USER
-  if (row?.running === true || live?.running === true) return STATUS.RUNNING
+function classifyStatusDetailed({ row, live, turnEnd, ack, assignment }) {
   const end = turnEnd !== null && typeof turnEnd === 'object' ? turnEnd : null
-  if (end !== null && ERROR_TURN_KINDS.includes(end.kind) && end.recoveredAt === undefined) return STATUS.FAILED
-  if (end !== null && Number.isFinite(Number(end.at))) {
-    const seenAt = Number(ack?.seenAt)
-    if (Number.isFinite(seenAt) && seenAt >= Number(end.at)) return STATUS.FINISHED_READ
-    return STATUS.FINISHED_UNREAD
-  }
-  if (live?.completionUnread === true) return STATUS.FINISHED_UNREAD
-  // Native durable fact (session projection): the last turn ended in error.
+  const seenAt = Number(ack?.seenAt)
+  const hasSeen = Number.isFinite(seenAt)
+  const updatedAt = Number(row?.updatedAt)
   const nativeEnd = nativeTurnEndOf(row)
-  if (nativeEnd !== null && ERROR_TURN_KINDS.includes(nativeEnd.reason)) return STATUS.FAILED
-  // A turn that completed before the board observed it is history, not "new".
-  if (nativeEnd !== null) return STATUS.FINISHED_READ
-  if (row === undefined) return STATUS.UNKNOWN
-  return STATUS.IDLE
+
+  if (row === undefined && live === undefined && assignment === undefined) {
+    return { status: STATUS.UNKNOWN, reason: 'no_row_and_no_live_status', source: 'none', at: null }
+  }
+  const action = expectedActionOf(live, row)
+  if (action !== null) {
+    return { status: STATUS.WAITING_USER, reason: `pending_interaction:${action}`, source: live?.pendingInteraction !== undefined ? 'host_status' : 'session_projection', at: null }
+  }
+  if (row?.running === true || live?.running === true) {
+    return { status: STATUS.RUNNING, reason: 'turn_in_progress', source: row?.running === true ? 'session_row' : 'host_status', at: null }
+  }
+  if (assignment?.status === 'recovering') {
+    return { status: STATUS.RECOVERING, reason: `route_recovery:${truncate(String(assignment.reason ?? 'provider_failure'), 120)}`, source: 'assignment', at: Number(assignment.recoveringAt) || null }
+  }
+  // Failure truth: the host-recorded turn end wins, then the native lifecycle
+  // fact. A recovered failure (a later turn started) is no longer a failure.
+  if (end !== null && ERROR_TURN_KINDS.includes(end.kind) && end.recoveredAt === undefined) {
+    const covered = hasSeen && Number.isFinite(Number(end.at)) && seenAt >= Number(end.at)
+    return { status: STATUS.FAILED, reason: `turn_end:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null, _seen: covered }
+  }
+  if ((end === null || end.recoveredAt !== undefined) && nativeEnd !== null && ERROR_TURN_KINDS.includes(nativeEnd.reason)) {
+    // Native-only failure: the host may have missed the event (restart). There
+    // is no board ack that could have covered it, so it stays unread/visible.
+    return { status: STATUS.FAILED, reason: `native_turn_end:${nativeEnd.reason}`, source: 'session_projection', at: null, _seen: false }
+  }
+  if (end !== null && Number.isFinite(Number(end.at))) {
+    if (INTERRUPTED_TURN_KINDS.includes(end.kind)) {
+      return { status: STATUS.IDLE, reason: `turn_ended:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null }
+    }
+    if (hasSeen && seenAt >= Number(end.at)) {
+      return { status: STATUS.FINISHED_READ, reason: `ack_after_turn:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null }
+    }
+    return { status: STATUS.FINISHED_UNREAD, reason: `turn_end:${end.kind}_not_acknowledged`, source: 'host_turn_end', at: Number(end.at) || null }
+  }
+  if (live?.completionUnread === true) {
+    // The native runtime also tracks unread completions. An explicit board ack
+    // that is newer than the session's last activity covers it; otherwise the
+    // pill would be impossible to clear.
+    if (hasSeen && Number.isFinite(updatedAt) && seenAt >= updatedAt) {
+      return { status: STATUS.FINISHED_READ, reason: 'ack_after_native_activity', source: 'host_status', at: seenAt }
+    }
+    return { status: STATUS.FINISHED_UNREAD, reason: 'native_completion_unread', source: 'host_status', at: null }
+  }
+  if (nativeEnd !== null) {
+    // A turn that completed before the board observed it is history, not "new".
+    return { status: STATUS.FINISHED_READ, reason: `native_history:${nativeEnd.reason}`, source: 'session_projection', at: null }
+  }
+  if (row?.agentAvailable === false) {
+    return { status: STATUS.UNAVAILABLE, reason: 'agent_not_available', source: 'session_row', at: null }
+  }
+  if (row === undefined) {
+    return { status: STATUS.UNKNOWN, reason: 'no_row_for_session', source: 'none', at: null }
+  }
+  return { status: STATUS.IDLE, reason: 'no_activity', source: 'session_row', at: null }
+}
+
+/** Backward-compatible status-only view of {@link classifyStatusDetailed}. */
+function classifyStatus(input) {
+  return classifyStatusDetailed(input).status
 }
 
 /** `projectionValues.mobilePushLifecycle.lastTurnEnd` = { turn, reason } when present. */
@@ -393,7 +490,19 @@ function previewOf(hostState, sessionId, assignment, row, running = false) {
   const end = hostState?.turnEnd?.[sessionId]
   const hostText = preview !== undefined && typeof preview.text === 'string' ? preview.text.trim() : ''
   if (hostText !== '' && !running && end !== undefined && Number(end.at) >= Number(preview.at)) {
-    return { text: truncate(hostText, 600), at: Number(preview.at) || null, final: true, source: 'host' }
+    // The captured segment is only a FINAL answer when the turn that closed it
+    // actually completed. An error/aborted/unknown turn ends with a partial
+    // segment, and an intermediate segment must never be labelled final.
+    const kind = typeof end.kind === 'string' ? end.kind : 'unknown'
+    const completed = !ERROR_TURN_KINDS.includes(kind) && !INTERRUPTED_TURN_KINDS.includes(kind) && kind !== 'unknown'
+    return {
+      text: truncate(hostText, 600),
+      at: Number(preview.at) || null,
+      final: completed,
+      partial: !completed,
+      turnEndKind: kind,
+      source: 'host',
+    }
   }
   const outline = row?.projectionValues?.turnOutline
   if (Array.isArray(outline)) {
@@ -401,15 +510,15 @@ function previewOf(hostState, sessionId, assignment, row, running = false) {
       const entry = outline[index]
       const isOpenTurn = running && index === outline.length - 1
       if (!isOpenTurn && typeof entry?.response === 'string' && entry.response.trim() !== '') {
-        return { text: truncate(entry.response.trim(), 600), at: null, final: true, source: 'outline', turn: Number(entry.turn) || null }
+        return { text: truncate(entry.response.trim(), 600), at: null, final: true, partial: false, source: 'outline', turn: Number(entry.turn) || null }
       }
     }
   }
   const checkpointText = assignment?.checkpoint?.lastText
   if (!running && typeof checkpointText === 'string' && checkpointText !== '') {
-    return { text: truncate(checkpointText, 600), at: Number(assignment?.checkpoint?.at) || null, final: true, source: 'checkpoint' }
+    return { text: truncate(checkpointText, 600), at: Number(assignment?.checkpoint?.at) || null, final: true, partial: false, source: 'checkpoint' }
   }
-  return { text: '', at: null, final: false, source: null }
+  return { text: '', at: null, final: false, partial: false, source: null }
 }
 
 /** Last non-empty line of an answer, without markdown decoration. */
@@ -546,13 +655,18 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
     const turnEnd = hostState.turnEnd?.[node.id] ?? null
     const ack = hostState.acks?.[node.id] ?? null
     const assignment = assignmentsBySession.get(node.id) ?? null
-    const status = classifyStatus({ row, live, turnEnd, ack })
+    const detail = classifyStatusDetailed({ row, live, turnEnd, ack, assignment })
+    const status = detail.status
     const parentId = row !== undefined ? parentIdOf(row) : null
     const project = row !== undefined ? resolveProject(row, workspaceIndex) : UNASSIGNED_PROJECT
     const resolvedParent = parentId ?? (catalogParentOf.get(node.id) ?? null)
     const ownRunning = row?.running === true || live?.running === true
     const preview = previewOf(hostState, node.id, assignment, row, ownRunning)
     const stats = row?.projectionValues?.sessionStats
+    // Explicit acknowledgement covers a failure only when a cursor exists and
+    // it is at/after the recorded failure. A native-only failure has no such
+    // cursor: it stays visible instead of silently leaving the home view.
+    const seen = status === STATUS.FAILED ? detail._seen === true : status !== STATUS.FINISHED_UNREAD
     out.push({
       id: node.id,
       parentId: resolvedParent,
@@ -564,7 +678,10 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
       cwd: typeof row?.cwd === 'string' ? row.cwd : null,
       origin: typeof row?.origin === 'string' ? row.origin : (resolvedParent !== null ? 'subagent' : 'main'),
       status,
-      seen: status === STATUS.FAILED ? (Number(ack?.seenAt) >= Number(turnEnd?.at ?? Infinity) || turnEnd === null) : status !== STATUS.FINISHED_UNREAD,
+      statusReason: detail.reason,
+      statusSource: detail.source,
+      statusAt: detail.at,
+      seen,
       expectedAction: expectedActionOf(live, row),
       waitingDetail: waitingDetailOf(row),
       model: modelOf(row, assignment),
@@ -576,12 +693,19 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
       goal: typeof row?.projectionValues?.goal?.goal?.objective === 'string' ? truncate(row.projectionValues.goal.goal.objective, 240) : null,
       unread: status === STATUS.FINISHED_UNREAD,
       waiting: status === STATUS.WAITING_USER,
+      recovering: status === STATUS.RECOVERING,
       failed: status === STATUS.FAILED,
+      unavailable: status === STATUS.UNAVAILABLE,
       archived: archived.has(node.id),
       blank: row?.blank === true,
+      // Native fact: the user currently has this session open in the main view.
+      // The panel uses it to acknowledge reading done outside the board.
+      viewing: Number(row?.retainedBy?.mainView) > 0,
+      agentAvailable: typeof row?.agentAvailable === 'boolean' ? row.agentAvailable : null,
       updatedAt: Number(row?.updatedAt) || null,
       assignmentId: assignment?.id ?? null,
       taskId: assignment?.taskId ?? null,
+      assignmentStatus: assignment?.status ?? null,
       previousSessionId: assignment?.previousSessionId ?? null,
       routeHistory: Array.isArray(assignment?.routeHistory) ? assignment.routeHistory : [],
       children: [],
@@ -635,11 +759,13 @@ function summarize(nodes) {
     total: nodes.length,
     running: 0,
     waiting_user: 0,
+    recovering: 0,
     finished_unread: 0,
     finished_read: 0,
     failed: 0,
     idle: 0,
     unknown: 0,
+    unavailable: 0,
   }
   for (const node of nodes) {
     if (counts[node.status] !== undefined) counts[node.status] += 1
@@ -725,6 +851,7 @@ function isAttention(node) {
   if (node === undefined || node === null) return false
   if (node.status === STATUS.WAITING_USER) return true
   if (node.status === STATUS.RUNNING) return true
+  if (node.status === STATUS.RECOVERING) return true
   if (node.status === STATUS.FINISHED_UNREAD) return true
   if (node.status === STATUS.FAILED && node.seen !== true) return true
   return false
@@ -736,6 +863,7 @@ function attentionRank(node) {
     case STATUS.WAITING_USER: return 0
     case STATUS.RUNNING: return 1
     case STATUS.FINISHED_UNREAD: return 2
+    case STATUS.RECOVERING: return 2.5
     case STATUS.FAILED: return node.seen === true ? 5 : 3
     default: return 4 + (STATUS_RANK[node?.status] ?? 9) / 10
   }
@@ -1222,22 +1350,34 @@ function createBoardStore(ctx, options = {}) {
     }
   }
 
+  // One parser for every SSE frame shape: the host emits named `state` frames,
+  // other implementations may emit unnamed `message` frames. Both paths must
+  // apply exactly the same validation so a malformed frame never breaks the store.
+  function applyStreamFrame(event) {
+    try {
+      const parsed = JSON.parse(event?.data)
+      if (parsed !== null && typeof parsed === 'object') {
+        host = parsed
+        hostError = null
+        bump()
+      }
+    } catch { /* keep the previous state */ }
+  }
+
   function connectStream() {
     if (stream !== null || destroyed) return
     if (typeof EventSourceImpl !== 'function') return
     try {
-      stream = new EventSourceImpl(`${apiBase}/events`)
-      stream.onmessage = event => {
-        try {
-          const parsed = JSON.parse(event.data)
-          if (parsed !== null && typeof parsed === 'object') {
-            host = parsed
-            hostError = null
-            bump()
-          }
-        } catch { /* keep the previous state */ }
-      }
-      stream.onerror = () => { /* the browser reconnects automatically */ }
+      const source = new EventSourceImpl(`${apiBase}/events`)
+      stream = source
+      // The host broadcasts `event: state`; `onmessage` only receives unnamed
+      // `message` frames, so the named event needs its own listener. Test
+      // doubles and minimal EventSource implementations may not implement
+      // addEventListener: fall back to onmessage only in that case.
+      if (typeof source.addEventListener === 'function') source.addEventListener('state', applyStreamFrame)
+      // Protocol compatibility: hosts that emit unnamed frames still reach us.
+      source.onmessage = applyStreamFrame
+      source.onerror = () => { /* the browser reconnects automatically */ }
     } catch {
       stream = null
     }
@@ -1265,7 +1405,9 @@ function createBoardStore(ctx, options = {}) {
     refreshHost,
     connectStream,
     getHost: () => host,
-    ack: sessionId => post('/ack', { sessionId }),
+    ack: (sessionId, options = {}) => post('/ack', { sessionId, ...(typeof options.source === 'string' ? { source: options.source } : {}) }),
+    unack: sessionId => post('/ack', { sessionId, seen: false }),
+    resume: () => post('/resume', {}),
     setMode: mode => post('/mode', { mode }),
     stop: () => post('/stop', {}),
     tick: () => post('/tick', {}),
@@ -1333,6 +1475,8 @@ const DAB_STRINGS = {
     of: 'sur',
     statusRunning: 'En cours',
     statusWaiting: 'Attend votre action',
+    statusRecovering: 'Récupération en cours',
+    statusUnavailable: 'Agent indisponible',
     statusUnread: 'Terminé — non consulté',
     statusRead: 'Terminé',
     statusFailed: 'Échec',
@@ -1350,6 +1494,13 @@ const DAB_STRINGS = {
     finalAnswer: 'Dernière ligne de la réponse finale',
     noFinal: 'Pas encore de réponse finale.',
     activity: 'Activité',
+    previousSession: 'Session précédente',
+    routeHistory: 'Changements de route',
+    statusReason: 'Raison du statut',
+    recovery: 'Reprise',
+    resume: 'Reprendre',
+    stoppedNotice: 'Arrêté par l’opérateur — aucune nouvelle délégation',
+    secondaryInstance: 'Instance secondaire (lecture seule) : un autre hôte possède l’état.',
     turns: 'tours',
     steps: 'étapes',
     seeMore: 'Voir plus',
@@ -1424,6 +1575,8 @@ const DAB_STRINGS = {
     of: 'of',
     statusRunning: 'Running',
     statusWaiting: 'Needs your action',
+    statusRecovering: 'Recovering',
+    statusUnavailable: 'Agent unavailable',
     statusUnread: 'Finished — not viewed',
     statusRead: 'Finished',
     statusFailed: 'Failed',
@@ -1441,6 +1594,13 @@ const DAB_STRINGS = {
     finalAnswer: 'Last line of the final answer',
     noFinal: 'No final answer yet.',
     activity: 'Activity',
+    previousSession: 'Previous session',
+    routeHistory: 'Route changes',
+    statusReason: 'Status reason',
+    recovery: 'Recovery',
+    resume: 'Resume',
+    stoppedNotice: 'Stopped by the operator — no new delegation',
+    secondaryInstance: 'Secondary instance (read-only): another host owns the state.',
     turns: 'turns',
     steps: 'steps',
     seeMore: 'See more',
@@ -1518,11 +1678,13 @@ function dabT(key, vars) {
 const DAB_STATUS_TEXT = {
   running: 'statusRunning',
   waiting_user: 'statusWaiting',
+  recovering: 'statusRecovering',
   finished_unread: 'statusUnread',
   finished_read: 'statusRead',
   failed: 'statusFailed',
   idle: 'statusIdle',
   unknown: 'statusUnknown',
+  unavailable: 'statusUnavailable',
 }
 
 function dabStatusLabel(status) {
@@ -1805,7 +1967,7 @@ function DabAgentCardImpl(props) {
   const model = dabModelText(node.model)
   const age = dabFormatAge(node.updatedAt)
   const statusText = dabStatusLabel(node.status)
-  const calm = !(node.status === 'running' || node.status === 'waiting_user' || node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true))
+  const calm = !(node.status === 'running' || node.status === 'recovering' || node.status === 'waiting_user' || node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true))
   const label = [node.title, statusText, node.role, groupActive ? dabT('groupActive') : null].filter(Boolean).join(' — ')
 
   const stop = event => { event.stopPropagation() }
@@ -1936,9 +2098,21 @@ function dabFlattenTree(entry, out = [], parentTitle = null) {
   return out
 }
 
-function DabCompactProject({ project, ctx, treeLimit }) {
+/**
+ * The visible tree slice. `treeLimit` trims CALM trees only: a tree whose
+ * subtree contains an agent waiting for the user is never hidden because it is
+ * older than eight newer trees (the yellow card is the one thing that must
+ * always be reachable without expanding a list).
+ */
+function dabVisibleTrees(project, treeLimit) {
+  const head = project.trees.slice(0, treeLimit)
+  const tail = project.trees.slice(treeLimit)
+  const waiting = tail.filter(tree => (tree.aggregate?.bestTier ?? 9) === 0 || tree.node?.status === 'waiting_user')
+  return waiting.length === 0 ? head : [...waiting, ...head]
+}
+
+function DabCompactProject({ project, ctx, trees }) {
   const h = React.createElement
-  const trees = project.trees.slice(0, treeLimit)
   return h('div', null, trees.map(tree => {
     const flat = dabFlattenTree(tree)
     return h('div', { className: 'dab-compact-group', key: tree.node.id },
@@ -1968,7 +2142,8 @@ function DabCompactProject({ project, ctx, treeLimit }) {
 function DabProjectGroup({ project, ctx, folded, onFold, treeLimit, onMoreTrees, compact }) {
   const h = React.createElement
   const title = project.unassigned ? dabT('unassigned') : project.title
-  const hiddenTrees = Math.max(0, project.trees.length - treeLimit)
+  const trees = folded ? [] : dabVisibleTrees(project, treeLimit)
+  const hiddenTrees = Math.max(0, project.trees.length - trees.length)
   const summary = []
   if (project.summary.running > 0) summary.push(h('span', { key: 'r', className: 'dab-counter' }, h('span', { className: 'dab-dot', 'data-tone': 'running' }), project.summary.running))
   if (project.summary.waiting > 0) summary.push(h('span', { key: 'w', className: 'dab-counter' }, h('span', { className: 'dab-dot', 'data-tone': 'waiting' }), project.summary.waiting))
@@ -1982,8 +2157,8 @@ function DabProjectGroup({ project, ctx, folded, onFold, treeLimit, onMoreTrees,
     folded
       ? null
       : compact
-        ? h(DabCompactProject, { project, ctx, treeLimit })
-        : h('div', { className: 'dab-forest' }, project.trees.slice(0, treeLimit).map(tree => h(DabAgentTree, { key: tree.node.id, entry: tree, ctx }))),
+        ? h(DabCompactProject, { project, ctx, trees })
+        : h('div', { className: 'dab-forest' }, trees.map(tree => h(DabAgentTree, { key: tree.node.id, entry: tree, ctx }))),
     !folded && hiddenTrees > 0
       ? h('div', { className: 'dab-more' }, h('button', { type: 'button', className: 'dab-btn', onClick: () => onMoreTrees(project.id) }, dabT('moreTrees', { n: hiddenTrees })))
       : null,
@@ -2028,6 +2203,16 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError })
   if (node.activity) fact('activity', dabT('activity'), `${node.activity.turns} ${dabT('turns')} · ${node.activity.steps} ${dabT('steps')}`)
   fact('cwd', dabT('directory'), node.cwd, true)
   fact('session', dabT('session'), node.id, true)
+  // A route switch must stay visible: never show only the LAST provider.
+  fact('previous', dabT('previousSession'), node.previousSessionId, true)
+  const routes = Array.isArray(node.routeHistory) ? node.routeHistory : []
+  if (routes.length > 0) {
+    fact('routes', dabT('routeHistory'), routes.map(entry => `${entry.from ?? '?'} → ${entry.to ?? '?'}${entry.reason ? ` (${entry.reason})` : ''}`).join(' · '))
+  }
+  fact('reason', dabT('statusReason'), node.statusReason, true)
+  if (node.status === 'recovering') {
+    facts.push(h('dt', { key: 'rec-t' }, dabT('recovery')), h('dd', { key: 'rec-d', className: 'dab-alert' }, node.statusReason ?? ''))
+  }
 
   return h('aside', { className: 'dab-inspector', 'aria-label': `${dabT('finalAnswer')} — ${node.title}`, 'data-inspector-for': node.id },
     h('div', { className: 'dab-insp-head' },
@@ -2126,11 +2311,12 @@ function DabHistoryDrawer({ projection, project, selectedId, arbiter, onClose })
 
 function DabToolbar(props) {
   const h = React.createElement
-  const { counts, visibleCount, mode, busy, hostDown, canStop, onMode, onStop, onRefresh, ui, setUi, projects, onHistory, narrow } = props
+  const { counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh, ui, setUi, projects, onHistory, narrow } = props
   const counter = (tone, value, label) => value > 0
     ? h('span', { className: 'dab-counter', key: tone, title: `${value} ${label}` }, h('span', { className: 'dab-dot', 'data-tone': tone }), h('b', null, value), ` ${label}`)
     : null
   const modeNotice = mode === 'off' ? dabT('offNotice') : mode === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice')
+  const notice = secondary ? dabT('secondaryInstance') : stopped ? dabT('stoppedNotice') : modeNotice
   return h('header', { className: 'dab-toolbar' },
     h('div', { className: 'dab-bar' },
       h('h1', { className: 'dab-title' }, dabT('title')),
@@ -2143,10 +2329,13 @@ function DabToolbar(props) {
       h('span', { className: 'dab-label' }, dabT('mode')),
       h('div', { className: 'dab-seg', role: 'group', 'aria-label': dabT('mode'), title: hostDown ? dabT('orchestratorDown') : modeNotice },
         ['off', 'supervised', 'autonomous'].map(value => h('button', {
-          key: value, type: 'button', className: 'dab-btn', 'aria-pressed': mode === value, disabled: busy || hostDown,
+          key: value, type: 'button', className: 'dab-btn', 'aria-pressed': mode === value, disabled: busy || hostDown || secondary,
           onClick: () => onMode(value),
         }, dabT(value)))),
-      h('button', { type: 'button', className: 'dab-btn', 'data-danger': 'true', disabled: busy || hostDown || !canStop, onClick: onStop, title: hostDown ? dabT('orchestratorDown') : (canStop ? dabT('stop') : dabT('stopNone')) }, `■ ${dabT('stop')}`),
+      stopped && mode !== 'off' && !secondary
+        ? h('button', { type: 'button', className: 'dab-btn', 'data-tone': 'resume', disabled: busy || hostDown, onClick: onResume, title: dabT('stoppedNotice') }, `▶ ${dabT('resume')}`)
+        : null,
+      h('button', { type: 'button', className: 'dab-btn', 'data-danger': 'true', disabled: busy || hostDown || !canStop || secondary, onClick: onStop, title: hostDown ? dabT('orchestratorDown') : (canStop ? dabT('stop') : dabT('stopNone')) }, `■ ${dabT('stop')}`),
       h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy, title: dabT('refresh'), 'aria-label': dabT('refresh') }, narrow ? '⟳' : `⟳ ${dabT('refresh')}`)),
     h('div', { className: 'dab-bar' },
       h('input', {
@@ -2166,7 +2355,7 @@ function DabToolbar(props) {
         h('button', { type: 'button', className: 'dab-btn', 'aria-pressed': ui.compact, onClick: () => setUi({ compact: true }) }, dabT('compact'))),
       h('button', { type: 'button', className: 'dab-btn', onClick: onHistory, 'aria-haspopup': 'dialog' }, `🕘 ${dabT('history')}`),
       h('span', { className: 'dab-grow' }),
-      h('span', { className: 'dab-notice' }, hostDown ? h('span', { className: 'dab-alert' }, dabT('orchestratorDown')) : modeNotice)),
+      h('span', { className: 'dab-notice' }, secondary || stopped ? h('span', { className: 'dab-alert' }, notice) : (hostDown ? h('span', { className: 'dab-alert' }, dabT('orchestratorDown')) : modeNotice))),
   )
 }
 
@@ -2358,8 +2547,23 @@ function dabMakePage(store, ctx) {
 
     const acknowledge = React.useCallback(id => {
       const node = nodeRef.current.byId.get(id)
-      if (node && (node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true))) void store.ack(id)
+      if (node && (node.status === 'finished_unread' || node.status === 'recovering' || (node.status === 'failed' && node.seen !== true))) void store.ack(id, { source: 'board_click' })
     }, [])
+
+    // Reading a session OUTSIDE the board (native main view) is still reading:
+    // once the runtime reports the session open in the main view, the board
+    // acknowledges it so an old consulted session never pollutes the home view.
+    const nativeAcked = React.useRef(new Set())
+    React.useEffect(() => {
+      for (const node of projection.nodes) {
+        if (node.viewing !== true) continue
+        if (nativeAcked.current.has(node.id)) continue
+        if (node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true)) {
+          nativeAcked.current.add(node.id)
+          void store.ack(node.id, { source: 'native_view' })
+        }
+      }
+    }, [projection])
 
     const openSession = React.useCallback(id => {
       setOpenError('')
@@ -2452,8 +2656,11 @@ function dabMakePage(store, ctx) {
     return h('div', { className: 'dab-root', ref: rootRef, 'data-dsh-agent-board': '', 'data-narrow': narrow ? 'true' : 'false' },
       h(DabToolbar, {
         counts, visibleCount: view.visibleCount, mode, busy, hostDown, canStop, ui, setUi, projects: projectList, narrow,
+        stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
+        secondary: host.instance?.primary === false,
         onMode: value => act('mode', () => store.setMode(value)),
         onStop: () => act('stop', () => store.stop()),
+        onResume: () => act('resume', () => store.resume()),
         onRefresh: () => { void store.refreshHost(); void act('refresh', () => store.refreshHost()) },
         onHistory: () => setHistoryOpen(true),
       }),

@@ -34,6 +34,16 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError })
   if (node.activity) fact('activity', dabT('activity'), `${node.activity.turns} ${dabT('turns')} · ${node.activity.steps} ${dabT('steps')}`)
   fact('cwd', dabT('directory'), node.cwd, true)
   fact('session', dabT('session'), node.id, true)
+  // A route switch must stay visible: never show only the LAST provider.
+  fact('previous', dabT('previousSession'), node.previousSessionId, true)
+  const routes = Array.isArray(node.routeHistory) ? node.routeHistory : []
+  if (routes.length > 0) {
+    fact('routes', dabT('routeHistory'), routes.map(entry => `${entry.from ?? '?'} → ${entry.to ?? '?'}${entry.reason ? ` (${entry.reason})` : ''}`).join(' · '))
+  }
+  fact('reason', dabT('statusReason'), node.statusReason, true)
+  if (node.status === 'recovering') {
+    facts.push(h('dt', { key: 'rec-t' }, dabT('recovery')), h('dd', { key: 'rec-d', className: 'dab-alert' }, node.statusReason ?? ''))
+  }
 
   return h('aside', { className: 'dab-inspector', 'aria-label': `${dabT('finalAnswer')} — ${node.title}`, 'data-inspector-for': node.id },
     h('div', { className: 'dab-insp-head' },

@@ -9,11 +9,12 @@
 
 function DabToolbar(props) {
   const h = React.createElement
-  const { counts, visibleCount, mode, busy, hostDown, canStop, onMode, onStop, onRefresh, ui, setUi, projects, onHistory, narrow } = props
+  const { counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh, ui, setUi, projects, onHistory, narrow } = props
   const counter = (tone, value, label) => value > 0
     ? h('span', { className: 'dab-counter', key: tone, title: `${value} ${label}` }, h('span', { className: 'dab-dot', 'data-tone': tone }), h('b', null, value), ` ${label}`)
     : null
   const modeNotice = mode === 'off' ? dabT('offNotice') : mode === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice')
+  const notice = secondary ? dabT('secondaryInstance') : stopped ? dabT('stoppedNotice') : modeNotice
   return h('header', { className: 'dab-toolbar' },
     h('div', { className: 'dab-bar' },
       h('h1', { className: 'dab-title' }, dabT('title')),
@@ -26,10 +27,13 @@ function DabToolbar(props) {
       h('span', { className: 'dab-label' }, dabT('mode')),
       h('div', { className: 'dab-seg', role: 'group', 'aria-label': dabT('mode'), title: hostDown ? dabT('orchestratorDown') : modeNotice },
         ['off', 'supervised', 'autonomous'].map(value => h('button', {
-          key: value, type: 'button', className: 'dab-btn', 'aria-pressed': mode === value, disabled: busy || hostDown,
+          key: value, type: 'button', className: 'dab-btn', 'aria-pressed': mode === value, disabled: busy || hostDown || secondary,
           onClick: () => onMode(value),
         }, dabT(value)))),
-      h('button', { type: 'button', className: 'dab-btn', 'data-danger': 'true', disabled: busy || hostDown || !canStop, onClick: onStop, title: hostDown ? dabT('orchestratorDown') : (canStop ? dabT('stop') : dabT('stopNone')) }, `■ ${dabT('stop')}`),
+      stopped && mode !== 'off' && !secondary
+        ? h('button', { type: 'button', className: 'dab-btn', 'data-tone': 'resume', disabled: busy || hostDown, onClick: onResume, title: dabT('stoppedNotice') }, `▶ ${dabT('resume')}`)
+        : null,
+      h('button', { type: 'button', className: 'dab-btn', 'data-danger': 'true', disabled: busy || hostDown || !canStop || secondary, onClick: onStop, title: hostDown ? dabT('orchestratorDown') : (canStop ? dabT('stop') : dabT('stopNone')) }, `■ ${dabT('stop')}`),
       h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy, title: dabT('refresh'), 'aria-label': dabT('refresh') }, narrow ? '⟳' : `⟳ ${dabT('refresh')}`)),
     h('div', { className: 'dab-bar' },
       h('input', {
@@ -49,7 +53,7 @@ function DabToolbar(props) {
         h('button', { type: 'button', className: 'dab-btn', 'aria-pressed': ui.compact, onClick: () => setUi({ compact: true }) }, dabT('compact'))),
       h('button', { type: 'button', className: 'dab-btn', onClick: onHistory, 'aria-haspopup': 'dialog' }, `🕘 ${dabT('history')}`),
       h('span', { className: 'dab-grow' }),
-      h('span', { className: 'dab-notice' }, hostDown ? h('span', { className: 'dab-alert' }, dabT('orchestratorDown')) : modeNotice)),
+      h('span', { className: 'dab-notice' }, secondary || stopped ? h('span', { className: 'dab-alert' }, notice) : (hostDown ? h('span', { className: 'dab-alert' }, dabT('orchestratorDown')) : modeNotice))),
   )
 }
 

@@ -156,22 +156,34 @@ export function createBoardStore(ctx, options = {}) {
     }
   }
 
+  // One parser for every SSE frame shape: the host emits named `state` frames,
+  // other implementations may emit unnamed `message` frames. Both paths must
+  // apply exactly the same validation so a malformed frame never breaks the store.
+  function applyStreamFrame(event) {
+    try {
+      const parsed = JSON.parse(event?.data)
+      if (parsed !== null && typeof parsed === 'object') {
+        host = parsed
+        hostError = null
+        bump()
+      }
+    } catch { /* keep the previous state */ }
+  }
+
   function connectStream() {
     if (stream !== null || destroyed) return
     if (typeof EventSourceImpl !== 'function') return
     try {
-      stream = new EventSourceImpl(`${apiBase}/events`)
-      stream.onmessage = event => {
-        try {
-          const parsed = JSON.parse(event.data)
-          if (parsed !== null && typeof parsed === 'object') {
-            host = parsed
-            hostError = null
-            bump()
-          }
-        } catch { /* keep the previous state */ }
-      }
-      stream.onerror = () => { /* the browser reconnects automatically */ }
+      const source = new EventSourceImpl(`${apiBase}/events`)
+      stream = source
+      // The host broadcasts `event: state`; `onmessage` only receives unnamed
+      // `message` frames, so the named event needs its own listener. Test
+      // doubles and minimal EventSource implementations may not implement
+      // addEventListener: fall back to onmessage only in that case.
+      if (typeof source.addEventListener === 'function') source.addEventListener('state', applyStreamFrame)
+      // Protocol compatibility: hosts that emit unnamed frames still reach us.
+      source.onmessage = applyStreamFrame
+      source.onerror = () => { /* the browser reconnects automatically */ }
     } catch {
       stream = null
     }
@@ -199,7 +211,9 @@ export function createBoardStore(ctx, options = {}) {
     refreshHost,
     connectStream,
     getHost: () => host,
-    ack: sessionId => post('/ack', { sessionId }),
+    ack: (sessionId, options = {}) => post('/ack', { sessionId, ...(typeof options.source === 'string' ? { source: options.source } : {}) }),
+    unack: sessionId => post('/ack', { sessionId, seen: false }),
+    resume: () => post('/resume', {}),
     setMode: mode => post('/mode', { mode }),
     stop: () => post('/stop', {}),
     tick: () => post('/tick', {}),

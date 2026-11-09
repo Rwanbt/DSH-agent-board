@@ -126,6 +126,11 @@ export function selectDispatchable({ tasks, assignments = [], proposals = [], po
       .filter(assignment => ACTIVE_ASSIGNMENT_STATUSES.includes(assignment?.status))
       .map(assignment => String(assignment.taskId)),
   )
+  const busyWorkspaces = new Set(
+    (assignments ?? [])
+      .filter(assignment => ACTIVE_ASSIGNMENT_STATUSES.includes(assignment?.status))
+      .map(assignment => String(assignment.workspaceId ?? '')),
+  )
   const proposedTaskIds = new Set(
     (proposals ?? []).filter(proposal => proposal?.status === 'pending').map(proposal => String(proposal.taskId)),
   )
@@ -141,6 +146,9 @@ export function selectDispatchable({ tasks, assignments = [], proposals = [], po
   )
 
   let remaining = slots
+  // Workspaces already claimed by an active assignment OR by an action of this
+  // very plan (the plan is computed before any launch, so it must reserve).
+  const reservedWorkspaces = new Set(busyWorkspaces)
   for (const task of candidates) {
     const readiness = readinessOf(task, tasksById)
     if (!readiness.ready) {
@@ -155,6 +163,32 @@ export function selectDispatchable({ tasks, assignments = [], proposals = [], po
       skipped.push({ taskId: task.id, reason: 'awaiting_approval' })
       continue
     }
+    // The Task Board owns its own executions and its own scheduler. Launching a
+    // session for a task another executor already runs would create a second
+    // writer for the same work: skip it and say why.
+    if (task.activeExecution === true) {
+      skipped.push({ taskId: task.id, reason: 'already_running_in_taskboard' })
+      continue
+    }
+    if (typeof task.claimedBy === 'string' && task.claimedBy !== '') {
+      skipped.push({ taskId: task.id, reason: 'claimed_by_another_session' })
+      continue
+    }
+    if (task.execution?.mode === 'scheduled') {
+      skipped.push({ taskId: task.id, reason: 'owned_by_taskboard_scheduler' })
+      continue
+    }
+    // A board-launched session always runs in the workspace directory. A card
+    // that requires a worktree cannot be honoured here, and silently ignoring
+    // it would let two agents write the same files.
+    if (task.isolation === 'worktree') {
+      skipped.push({ taskId: task.id, reason: 'worktree_isolation_not_supported' })
+      continue
+    }
+    if (policy?.serializeSameWorkspace === true && reservedWorkspaces.has(String(task.workspaceId ?? ''))) {
+      skipped.push({ taskId: task.id, reason: 'workspace_busy' })
+      continue
+    }
     const mandate = mandateCheck(task, policy)
     if (!mandate.ok) {
       skipped.push({ taskId: task.id, reason: mandate.reason })
@@ -164,11 +198,12 @@ export function selectDispatchable({ tasks, assignments = [], proposals = [], po
       task,
       taskId: String(task.id),
       workspaceId: String(task.workspaceId ?? ''),
-      revision: task.revision ?? task.rev ?? null,
+      revision: task.revision ?? task.version ?? task.rev ?? null,
       urgency: task.urgency ?? 'normal',
       kind: mode === MODES.SUPERVISED ? 'proposal' : 'launch',
       reason: mode === MODES.SUPERVISED ? 'supervised_requires_approval' : 'autonomous_mandate',
     }
+    reservedWorkspaces.add(String(task.workspaceId ?? ''))
     if (mode === MODES.SUPERVISED) {
       actions.push(action)
       continue

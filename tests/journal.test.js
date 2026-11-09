@@ -1,10 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, writeFile, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rename, rm, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { StateStore, compactState } from '../src/orchestrator/journal.js'
+import { StateStore, compactState, renameWithRetry } from '../src/orchestrator/journal.js'
 
 async function tempDir() {
   return mkdtemp(join(tmpdir(), 'dab-journal-'))
@@ -70,14 +70,173 @@ test('audit events append as JSON lines', async () => {
   }
 })
 
+test('a failed write does not poison the queue: the next write still lands', async () => {
+  const dir = await tempDir()
+  try {
+    let failNext = false
+    const store = new StateStore({
+      dir,
+      renameFile: async (from, to) => {
+        if (failNext) {
+          failNext = false
+          const error = new Error('simulated disk full')
+          error.code = 'ENOSPC' // not retryable: fail on the first attempt
+          throw error
+        }
+        return rename(from, to)
+      },
+    })
+    await store.init({ value: 0 })
+    failNext = true
+    await assert.rejects(store.write({ value: 1 }), error => error.code === 'ENOSPC')
+    assert.match(store.lastFailure, /state write failed: ENOSPC/)
+    // The rejected write must not disable the following ones (D17).
+    await store.write({ value: 2 })
+    const raw = JSON.parse(await readFile(join(dir, 'state.json'), 'utf8'))
+    assert.equal(raw.value, 2)
+    // A failed write removes its own tmp file (best effort).
+    const files = await readdir(dir)
+    assert.equal(files.filter(name => name.includes('.tmp-')).length, 0)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a rename retried on EPERM eventually succeeds', async () => {
+  const dir = await tempDir()
+  try {
+    let attempts = 0
+    const sleeps = []
+    const store = new StateStore({
+      dir,
+      renameRetryDelaysMs: [0, 0, 0],
+      sleep: async ms => { sleeps.push(ms) },
+      renameFile: async (from, to) => {
+        attempts += 1
+        if (attempts <= 2) {
+          const error = new Error('locked by a scanner')
+          error.code = 'EPERM'
+          throw error
+        }
+        return rename(from, to)
+      },
+    })
+    await store.init({ value: 'retry' })
+    assert.equal(attempts, 3)
+    assert.deepEqual(sleeps, [0, 0])
+    const raw = JSON.parse(await readFile(join(dir, 'state.json'), 'utf8'))
+    assert.equal(raw.value, 'retry')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('renameWithRetry gives up after its bounded attempts with a clear error', async () => {
+  let calls = 0
+  const sleeps = []
+  await assert.rejects(
+    renameWithRetry('tmp', 'final', {
+      delaysMs: [0, 0],
+      sleep: async ms => { sleeps.push(ms) },
+      renameFile: async () => {
+        calls += 1
+        const error = new Error('still locked')
+        error.code = 'EPERM'
+        throw error
+      },
+    }),
+    error => {
+      assert.equal(error.code, 'EPERM')
+      assert.equal(error.attempts, 3)
+      assert.match(error.message, /3 attempt\(s\)/)
+      return true
+    },
+  )
+  assert.equal(calls, 3)
+  assert.deepEqual(sleeps, [0, 0])
+})
+
+test('renameWithRetry does not retry an error that is not a lock', async () => {
+  let calls = 0
+  await assert.rejects(
+    renameWithRetry('tmp', 'final', {
+      delaysMs: [0, 0],
+      sleep: async () => { throw new Error('sleep must not be called') },
+      renameFile: async () => {
+        calls += 1
+        const error = new Error('disk full')
+        error.code = 'ENOSPC'
+        throw error
+      },
+    }),
+    error => error.code === 'ENOSPC',
+  )
+  assert.equal(calls, 1)
+})
+
+test('init removes stale tmp files and keeps state, quarantine copies and live temps', async () => {
+  const dir = await tempDir()
+  try {
+    await writeFile(join(dir, 'state.json'), JSON.stringify({ schemaVersion: 1, value: 7 }), 'utf8')
+    const stale = ['state.json.tmp-2096-1', 'state.json.tmp-2096-2', 'state.json.tmp-2096-3']
+    for (const name of stale) await writeFile(join(dir, name), 'partial', 'utf8')
+    const live = 'state.json.tmp-4242-9'
+    await writeFile(join(dir, live), 'in flight', 'utf8')
+    await writeFile(join(dir, 'state.json.corrupt-123'), 'evidence', 'utf8')
+    await writeFile(join(dir, 'audit.jsonl'), '', 'utf8')
+    const store = new StateStore({ dir })
+    store.tmpInFlight.add(join(dir, live))
+    const loaded = await store.init({ value: 0 })
+    assert.equal(loaded.value, 7)
+    const files = await readdir(dir)
+    for (const name of stale) assert.equal(files.includes(name), false, `${name} should be removed`)
+    assert.equal(files.includes(live), true, 'the current process in-flight temp must survive')
+    assert.equal(files.includes('state.json'), true)
+    assert.equal(files.includes('state.json.corrupt-123'), true)
+    assert.equal(files.includes('audit.jsonl'), true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('compactState bounds previews, turn ends and the audit tail', () => {
   const state = {
     previews: { a: { at: 1 }, b: { at: 2 }, c: { at: 3 } },
     turnEnd: { a: { at: 1 }, b: { at: 2 } },
+    acks: { a: { seenAt: 10 }, b: { seenAt: 10 } },
     audit: [1, 2, 3, 4, 5],
   }
   compactState(state, { maxPreviews: 2, maxTurnEnds: 1, maxAudit: 2 })
   assert.deepEqual(Object.keys(state.previews).sort(), ['b', 'c'])
   assert.deepEqual(Object.keys(state.turnEnd), ['b'])
   assert.deepEqual(state.audit, [4, 5])
+})
+
+test('compactState keeps unacked turn ends beyond the cap and drops acked ones', () => {
+  const state = {
+    turnEnd: {
+      acked_newest: { at: 100 },
+      unacked: { at: 90 },
+      stale_ack: { at: 80 },
+      acked_old: { at: 70 },
+    },
+    acks: {
+      acked_newest: { seenAt: 100 },
+      stale_ack: { seenAt: 10 }, // acknowledged before the turn ended = still unread
+      acked_old: { seenAt: 70 },
+    },
+  }
+  compactState(state, { maxTurnEnds: 1 })
+  assert.deepEqual(Object.keys(state.turnEnd).sort(), ['acked_newest', 'stale_ack', 'unacked'])
+  assert.equal(state.turnEnd.acked_old, undefined)
+})
+
+test('compactState bounds a flood of unacked turn ends at the hard ceiling', () => {
+  const turnEnd = {}
+  for (let index = 0; index < 6; index += 1) turnEnd[`s${index}`] = { at: 100 - index }
+  const state = { turnEnd, acks: {} }
+  compactState(state, { maxTurnEnds: 1 })
+  // All protected: the soft cap is exceeded, but never past 4x the cap.
+  assert.equal(Object.keys(state.turnEnd).length, 4)
+  assert.deepEqual(Object.keys(state.turnEnd).sort(), ['s0', 's1', 's2', 's3'])
 })

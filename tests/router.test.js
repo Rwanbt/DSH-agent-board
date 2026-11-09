@@ -39,6 +39,40 @@ test('classify: an error after the first chunk requires a handoff, not a silent 
   assert.equal(plan.nextRoute.provider, 'backup')
 })
 
+test('rate limiting is recognised from the wording, not only from the 429 status', () => {
+  const failure = classifyFailure({ message: 'Too many requests, slow down' })
+  assert.equal(failure.kind, FAILURE.RATE_LIMIT)
+  assert.equal(failure.retryable, true)
+  const plan = planRoute({ failure, currentRoute: chain[0], chain, policy: { maxRetries: 0 }, now: 1000, rng: () => 0 })
+  assert.equal(plan.action, 'switch')
+  assert.equal(plan.nextRoute.provider, 'backup')
+})
+
+test('transport errors carried in the message are switchable, not UNKNOWN', () => {
+  const failure = classifyFailure({ message: 'request failed: read ECONNRESET' })
+  assert.equal(failure.kind, FAILURE.TRANSPORT)
+  const plan = planRoute({ failure, retries: 2, currentRoute: chain[0], chain, policy: { maxRetries: 2 } })
+  assert.equal(plan.action, 'switch')
+})
+
+test('a deleted or undeployed model switches provider instead of retrying forever', () => {
+  const failure = classifyFailure({ status: 404, message: 'The model gpt-x has been deleted' })
+  assert.equal(failure.kind, FAILURE.MODEL_UNAVAILABLE)
+  assert.equal(failure.retryable, false)
+  const plan = planRoute({ failure, currentRoute: chain[0], chain, policy: { maxRetries: 2 } })
+  assert.equal(plan.action, 'switch')
+  assert.equal(plan.nextRoute.provider, 'backup')
+})
+
+test('a 403 caused by provider auth is switchable; a policy 403 is not', () => {
+  const auth = classifyFailure({ status: 403, message: 'unauthorized: invalid api key' })
+  assert.equal(auth.kind, FAILURE.AUTH)
+  assert.equal(auth.switchable, true)
+  const refusal = classifyFailure({ status: 403, message: 'blocked by content policy' })
+  assert.equal(refusal.kind, FAILURE.POLICY_REFUSAL)
+  assert.equal(refusal.switchable, false)
+})
+
 test('classify: no alternate route after a partial stream is a visible blocked state', () => {
   const failure = classifyFailure({ message: 'connection reset', code: 'ECONNRESET', afterFirstChunk: true })
   const plan = planRoute({ failure, currentRoute: { provider: 'primary', model: 'big' }, chain: [], policy: {} })

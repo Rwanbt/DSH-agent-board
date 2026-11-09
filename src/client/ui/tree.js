@@ -45,9 +45,21 @@ function dabFlattenTree(entry, out = [], parentTitle = null) {
   return out
 }
 
-function DabCompactProject({ project, ctx, treeLimit }) {
+/**
+ * The visible tree slice. `treeLimit` trims CALM trees only: a tree whose
+ * subtree contains an agent waiting for the user is never hidden because it is
+ * older than eight newer trees (the yellow card is the one thing that must
+ * always be reachable without expanding a list).
+ */
+function dabVisibleTrees(project, treeLimit) {
+  const head = project.trees.slice(0, treeLimit)
+  const tail = project.trees.slice(treeLimit)
+  const waiting = tail.filter(tree => (tree.aggregate?.bestTier ?? 9) === 0 || tree.node?.status === 'waiting_user')
+  return waiting.length === 0 ? head : [...waiting, ...head]
+}
+
+function DabCompactProject({ project, ctx, trees }) {
   const h = React.createElement
-  const trees = project.trees.slice(0, treeLimit)
   return h('div', null, trees.map(tree => {
     const flat = dabFlattenTree(tree)
     return h('div', { className: 'dab-compact-group', key: tree.node.id },
@@ -77,7 +89,8 @@ function DabCompactProject({ project, ctx, treeLimit }) {
 function DabProjectGroup({ project, ctx, folded, onFold, treeLimit, onMoreTrees, compact }) {
   const h = React.createElement
   const title = project.unassigned ? dabT('unassigned') : project.title
-  const hiddenTrees = Math.max(0, project.trees.length - treeLimit)
+  const trees = folded ? [] : dabVisibleTrees(project, treeLimit)
+  const hiddenTrees = Math.max(0, project.trees.length - trees.length)
   const summary = []
   if (project.summary.running > 0) summary.push(h('span', { key: 'r', className: 'dab-counter' }, h('span', { className: 'dab-dot', 'data-tone': 'running' }), project.summary.running))
   if (project.summary.waiting > 0) summary.push(h('span', { key: 'w', className: 'dab-counter' }, h('span', { className: 'dab-dot', 'data-tone': 'waiting' }), project.summary.waiting))
@@ -91,8 +104,8 @@ function DabProjectGroup({ project, ctx, folded, onFold, treeLimit, onMoreTrees,
     folded
       ? null
       : compact
-        ? h(DabCompactProject, { project, ctx, treeLimit })
-        : h('div', { className: 'dab-forest' }, project.trees.slice(0, treeLimit).map(tree => h(DabAgentTree, { key: tree.node.id, entry: tree, ctx }))),
+        ? h(DabCompactProject, { project, ctx, trees })
+        : h('div', { className: 'dab-forest' }, trees.map(tree => h(DabAgentTree, { key: tree.node.id, entry: tree, ctx }))),
     !folded && hiddenTrees > 0
       ? h('div', { className: 'dab-more' }, h('button', { type: 'button', className: 'dab-btn', onClick: () => onMoreTrees(project.id) }, dabT('moreTrees', { n: hiddenTrees })))
       : null,

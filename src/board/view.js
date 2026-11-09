@@ -26,6 +26,7 @@ export function isAttention(node) {
   if (node === undefined || node === null) return false
   if (node.status === STATUS.WAITING_USER) return true
   if (node.status === STATUS.RUNNING) return true
+  if (node.status === STATUS.RECOVERING) return true
   if (node.status === STATUS.FINISHED_UNREAD) return true
   if (node.status === STATUS.FAILED && node.seen !== true) return true
   return false
@@ -37,6 +38,7 @@ export function attentionRank(node) {
     case STATUS.WAITING_USER: return 0
     case STATUS.RUNNING: return 1
     case STATUS.FINISHED_UNREAD: return 2
+    case STATUS.RECOVERING: return 2.5
     case STATUS.FAILED: return node.seen === true ? 5 : 3
     default: return 4 + (STATUS_RANK[node?.status] ?? 9) / 10
   }

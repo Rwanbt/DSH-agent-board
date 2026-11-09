@@ -14,27 +14,57 @@ import { AdapterError, defineAdapter } from '../contracts/adapters.js'
 
 export const TASKBOARD_STATE_PATH = '/dsh-taskboard/state'
 
+/**
+ * Normalize one Task Board `TaskRecord` (schema 0.10.2) into the board's shape.
+ *
+ * Field names are the ones the real ledger uses — `version` (not `revision`),
+ * `executions[]` with `outcome`, `claimedBy`, `isolation`, `execution.mode`.
+ * Reading a wrong field name here silently pinned every idempotency key to the
+ * same value and hid the Task Board's own active executions from the
+ * orchestrator, so both are contract-tested in tests/connectors.test.js.
+ */
 function normalizeTask(raw, ledgerRevision) {
   if (raw === null || typeof raw !== 'object' || typeof raw.id !== 'string') return null
+  const executions = Array.isArray(raw.executions) ? raw.executions : []
+  const runningExecution = executions.find(execution => execution?.outcome === 'running') ?? null
+  const lastExecution = executions.length > 0 ? executions[executions.length - 1] : null
+  const revision = raw.version ?? raw.revision ?? raw.rev ?? null
   return {
     id: raw.id,
     system: 'dsh-taskboard',
     externalId: raw.id,
     canonicalId: `dsh-taskboard:${raw.id}`,
     title: typeof raw.title === 'string' ? raw.title : '',
+    description: typeof raw.description === 'string' ? raw.description : '',
     status: typeof raw.status === 'string' ? raw.status : 'unknown',
     urgency: typeof raw.urgency === 'string' ? raw.urgency : 'normal',
     workspaceId: typeof raw.workspaceId === 'string' ? raw.workspaceId : '',
     projectId: raw.projectId ?? null,
+    parentId: typeof raw.parentId === 'string' ? raw.parentId : null,
     dependsOn: Array.isArray(raw.dependsOn) ? raw.dependsOn.map(String) : [],
     trashedAt: raw.trashedAt ?? null,
-    revision: raw.revision ?? raw.rev ?? ledgerRevision ?? null,
+    // The Task Board's own optimistic-concurrency version of THIS task.
+    revision,
+    version: raw.version ?? null,
     execution: raw.execution ?? null,
     model: raw.model ?? null,
-    claim: raw.claim ?? null,
+    claimedBy: typeof raw.claimedBy === 'string' ? raw.claimedBy : null,
+    claimedAt: raw.claimedAt ?? null,
+    claim: typeof raw.claimedBy === 'string' ? raw.claimedBy : null,
     permission: raw.permission ?? null,
     isolation: raw.isolation ?? null,
+    branch: typeof raw.branch === 'string' ? raw.branch : null,
+    waitingForHuman: raw.waitingForHuman === true,
+    blocked: raw.blocked === true,
+    checklistSize: Array.isArray(raw.checklist) ? raw.checklist.length : 0,
+    // Derived, read-only: is the Task Board ALREADY running this task? The board
+    // must not launch a second executor for it.
+    activeExecution: runningExecution !== null,
+    activeExecutionId: runningExecution?.id ?? null,
+    lastExecutionOutcome: lastExecution?.outcome ?? null,
+    executionsTotal: executions.length,
     updatedAt: raw.updatedAt ?? null,
+    ledgerRevision,
     raw: undefined,
   }
 }
@@ -91,7 +121,8 @@ export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, 
     notes: 'Read-only. Claim/in_review are performed by the launched agent session; done stays human-only.',
     async list() {
       const state = await getJson(TASKBOARD_STATE_PATH)
-      const ledgerRevision = state?.rev ?? null
+      // The ledger exposes `revision` (global monotonic counter), not `rev`.
+      const ledgerRevision = state?.revision ?? state?.rev ?? null
       const tasks = Array.isArray(state?.tasks) ? state.tasks : []
       return {
         items: tasks.map(task => normalizeTask(task, ledgerRevision)).filter(task => task !== null),

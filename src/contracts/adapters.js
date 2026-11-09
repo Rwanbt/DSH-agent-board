@@ -124,7 +124,10 @@ export function createAdapterRegistry() {
         title: adapter.title ?? adapter.id,
         status: adapter.status,
         validatedLive: adapter.validatedLive,
-        capabilities: capabilitiesOf(adapter),
+        // Report the DECLARED (and therefore effective) capabilities, not "does
+        // a method exist": a skeleton carries throwing stubs and must not look
+        // like a working integration in the matrix.
+        capabilities: Object.fromEntries(CAPABILITIES.map(capability => [capability, (adapter.capabilities ?? []).includes(capability)])),
         declaredCapabilities: [...(adapter.capabilities ?? [])],
         notes: adapter.notes ?? '',
       }))
