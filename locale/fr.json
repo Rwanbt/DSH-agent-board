@@ -1,0 +1,35 @@
+{
+  "meta": {
+    "title": "Agent Board",
+    "description": "Cockpit en cartes et ramifications des sessions et sous-agents, avec orchestration supervisée ou autonome et reprise après panne de modèle."
+  },
+  "panel": {
+    "title": "Agent Board",
+    "subtitle": "Sessions, sous-agents et travail délégué",
+    "openSession": "Ouvrir la session",
+    "preview": "Aperçu",
+    "collapse": "Replier la ramification",
+    "expand": "Déplier la ramification",
+    "compact": "Cartes compactes",
+    "refresh": "Rafraîchir",
+    "mode": "Orchestration",
+    "modeOff": "Arrêt",
+    "modeSupervised": "Supervisé",
+    "modeAutonomous": "Autonome",
+    "stop": "Arrêter les exécutions",
+    "approve": "Approuver",
+    "reject": "Refuser",
+    "empty": "Aucune session ni sous-agent à afficher.",
+    "unknown": "Inconnu / déconnecté",
+    "waitingApproval": "En attente de votre approbation",
+    "waitingQuestion": "En attente de votre réponse",
+    "waitingPlan": "En attente de votre revue de plan",
+    "unread": "Terminé, résultat pas encore consulté",
+    "read": "Terminé, consulté",
+    "failed": "Tour terminé en erreur",
+    "running": "En cours",
+    "idle": "Inactif",
+    "noPreview": "Aucun segment de réponse visible pour le moment.",
+    "orchestratorIdle": "Aucune proposition ni exécution en cours."
+  }
+}

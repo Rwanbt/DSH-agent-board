@@ -1,0 +1,35 @@
+{
+  "meta": {
+    "title": "Agent Board",
+    "description": "Card-and-branch cockpit for sessions and sub-agents, with supervised or autonomous orchestration and failover recovery."
+  },
+  "panel": {
+    "title": "Agent Board",
+    "subtitle": "Sessions, sub-agents and delegated work",
+    "openSession": "Open session",
+    "preview": "Preview",
+    "collapse": "Collapse subtree",
+    "expand": "Expand subtree",
+    "compact": "Compact cards",
+    "refresh": "Refresh",
+    "mode": "Orchestration",
+    "modeOff": "Off",
+    "modeSupervised": "Supervised",
+    "modeAutonomous": "Autonomous",
+    "stop": "Stop executions",
+    "approve": "Approve",
+    "reject": "Reject",
+    "empty": "No session or sub-agent to display.",
+    "unknown": "Unknown / disconnected",
+    "waitingApproval": "Waiting for your approval",
+    "waitingQuestion": "Waiting for your answer",
+    "waitingPlan": "Waiting for your plan review",
+    "unread": "Finished, result not consulted yet",
+    "read": "Finished, consulted",
+    "failed": "Turn ended with an error",
+    "running": "Running",
+    "idle": "Idle",
+    "noPreview": "No visible answer segment yet.",
+    "orchestratorIdle": "No proposal or execution in flight."
+  }
+}

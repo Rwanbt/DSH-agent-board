@@ -1,0 +1,198 @@
+/**
+ * Stable domain contracts for the Agent Board.
+ *
+ * These names are the ones the rest of the plugin (and any future adapter)
+ * codes against: ProjectRef, WorkItemRef, AgentNode, Assignment, Mandate,
+ * Checkpoint, RoutePolicy, ProviderHealthEvent, AuditEvent. They are plain
+ * JSON shapes on purpose — the journal, the HTTP API and the client all
+ * serialize them, and a future storage migration must be able to read them.
+ *
+ * @module dsh-agent-board/contracts/model
+ */
+
+export const SCHEMA_VERSION = 1
+
+/** Native-ish agent statuses. Never derived from elapsed time alone. */
+export const STATUS = Object.freeze({
+  RUNNING: 'running',
+  WAITING_USER: 'waiting_user',
+  FINISHED_UNREAD: 'finished_unread',
+  FINISHED_READ: 'finished_read',
+  FAILED: 'failed',
+  IDLE: 'idle',
+  UNKNOWN: 'unknown',
+})
+
+export const STATUS_VALUES = Object.freeze(Object.values(STATUS))
+
+/** Ranking used for stable ordering (lower = shown first). */
+export const STATUS_RANK = Object.freeze({
+  [STATUS.WAITING_USER]: 0,
+  [STATUS.RUNNING]: 1,
+  [STATUS.FINISHED_UNREAD]: 2,
+  [STATUS.FAILED]: 3,
+  [STATUS.IDLE]: 4,
+  [STATUS.FINISHED_READ]: 5,
+  [STATUS.UNKNOWN]: 6,
+})
+
+/** Orchestration modes. Default is always `off`. */
+export const MODES = Object.freeze({
+  OFF: 'off',
+  SUPERVISED: 'supervised',
+  AUTONOMOUS: 'autonomous',
+})
+
+export const MODE_VALUES = Object.freeze(Object.values(MODES))
+
+/** Turn-end kinds that must be surfaced as a failure, not as "finished". */
+export const ERROR_TURN_KINDS = Object.freeze(['error', 'failed'])
+
+export function isMode(value) {
+  return typeof value === 'string' && MODE_VALUES.includes(value)
+}
+
+export function assertMode(value) {
+  if (!isMode(value)) throw new Error(`agent-board: invalid orchestration mode ${JSON.stringify(value)}`)
+  return value
+}
+
+/** A stable project identity: DSH workspace id, plus its directory when known. */
+export function projectRef(input = {}) {
+  const id = typeof input.id === 'string' && input.id !== '' ? input.id : undefined
+  const path = typeof input.path === 'string' && input.path !== '' ? input.path : undefined
+  if (id === undefined && path === undefined) throw new Error('agent-board: projectRef needs id or path')
+  return {
+    id: id ?? path,
+    path: path ?? null,
+    title: typeof input.title === 'string' && input.title !== '' ? input.title : (id ?? path),
+  }
+}
+
+/**
+ * One external work item, with an explicit provenance and an authority field.
+ * `canonicalId` is the identity the board uses; the external ids stay readable.
+ */
+export function workItemRef(input) {
+  const system = requireString(input.system, 'workItemRef.system')
+  const externalId = requireString(input.externalId, 'workItemRef.externalId')
+  return {
+    system,
+    externalId,
+    canonicalId: `${system}:${externalId}`,
+    url: typeof input.url === 'string' ? input.url : null,
+    revision: input.revision ?? null,
+    authority: input.authority ?? 'external',
+    title: typeof input.title === 'string' ? input.title : '',
+  }
+}
+
+/** Deterministic idempotency key: one logical assignment per (item, revision, attempt). */
+export function idempotencyKey({ workItem, revision = 0, attempt = 0 }) {
+  const item = typeof workItem === 'string' ? workItem : requireString(workItem?.canonicalId, 'idempotencyKey.workItem')
+  return `${item}@${String(revision)}#${String(attempt)}`
+}
+
+export function newId(prefix = 'id') {
+  const uuid = globalThis.crypto?.randomUUID?.()
+  return `${prefix}-${uuid ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
+}
+
+/** Bound every text that crosses the journal or the wire. */
+export function truncate(text, max = 400) {
+  const value = typeof text === 'string' ? text : ''
+  if (value.length <= max) return value
+  // Code-point safe: never split a surrogate pair in the middle.
+  return `${[...value].slice(0, max).join('')}…`
+}
+
+/** Extract readable text out of arbitrary assistant content shapes. */
+export function textOfContent(content) {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map(part => {
+        if (typeof part === 'string') return part
+        if (part !== null && typeof part === 'object') {
+          if (typeof part.text === 'string') return part.text
+          if (typeof part.content === 'string') return part.content
+        }
+        return ''
+      })
+      .filter(part => part !== '')
+      .join('\n')
+  }
+  if (content !== null && typeof content === 'object' && typeof content.text === 'string') return content.text
+  return ''
+}
+
+function requireString(value, field) {
+  if (typeof value !== 'string' || value === '') throw new Error(`agent-board: ${field} must be a non-empty string`)
+  return value
+}
+
+/** Default limits. Every one is configurable through the board API. */
+export const DEFAULT_POLICY = Object.freeze({
+  mode: MODES.OFF,
+  maxConcurrent: 2,
+  maxSwitches: 2,
+  proposalTtlMs: 30 * 60 * 1000,
+  leaseTtlMs: 10 * 60 * 1000,
+  allowedWorkspaces: [],
+  allowedProviders: [],
+  allowCloudFallback: false,
+  routeChain: [],
+  autonomyBudget: { maxTasksPerHour: 6 },
+})
+
+export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
+  const mode = isMode(input.mode) ? input.mode : fallback.mode
+  const maxConcurrent = clampInt(input.maxConcurrent, 0, 8, fallback.maxConcurrent)
+  const maxSwitches = clampInt(input.maxSwitches, 0, 5, fallback.maxSwitches)
+  return {
+    mode,
+    maxConcurrent,
+    maxSwitches,
+    proposalTtlMs: clampInt(input.proposalTtlMs, 60_000, 86_400_000, fallback.proposalTtlMs),
+    leaseTtlMs: clampInt(input.leaseTtlMs, 30_000, 86_400_000, fallback.leaseTtlMs),
+    allowedWorkspaces: uniqueStrings(input.allowedWorkspaces ?? fallback.allowedWorkspaces),
+    allowedProviders: uniqueStrings(input.allowedProviders ?? fallback.allowedProviders),
+    allowCloudFallback: input.allowCloudFallback === true,
+    routeChain: normalizeRouteChain(input.routeChain ?? fallback.routeChain),
+    autonomyBudget: {
+      maxTasksPerHour: clampInt(input.autonomyBudget?.maxTasksPerHour, 0, 100, fallback.autonomyBudget.maxTasksPerHour),
+    },
+  }
+}
+
+export function normalizeRouteChain(chain) {
+  if (!Array.isArray(chain)) return []
+  const out = []
+  for (const entry of chain) {
+    if (typeof entry === 'string' && entry !== '') {
+      const [provider, model] = entry.split('/')
+      if (provider && model) out.push({ provider, model })
+      continue
+    }
+    if (entry !== null && typeof entry === 'object' && typeof entry.provider === 'string' && typeof entry.model === 'string') {
+      out.push({
+        provider: entry.provider,
+        model: entry.model,
+        locality: entry.locality === 'local' ? 'local' : 'remote',
+        reasoningEffort: typeof entry.reasoningEffort === 'string' ? entry.reasoningEffort : undefined,
+      })
+    }
+  }
+  return out
+}
+
+function uniqueStrings(value) {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.filter(entry => typeof entry === 'string' && entry !== ''))]
+}
+
+function clampInt(value, min, max, fallback) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return fallback
+  return Math.min(max, Math.max(min, Math.trunc(number)))
+}

@@ -1,0 +1,15 @@
+# Mount the Agent Board as its own bundle.
+#
+# Host row: the supervisor/orchestrator plugin (src/host/index.js). It owns the
+# HTTP/SSE API under /dsh-agent-board/api and launches sessions through the
+# native ctx.agents service.
+#
+# Client row: the Web panel (src/client.js), declared by package.json
+# `dsh.client` and served by the DSH client-module table.
+#
+# The board never writes the Task Board ledger: it reads the Task Board's own
+# HTTP contract and leaves claim / in_review / done transitions to the agent
+# session it launches and to the human operator.
+- insert:
+    - id: dsh-agent-board
+      name: dsh-agent-board

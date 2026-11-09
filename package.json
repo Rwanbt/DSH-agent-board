@@ -1,0 +1,59 @@
+{
+  "name": "dsh-agent-board",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent Board for the DSH web GUI: a card-and-branch cockpit over native sessions and sub-agents, with a host-side orchestration policy engine (off / supervised / autonomous), a failover-aware model router, restart-safe journals, and an open adapter registry (Task Board, forges, agent executors).",
+  "type": "module",
+  "main": "src/host/index.js",
+  "exports": {
+    ".": "./src/host/index.js",
+    "./client": "./src/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "tests",
+    "docs",
+    "locale/*.json",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "slots"
+      ],
+      "platform": "web"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.2-rc.1": "compatible"
+      }
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/",
+    "check": "node --check src/host/index.js && node --check src/client.js && node --test tests/",
+    "smoke": "node scripts/smoke-host.mjs"
+  },
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "agent-board",
+    "orchestration",
+    "failover"
+  ]
+}
