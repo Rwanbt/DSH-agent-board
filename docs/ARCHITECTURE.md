@@ -82,6 +82,17 @@ handoff — goes through one `authorizeLaunch()` gate. OFF, Stop, the workspace
 mandate, the provider allow-list, the permission allow-list and the concurrency
 limit are therefore enforced in one place; no route can bypass them.
 
+Two execution backends exist (`policy.executionBackend`):
+
+- `board` (default) — the host creates the session with `ctx.agents`, so a
+  failure can switch model/provider and hand the task off. The Task Board gets
+  no execution record for it (its `run` path was not used).
+- `taskboard` — the host calls the Task Board's own `POST /tasks/:id/run`; the
+  Task Board creates the session, execution record, claim, permission and
+  worktree, and the host only observes the returned session. The model is pinned
+  on the card, so failover is refused with `backend_no_failover` instead of
+  faked. Worktree-isolated cards are only runnable this way.
+
 An assignment is created once per `(task, revision, attempt)` idempotency key,
 with a lease (`leaseTtlMs`). One LIVE assignment per task, but a finished,
 stopped or interrupted attempt no longer bricks the task: the next explicit
@@ -89,7 +100,9 @@ launch becomes a new attempt. A watchdog expires a lease whose agent is gone
 into `interrupted`, so `maxConcurrent` cannot be consumed forever.
 `reconcileAfterRestart` does the same at boot and never relaunches silently.
 Overlapping ticks coalesce (`tickInFlight`), and a single-writer `instance.lock`
-keeps a second DSH host read-only instead of clobbering `state.json`.
+keeps a second DSH host read-only instead of clobbering `state.json`. A durable
+autonomous mode requires an explicit resume after a restart
+(`resume_requires_confirmation`) unless `autoResumeOnRestart` is set.
 
 The launched session receives two messages, following the pattern proven by
 `dsh-taskboard`: an `inject()` framing line (producer-owned source kind

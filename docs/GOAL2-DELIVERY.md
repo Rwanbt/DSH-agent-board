@@ -59,10 +59,24 @@ doublon → vérifier que la carte reste `in_review` (jamais `done`).
 
 ## Ce qui reste ouvert (P1)
 
-- Lien d'exécution Task Board natif (`POST /dsh-taskboard/tasks/:id/run`) : sans
-  lui, `taskboard_execution_report` est refusé.
-- E2E instance isolée + provider factice, test de redémarrage process réel.
-- Forge réelle testée (GitHub/GitLab) et webhooks signés.
-- Worktree isolation, retour au provider principal, fencing enforced,
-  réconciliation des effets externes.
+- **E2E instance isolée + provider factice**, test de redémarrage process réel.
+- **Failover live** sur une route sacrificielle (le failover est testé avec un
+  agent simulé ; aucun 429/5xx réel n'a été provoqué).
+- **Worktree** uniquement via `executionBackend:'taskboard'` ; le backend
+  `board` refuse la carte (pas d'exécution isolée native).
+- **Forge réelle** (GitHub/GitLab) : contrat + pagination + rate-limit testés
+  sur fausse API, aucun appel live ni webhook.
+- Retour au provider principal, fencing enforced, réconciliation des effets
+  externes.
 - Charge 30 agents / 200 sessions, Linux, désinstallation réversible.
+
+## Deuxième lot (même branche)
+
+| Commit | Contenu |
+|---|---|
+| `0880d03` | P0 état/orchestration/durabilité/Task Board contract |
+| `b9775c8` | preuve live SSE (TEST-REPORT §10) |
+| `cee333f` | consignes de reprise/rollback/essai |
+| *(ce lot)* | résilience (restart, watchdog, ticks concurrents, lock), contrat forge sur fausse API, backend `taskboard` (exécution native/worktree) |
+
+Tests : **133/133**. Voir TEST-REPORT §11.

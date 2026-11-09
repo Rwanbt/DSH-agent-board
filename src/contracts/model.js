@@ -84,6 +84,10 @@ export const DEFAULT_POLICY = Object.freeze({
   // A card may ask for a permission level; the operator's mandate decides which
   // levels this board may grant. `danger-full-access` is never inherited by default.
   allowedPermissions: ['read-only', 'workspace-write'],
+  // 'board' = the board creates the session (model-level failover possible, but
+  // the Task Board gets no execution record). 'taskboard' = the Task Board's own
+  // executor creates the session/execution/worktree (no model-level failover).
+  executionBackend: 'board',
   allowCloudFallback: false,
   autoResumeOnRestart: false,
   serializeSameWorkspace: false,
@@ -92,6 +96,7 @@ export const DEFAULT_POLICY = Object.freeze({
 })
 
 const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
+const EXECUTION_BACKENDS = Object.freeze(['board', 'taskboard'])
 
 export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
   const mode = isMode(input.mode) ? input.mode : fallback.mode
@@ -108,6 +113,9 @@ export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     allowedProviders: uniqueStrings(input.allowedProviders ?? fallback.allowedProviders),
     allowedPermissions: uniqueStrings(input.allowedPermissions ?? fallback.allowedPermissions)
       .filter(level => PERMISSION_LEVELS.includes(level)),
+    executionBackend: EXECUTION_BACKENDS.includes(input.executionBackend)
+      ? input.executionBackend
+      : (fallback.executionBackend ?? 'board'),
     allowCloudFallback: input.allowCloudFallback === true,
     autoResumeOnRestart: input.autoResumeOnRestart === true,
     serializeSameWorkspace: input.serializeSameWorkspace === true,
