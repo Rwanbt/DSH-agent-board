@@ -226,3 +226,19 @@ test('a heartbeat after release refuses instead of recreating the lock', async (
   assert.equal(existsSync(join(dir, 'instance.lock')), false, 'a released lock must stay released')
   await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 })
+
+test('a fresh takeover gate blocks the takeover; a stale gate is broken', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dab-lock-gate-'))
+  const stale = { ownerId: 'dead', pid: 999999, acquiredAt: 1, expiresAt: Date.now() - 60_000 }
+  await writeFile(join(dir, 'instance.lock'), JSON.stringify(stale), 'utf8')
+  await writeFile(join(dir, 'instance.lock.takeover'), '1', 'utf8')
+  const blocked = await acquireInstanceLock({ dir, pid: 1, ownerId: 'agent-board:1:a', ttlMs: 30_000 })
+  assert.equal(blocked.ok, false, 'another racer holds the takeover gate')
+  // Age the gate past its TTL: the next racer may break it.
+  const old = new Date(Date.now() - 60_000)
+  await utimes(join(dir, 'instance.lock.takeover'), old, old)
+  const taken = await acquireInstanceLock({ dir, pid: 1, ownerId: 'agent-board:1:a', ttlMs: 30_000 })
+  assert.equal(taken.ok, true)
+  assert.equal(existsSync(join(dir, 'instance.lock.takeover')), false, 'the gate is removed after use')
+  await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+})

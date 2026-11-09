@@ -264,3 +264,17 @@ test('compactState bounds proposals, assignments and acks without dropping live 
   assert.equal(Object.keys(state.acks).length, 5)
   assert.deepEqual(Object.keys(state.acks).sort(), ['s5', 's6', 's7', 's8', 's9'])
 })
+
+test('writeSync closes the store so a queued async write cannot overwrite the final document', async () => {
+  const dir = await tempDir()
+  const store = new StateStore({ dir })
+  const defaults = { mode: 'off', previews: {}, turnEnd: {}, audit: [] }
+  await store.init(defaults)
+  const queued = store.write({ ...defaults, mode: 'autonomous' })
+  const wrote = store.writeSync({ ...defaults, mode: 'off' })
+  assert.equal(wrote, true)
+  await assert.rejects(() => queued, /closed/, 'the queued write must abort once the store is closed')
+  const final = JSON.parse(await readFile(join(dir, 'state.json'), 'utf8'))
+  assert.equal(final.mode, 'off', 'the shutdown document must win')
+  await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+})

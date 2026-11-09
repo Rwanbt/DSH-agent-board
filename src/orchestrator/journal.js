@@ -95,6 +95,9 @@ export class StateStore {
     this.sleep = sleep
     this.renameFile = renameFile
     this.queue = Promise.resolve()
+    // Shutdown flag: writeSync() sets it so a queued async write cannot rename
+    // its older snapshot over the final document.
+    this.closed = false
     this.ready = null
     this.lastFailure = null
     /** Temps this process is currently writing: init() must never delete them. */
@@ -167,10 +170,17 @@ export class StateStore {
 
   /** One atomic write. On failure the tmp is removed, the caller sees the error. */
   async #persist(payload) {
+    if (this.closed) throw new Error('agent-board: state store is closed')
     const tmp = `${this.statePath}.tmp-${process.pid}-${writeCounter++}`
     this.tmpInFlight.add(tmp)
     try {
       await writeFile(tmp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+      // Shutdown may have happened while this write was queued: never let it
+      // rename an older snapshot over the final synchronous document.
+      if (this.closed) {
+        try { await unlink(tmp) } catch { /* best effort */ }
+        throw new Error('agent-board: state store closed during write')
+      }
       await renameWithRetry(tmp, this.statePath, {
         renameFile: this.renameFile,
         sleep: this.sleep,
@@ -215,6 +225,9 @@ export class StateStore {
    * @returns {boolean} true when the rename landed
    */
   writeSync(state) {
+    // Close the store first: a queued async write must not rename its older
+    // snapshot over this final document (it checks `closed` before renaming).
+    this.closed = true
     const payload = { ...state, schemaVersion: 1, savedAt: this.now() }
     const tmp = `${this.statePath}.tmp-${process.pid}-exit`
     try {
