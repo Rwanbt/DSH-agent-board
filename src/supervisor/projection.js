@@ -67,7 +67,7 @@ export function catalogChildrenOf(projectionsBySession, parentId) {
       if (id === null) return null
       return {
         id,
-        title: typeof entry.title === 'string' ? entry.title : undefined,
+        title: typeof entry.title === 'string' ? entry.title : (typeof entry.label === 'string' ? entry.label : undefined),
         mode: typeof entry.mode === 'string' ? entry.mode : undefined,
         status: typeof entry.status === 'string' ? entry.status : undefined,
       }
@@ -92,28 +92,58 @@ export function isSubagentRow(row) {
  */
 export function classifyStatus({ row, live, turnEnd, ack }) {
   if (row === undefined && live === undefined) return STATUS.UNKNOWN
-  const pendingKind = live?.pendingInteraction?.kind ?? live?.pendingInteraction
-  if (typeof pendingKind === 'string' && pendingKind !== '') return STATUS.WAITING_USER
+  if (expectedActionOf(live, row) !== null) return STATUS.WAITING_USER
   if (row?.running === true || live?.running === true) return STATUS.RUNNING
   const end = turnEnd !== null && typeof turnEnd === 'object' ? turnEnd : null
-  if (end !== null && ERROR_TURN_KINDS.includes(end.kind)) return STATUS.FAILED
+  if (end !== null && ERROR_TURN_KINDS.includes(end.kind) && end.recoveredAt === undefined) return STATUS.FAILED
   if (end !== null && Number.isFinite(Number(end.at))) {
     const seenAt = Number(ack?.seenAt)
     if (Number.isFinite(seenAt) && seenAt >= Number(end.at)) return STATUS.FINISHED_READ
     return STATUS.FINISHED_UNREAD
   }
   if (live?.completionUnread === true) return STATUS.FINISHED_UNREAD
+  // Native durable fact (session projection): the last turn ended in error.
+  const nativeEnd = nativeTurnEndOf(row)
+  if (nativeEnd !== null && ERROR_TURN_KINDS.includes(nativeEnd.reason)) return STATUS.FAILED
+  // A turn that completed before the board observed it is history, not "new".
+  if (nativeEnd !== null) return STATUS.FINISHED_READ
   if (row === undefined) return STATUS.UNKNOWN
   return STATUS.IDLE
 }
 
-/** The action the user is expected to take right now, if any. */
-export function expectedActionOf(live) {
+/** `projectionValues.mobilePushLifecycle.lastTurnEnd` = { turn, reason } when present. */
+export function nativeTurnEndOf(row) {
+  const end = row?.projectionValues?.mobilePushLifecycle?.lastTurnEnd
+  if (end === null || typeof end !== 'object') return null
+  const reason = typeof end.reason === 'string' ? end.reason : (typeof end.reason?.kind === 'string' ? end.reason.kind : null)
+  return reason === null ? null : { turn: Number(end.turn) || null, reason }
+}
+
+/**
+ * The action the user is expected to take right now, if any. Sources, in
+ * order: the unified status `pendingInteraction`, then the session's own
+ * projection (an active user question, a plan awaiting review).
+ */
+export function expectedActionOf(live, row) {
   const pending = live?.pendingInteraction
-  if (pending === null || pending === undefined) return null
-  const kind = typeof pending === 'string' ? pending : pending.kind
-  if (typeof kind !== 'string' || kind === '') return null
-  return PENDING_ACTION[kind] ?? 'unknown'
+  if (pending !== null && pending !== undefined) {
+    const kind = typeof pending === 'string' ? pending : pending.kind
+    if (typeof kind === 'string' && kind !== '') return PENDING_ACTION[kind] ?? 'unknown'
+  }
+  const values = row?.projectionValues
+  if (Array.isArray(values?.userQuestions?.active) && values.userQuestions.active.length > 0) return 'question'
+  if (values?.plan?.pending === true) return 'plan-review'
+  return null
+}
+
+/** Short human text of what is missing (first active question), if known. */
+export function waitingDetailOf(row) {
+  const question = row?.projectionValues?.userQuestions?.active?.[0]
+  const candidates = [question?.question, question?.questions?.[0]?.question, question?.title, question?.header]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim() !== '') return truncate(candidate.trim(), 160)
+  }
+  return null
 }
 
 export function modelOf(row, assignment) {
@@ -121,6 +151,8 @@ export function modelOf(row, assignment) {
     assignment?.model,
     row?.model,
     row?.modelSelection,
+    row?.projectionValues?.modelSelection?.lastUsed,
+    row?.projectionValues?.modelSelection?.next,
     row?.header?.model,
     row?.llm,
   ]
@@ -140,32 +172,104 @@ export function modelOf(row, assignment) {
   return { provider: '—', model: '—', reasoningEffort: null, source: 'unknown' }
 }
 
-function previewOf(hostState, sessionId, assignment) {
+/**
+ * The final answer excerpt. Only an answer that closed a turn is "final":
+ *   1. host-captured last assistant message when the session is not running
+ *      and a turn end was recorded at/after it;
+ *   2. the native turn outline `response` of the latest answered turn;
+ *   3. a board checkpoint text.
+ * A mid-turn assistant segment (between tool calls) is never presented as the
+ * final answer; it is exposed separately as `interim` only for activity.
+ */
+export function previewOf(hostState, sessionId, assignment, row, running = false) {
   const preview = hostState?.previews?.[sessionId]
-  if (preview !== undefined && typeof preview.text === 'string' && preview.text !== '') {
-    return { text: truncate(preview.text, 600), at: Number(preview.at) || null }
+  const end = hostState?.turnEnd?.[sessionId]
+  const hostText = preview !== undefined && typeof preview.text === 'string' ? preview.text.trim() : ''
+  if (hostText !== '' && !running && end !== undefined && Number(end.at) >= Number(preview.at)) {
+    return { text: truncate(hostText, 600), at: Number(preview.at) || null, final: true, source: 'host' }
   }
-  const checkpointText = assignment?.checkpoint?.lastText
-  if (typeof checkpointText === 'string' && checkpointText !== '') {
-    return { text: truncate(checkpointText, 600), at: Number(assignment?.checkpoint?.at) || null }
-  }
-  return { text: '', at: null }
-}
-
-function projectKeyOf(row, workspaces) {
-  const sessionId = String(row?.id ?? '')
-  for (const workspace of workspaces?.items ?? []) {
-    if (Array.isArray(workspace.sessionIds) && workspace.sessionIds.includes(sessionId)) {
-      return { id: `ws:${workspace.id}`, title: workspace.title ?? workspace.path ?? 'Project' }
+  const outline = row?.projectionValues?.turnOutline
+  if (Array.isArray(outline)) {
+    for (let index = outline.length - 1; index >= 0; index -= 1) {
+      const entry = outline[index]
+      const isOpenTurn = running && index === outline.length - 1
+      if (!isOpenTurn && typeof entry?.response === 'string' && entry.response.trim() !== '') {
+        return { text: truncate(entry.response.trim(), 600), at: null, final: true, source: 'outline', turn: Number(entry.turn) || null }
+      }
     }
   }
-  const cwd = typeof row?.cwd === 'string' && row.cwd !== '' ? row.cwd : ''
-  if (cwd !== '') {
-    const parts = cwd.split(/[\\/]/).filter(Boolean)
-    const name = parts.at(-1) ?? cwd
-    return { id: `dir:${cwd}`, title: name }
+  const checkpointText = assignment?.checkpoint?.lastText
+  if (!running && typeof checkpointText === 'string' && checkpointText !== '') {
+    return { text: truncate(checkpointText, 600), at: Number(assignment?.checkpoint?.at) || null, final: true, source: 'checkpoint' }
   }
-  return { id: 'unassigned', title: 'Unassigned' }
+  return { text: '', at: null, final: false, source: null }
+}
+
+/** Last non-empty line of an answer, without markdown decoration. */
+export function lastUsefulLine(text) {
+  if (typeof text !== 'string') return ''
+  const lines = text.split(/\r?\n/).map(line => line.replace(/^[\s>#*\-|`]+/, '').replace(/[`*|]+$/g, '').trim())
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index] !== '' && !/^-{3,}$/.test(lines[index])) return truncate(lines[index], 220)
+  }
+  return ''
+}
+
+/** Normalize a filesystem path for comparison (case-insensitive drive, `/`). */
+export function normalizePath(value) {
+  if (typeof value !== 'string' || value.trim() === '') return ''
+  let path = value.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+  if (/^[a-zA-Z]:/.test(path)) path = path.toLowerCase()
+  return path
+}
+
+/** Workspace index: session membership and normalized directory. */
+export function indexWorkspaces(workspaces) {
+  const bySession = new Map()
+  const byPath = []
+  for (const workspace of Array.isArray(workspaces?.items) ? workspaces.items : []) {
+    if (workspace === null || typeof workspace !== 'object') continue
+    const id = workspace.workspaceId ?? workspace.id
+    if (typeof id !== 'string' || id === '') continue
+    const ref = { id: `ws:${id}`, workspaceId: id, title: workspace.title || workspace.path || id, path: workspace.path ?? null, source: 'workspace' }
+    for (const sessionId of Array.isArray(workspace.sessionIds) ? workspace.sessionIds : []) {
+      if (!bySession.has(String(sessionId))) bySession.set(String(sessionId), ref)
+    }
+    const path = normalizePath(workspace.path)
+    if (path !== '') byPath.push({ path, ref })
+  }
+  byPath.sort((a, b) => b.path.length - a.path.length)
+  return { bySession, byPath }
+}
+
+export const UNASSIGNED_PROJECT = Object.freeze({ id: 'unassigned', title: 'Non attribué', path: null, source: 'none' })
+
+/**
+ * Resolve a session's project with reliable keys only:
+ *   1. DSH workspace membership (workspace.sessionIds);
+ *   2. normalized working directory equal to (or inside) a workspace path;
+ *   3. otherwise "unassigned". Titles are never used.
+ * Sub-agents inherit their parent's project in buildProjection.
+ */
+export function resolveProject(row, index) {
+  const sessionId = String(row?.id ?? '')
+  const member = index.bySession.get(sessionId)
+  if (member !== undefined) return member
+  const cwd = normalizePath(row?.cwd ?? row?.projectionValues?.workingDirectory)
+  if (cwd !== '') {
+    for (const entry of index.byPath) {
+      if (cwd === entry.path || cwd.startsWith(`${entry.path}/`)) return { ...entry.ref, source: 'cwd' }
+    }
+  }
+  return UNASSIGNED_PROJECT
+}
+
+function titleOf(row, catalogEntry, nodeId) {
+  const label = row?.projectionValues?.subagent?.label ?? catalogEntry?.title
+  if (typeof label === 'string' && label.trim() !== '') return label.trim()
+  if (typeof row?.displayTitle === 'string' && row.displayTitle !== '') return row.displayTitle.replace(/^#+\s*/, '')
+  if (typeof row?.title === 'string' && row.title !== '') return row.title.replace(/^#+\s*/, '')
+  return nodeId.slice(-12)
 }
 
 /**
@@ -213,6 +317,21 @@ export function buildProjection({ list, statusMap, hostState = {}, workspaces = 
     }
   }
 
+  const workspaceIndex = indexWorkspaces(workspaces)
+  // Team member names declared by a parent (role labels for its children).
+  const roleOf = new Map()
+  const catalogEntryOf = new Map()
+  for (const parentId of Object.keys(normalized.projectionsBySession)) {
+    for (const entry of catalogChildrenOf(normalized.projectionsBySession, parentId)) catalogEntryOf.set(entry.id, entry)
+  }
+  for (const id of normalized.ids) {
+    const members = normalized.byId[id]?.projectionValues?.agentTeam?.members
+    if (!Array.isArray(members)) continue
+    for (const member of members) {
+      if (member?.role === 'teammate' && typeof member.id === 'string' && typeof member.name === 'string') roleOf.set(member.id, member.name)
+    }
+  }
+
   const out = []
   for (const node of nodes.values()) {
     const row = node.row
@@ -222,23 +341,32 @@ export function buildProjection({ list, statusMap, hostState = {}, workspaces = 
     const assignment = assignmentsBySession.get(node.id) ?? null
     const status = classifyStatus({ row, live, turnEnd, ack })
     const parentId = row !== undefined ? parentIdOf(row) : null
-    const project = row !== undefined ? projectKeyOf(row, workspaces) : { id: 'unassigned', title: 'Unassigned' }
+    const project = row !== undefined ? resolveProject(row, workspaceIndex) : UNASSIGNED_PROJECT
     const resolvedParent = parentId ?? (catalogParentOf.get(node.id) ?? null)
-    const preview = previewOf(hostState, node.id, assignment)
+    const ownRunning = row?.running === true || live?.running === true
+    const preview = previewOf(hostState, node.id, assignment, row, ownRunning)
+    const stats = row?.projectionValues?.sessionStats
     out.push({
       id: node.id,
       parentId: resolvedParent,
       projectId: project.id,
       projectTitle: project.title,
-      title: typeof row?.displayTitle === 'string' && row.displayTitle !== ''
-        ? row.displayTitle
-        : (typeof row?.title === 'string' && row.title !== '' ? row.title : node.id.slice(-12)),
+      projectSource: project.source,
+      title: titleOf(row, catalogEntryOf.get(node.id), node.id),
+      role: roleOf.get(node.id) ?? null,
       cwd: typeof row?.cwd === 'string' ? row.cwd : null,
       origin: typeof row?.origin === 'string' ? row.origin : (resolvedParent !== null ? 'subagent' : 'main'),
       status,
-      expectedAction: expectedActionOf(live),
+      seen: status === STATUS.FAILED ? (Number(ack?.seenAt) >= Number(turnEnd?.at ?? Infinity) || turnEnd === null) : status !== STATUS.FINISHED_UNREAD,
+      expectedAction: expectedActionOf(live, row),
+      waitingDetail: waitingDetailOf(row),
       model: modelOf(row, assignment),
       preview,
+      activity: stats !== undefined && stats !== null
+        ? { turns: Number(stats.turns) || 0, steps: Number(stats.steps) || 0, toolMs: Number(stats.toolMs) || 0, llmMs: Number(stats.llmMs) || 0 }
+        : null,
+      error: typeof turnEnd?.error === 'string' ? turnEnd.error : null,
+      goal: typeof row?.projectionValues?.goal?.goal?.objective === 'string' ? truncate(row.projectionValues.goal.goal.objective, 240) : null,
       unread: status === STATUS.FINISHED_UNREAD,
       waiting: status === STATUS.WAITING_USER,
       failed: status === STATUS.FAILED,
@@ -254,15 +382,35 @@ export function buildProjection({ list, statusMap, hostState = {}, workspaces = 
     })
   }
 
-  // Link children (two passes so forward references settle).
+  // Link children. A malformed parent chain (self-parent or cycle) is broken at
+  // the node that closes the loop: it becomes a root flagged `parentCycle`.
   const byId = new Map(out.map(node => [node.id, node]))
   for (const node of out) {
-    if (node.parentId !== null && byId.has(node.parentId) && node.parentId !== node.id) {
-      byId.get(node.parentId).children.push(node.id)
+    if (node.parentId === null) continue
+    if (!byId.has(node.parentId)) { node.orphan = true; continue }
+    const seen = new Set([node.id])
+    let cursor = byId.get(node.parentId)
+    let cycle = false
+    while (cursor !== undefined) {
+      if (seen.has(cursor.id)) { cycle = true; break }
+      seen.add(cursor.id)
+      cursor = cursor.parentId !== null && !cursor.parentCycle ? byId.get(cursor.parentId) : undefined
     }
+    if (cycle) { node.parentCycle = true; continue }
   }
+  for (const node of out) {
+    if (node.parentId !== null && !node.orphan && !node.parentCycle) byId.get(node.parentId).children.push(node.id)
+  }
+  const isRoot = node => node.parentId === null || node.orphan === true || node.parentCycle === true
+  // Descendants live in their root's project: one tree is never split.
+  const inherit = (node, project) => {
+    node.projectId = project.projectId
+    node.projectTitle = project.projectTitle
+    for (const childId of node.children) inherit(byId.get(childId), project)
+  }
+  for (const node of out) if (isRoot(node)) inherit(node, { projectId: node.projectId, projectTitle: node.projectTitle })
 
-  const roots = out.filter(node => node.parentId === null || !byId.has(node.parentId))
+  const roots = out.filter(isRoot)
   return { nodes: out, byId, roots, projects: groupProjects(out), counts: summarize(out) }
 }
 

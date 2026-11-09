@@ -1,0 +1,198 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+
+import { buildProjection, resolveProject, indexWorkspaces, lastUsefulLine, normalizePath } from '../src/supervisor/projection.js'
+import { buildBoardView, boardCounts, historyPage, aggregateSubtrees, sortAttention, isAttention, projectOptions, ancestorChain } from '../src/board/view.js'
+import { STATUS } from '../src/contracts/model.js'
+import { NOW, photoScenario, largeScenario } from './fixtures/sessions.js'
+
+const project = input => buildProjection({ ...input, now: NOW })
+
+function flatten(view) {
+  const out = []
+  const walk = entry => { out.push(entry); entry.children.forEach(walk) }
+  for (const p of view.projects) p.trees.forEach(walk)
+  return out
+}
+
+test('photo scenario: default view hides the 39 old sessions and keeps attention items', () => {
+  const projection = project(photoScenario())
+  const view = buildBoardView(projection, { now: NOW })
+  const shown = flatten(view).map(entry => entry.node.id)
+  assert.equal(shown.filter(id => id.startsWith('old-')).length, 0, 'no old session on the home view')
+  for (let index = 0; index < 9; index += 1) assert.ok(shown.includes(`unread-${index}`), `unread-${index} visible`)
+  assert.ok(shown.includes('dw-live'))
+  assert.ok(shown.includes('ravum-goal'))
+  assert.ok(shown.includes('asking'), 'an old waiting session never disappears')
+  assert.ok(shown.includes('failed-new'))
+  assert.ok(view.visibleCount < 40, `home view stays short (${view.visibleCount})`)
+  // Old sessions remain reachable through search and history.
+  const searched = buildBoardView(projection, { now: NOW, query: 'CRON-F' })
+  assert.ok(flatten(searched).some(entry => entry.node.id === 'old-0'))
+  const history = historyPage(projection, { limit: 30 })
+  assert.ok(history.total >= 39)
+  assert.equal(history.items.length, 30)
+  assert.equal(history.hasMore, true)
+})
+
+test('global counters are distinct from visible cards (no fake "39 active")', () => {
+  const projection = project(photoScenario())
+  const counts = boardCounts(projection)
+  assert.equal(counts.unread, 9)
+  assert.equal(counts.waiting, 1)
+  assert.ok(counts.history >= 39)
+  assert.equal(counts.total, projection.nodes.length)
+})
+
+test('project grouping uses workspace membership, then normalized cwd, never the title', () => {
+  const projection = project(photoScenario())
+  assert.equal(projection.byId.get('ravum-goal').projectId, 'ws:w-ravum')
+  // Not a member of the workspace list, resolved by its cwd:
+  assert.equal(projection.byId.get('ravum-parent-done').projectId, 'ws:w-ravum')
+  // Title contains "RAVUM" but lives in default-workspace → default-workspace.
+  const scenario = photoScenario()
+  scenario.list.byId['old-2'].displayTitle = 'GOAL — RAVUM (copy)'
+  assert.equal(project(scenario).byId.get('old-2').projectId, 'ws:w-dw')
+  // Unknown path → unassigned (not default-workspace).
+  assert.equal(projection.byId.get('long').projectId, 'unassigned')
+  const index = indexWorkspaces({ items: [{ workspaceId: 'x', path: 'D:\\App\\Ravum\\', sessionIds: [] }] })
+  assert.equal(resolveProject({ id: 'q', cwd: 'd:/app/ravum/sub/dir' }, index).id, 'ws:x')
+  assert.equal(resolveProject({ id: 'q', cwd: 'D:\\App\\Ravum-flow' }, index).id, 'unassigned', 'prefix must stop at a path separator')
+  assert.equal(normalizePath('D:\\App\\X\\'), 'd:/app/x')
+})
+
+test('filiation depth ≥ 3, sub-agents only under their parent, deduplicated', () => {
+  const projection = project(photoScenario())
+  assert.equal(projection.nodes.filter(node => node.id === 'child-a').length, 1, 'duplicate ids collapse to one node')
+  assert.deepEqual(ancestorChain(projection, 'great-grandchild'), ['ravum-goal', 'child-a', 'grandchild'])
+  const view = buildBoardView(projection, { now: NOW })
+  const ravum = view.projects.find(p => p.id === 'ws:w-ravum')
+  const rootIds = ravum.trees.map(tree => tree.node.id)
+  assert.ok(!rootIds.includes('child-a') && !rootIds.includes('grandchild'), 'descendants never appear as roots')
+  const goal = ravum.trees.find(tree => tree.node.id === 'ravum-goal')
+  const childA = goal.children.find(entry => entry.node.id === 'child-a')
+  assert.ok(childA, 'running child shown under its parent')
+  assert.equal(childA.children[0].node.id, 'grandchild')
+  // Child titles come from the sub-agent label, roles from the team roster.
+  assert.equal(childA.node.title, 'Author conformance cases')
+  assert.equal(childA.node.role, 'feat-syn')
+  // Calm children are hidden and counted on the parent.
+  assert.equal(goal.totalChildren, 7)
+  assert.equal(goal.hiddenChildren, 6)
+  const revealed = buildBoardView(projection, { now: NOW, expanded: new Set(['ravum-goal']) })
+  const goal2 = revealed.projects.find(p => p.id === 'ws:w-ravum').trees.find(tree => tree.node.id === 'ravum-goal')
+  assert.equal(goal2.children.length, 7)
+  const folded = buildBoardView(projection, { now: NOW, collapsed: new Set(['ravum-goal']) })
+  const goal3 = folded.projects.find(p => p.id === 'ws:w-ravum').trees.find(tree => tree.node.id === 'ravum-goal')
+  assert.equal(goal3.children.length, 0)
+  assert.equal(goal3.collapsed, true)
+})
+
+test('several roots per project; finished parent with an active child is a group, not a running card', () => {
+  const projection = project(photoScenario())
+  const view = buildBoardView(projection, { now: NOW })
+  const ravum = view.projects.find(p => p.id === 'ws:w-ravum')
+  assert.ok(ravum.trees.length >= 3, 'multiple root trees coexist in one project')
+  const done = ravum.trees.find(tree => tree.node.id === 'ravum-parent-done')
+  assert.ok(done, 'parent kept visible because its child runs')
+  assert.notEqual(done.node.status, STATUS.RUNNING, 'parent own turn is not shown as running')
+  assert.equal(done.groupActive, true)
+  assert.equal(done.children[0].node.status, STATUS.RUNNING)
+})
+
+test('orphan and cycle become flagged roots; long title and missing workspace are tolerated', () => {
+  const projection = project(photoScenario())
+  const orphan = projection.byId.get('orphan')
+  assert.equal(orphan.orphan, true)
+  assert.ok(projection.roots.includes(orphan))
+  const a = projection.byId.get('cyc-a')
+  const b = projection.byId.get('cyc-b')
+  assert.ok(a.parentCycle === true || b.parentCycle === true, 'cycle broken')
+  assert.equal(projection.roots.filter(node => node.id === 'cyc-a' || node.id === 'cyc-b').length, 1)
+  const view = buildBoardView(projection, { now: NOW })
+  assert.ok(flatten(view).some(entry => entry.node.id === 'long'))
+  assert.equal(projection.byId.get('long').title.length, 400)
+  assert.ok(projectOptions(projection).every(option => option.id !== 'ws:w-gone'), 'empty workspace does not create a group')
+})
+
+test('statuses: running/waiting/unread/failed/read are distinct and not inferred from age', () => {
+  const projection = project(photoScenario())
+  assert.equal(projection.byId.get('dw-live').status, STATUS.RUNNING)
+  assert.equal(projection.byId.get('asking').status, STATUS.WAITING_USER)
+  assert.equal(projection.byId.get('asking').expectedAction, 'question')
+  assert.equal(projection.byId.get('asking').waitingDetail, 'Which branch should I merge into?')
+  assert.equal(projection.byId.get('unread-0').status, STATUS.FINISHED_UNREAD)
+  assert.equal(projection.byId.get('failed-new').status, STATUS.FAILED)
+  assert.equal(projection.byId.get('failed-new').seen, false)
+  // Old completed turn (native lastTurnEnd only) is history, not "new".
+  assert.equal(projection.byId.get('old-5').status, STATUS.FINISHED_READ)
+  assert.equal(isAttention(projection.byId.get('old-5')), false)
+  // An ack turns unread into read and hides it.
+  const scenario = photoScenario()
+  scenario.hostState.acks = { 'unread-0': { seenAt: NOW + 1 }, 'failed-new': { seenAt: NOW + 1 } }
+  const acked = project(scenario)
+  assert.equal(acked.byId.get('unread-0').status, STATUS.FINISHED_READ)
+  assert.equal(acked.byId.get('failed-new').status, STATUS.FAILED)
+  assert.equal(acked.byId.get('failed-new').seen, true)
+  assert.equal(isAttention(acked.byId.get('failed-new')), false)
+})
+
+test('sortAttention: waiting, running, unread, then recency; deterministic', () => {
+  const projection = project(photoScenario())
+  const sorted = [...projection.nodes].sort(sortAttention).map(node => node.status)
+  const firstRunning = sorted.indexOf(STATUS.RUNNING)
+  const firstUnread = sorted.indexOf(STATUS.FINISHED_UNREAD)
+  assert.equal(sorted[0], STATUS.WAITING_USER)
+  assert.ok(firstRunning < firstUnread)
+  const again = [...projection.nodes].reverse().sort(sortAttention).map(node => node.id)
+  assert.deepEqual([...projection.nodes].sort(sortAttention).map(node => node.id), again)
+  const view = buildBoardView(projection, { now: NOW })
+  assert.equal(view.projects.at(-1).id, 'unassigned', 'unassigned group last')
+})
+
+test('recent filter adds last-24h calm sessions; all shows history; archived not in recent', () => {
+  const projection = project(photoScenario())
+  const recent = flatten(buildBoardView(projection, { now: NOW, filter: 'recent' })).map(entry => entry.node.id)
+  assert.ok(recent.includes('old-0'), 'old-0 updated 8h ago is recent')
+  assert.ok(!recent.includes('old-1'), 'archived excluded from recent')
+  assert.ok(!recent.includes('old-30'), '38h ago is not recent')
+  const all = flatten(buildBoardView(projection, { now: NOW, filter: 'all' }))
+  assert.ok(all.some(entry => entry.node.id === 'old-30'), 'all filter shows history roots')
+})
+
+test('final answer: last useful line, markdown stripped', () => {
+  assert.equal(lastUsefulLine('# Report\n\nDone.\n- **All tests pass**\n\n'), 'All tests pass')
+  assert.equal(lastUsefulLine(''), '')
+  const projection = project(photoScenario())
+  const node = projection.byId.get('old-3')
+  assert.equal(node.preview.final, true)
+  assert.equal(lastUsefulLine(node.preview.text), 'All tests pass.')
+  // The open turn of a running session is never taken as the final answer.
+  const scenario = photoScenario()
+  scenario.list.byId['dw-live'].projectionValues.turnOutline = [{ turn: 1, response: 'Old final.' }, { turn: 2, response: 'partial…' }]
+  assert.equal(project(scenario).byId.get('dw-live').preview.text, 'Old final.')
+})
+
+test('performance: 200 history + 30 active roots, projection + view stay fast', () => {
+  const scenario = largeScenario({ history: 200, active: 30 })
+  const started = performance.now()
+  let view
+  for (let round = 0; round < 20; round += 1) {
+    const projection = buildProjection({ ...scenario, now: NOW })
+    view = buildBoardView(projection, { now: NOW, aggregates: aggregateSubtrees(projection) })
+  }
+  const perRound = (performance.now() - started) / 20
+  assert.ok(perRound < 25, `one rebuild took ${perRound.toFixed(2)} ms`)
+  const shown = flatten(view)
+  assert.ok(shown.every(entry => !entry.node.id.startsWith('h-')), 'history stays out of the home view')
+  assert.equal(shown.filter(entry => entry.depth === 0).length, 30)
+})
+
+test('CSS: only the running mark animates and reduced motion disables it', async () => {
+  const css = await readFile(new URL('../src/client/ui/styles.js', import.meta.url), 'utf8')
+  const animated = css.split('\n').filter(line => /animation:\s*dab-/.test(line))
+  assert.equal(animated.length, 1)
+  assert.match(animated[0], /data-status="running"/)
+  assert.match(css, /prefers-reduced-motion: reduce[\s\S]*data-status="running"\]::before \{ animation: none/)
+})

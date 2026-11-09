@@ -23,7 +23,16 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PARTS = [
   'src/contracts/model.js',
   'src/supervisor/projection.js',
+  'src/board/view.js',
+  'src/board/interaction.js',
   'src/client/core.js',
+  'src/client/ui/strings.js',
+  'src/client/ui/styles.js',
+  'src/client/ui/card.js',
+  'src/client/ui/tree.js',
+  'src/client/ui/preview.js',
+  'src/client/ui/history.js',
+  'src/client/ui/toolbar.js',
   'src/client/app.js',
 ]
 

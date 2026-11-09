@@ -105,13 +105,23 @@ test('workspace grouping uses the workspace item session membership', () => {
   assert.equal(projection.projects[0].nodes.length, 3)
 })
 
-test('preview comes from the host-captured last assistant segment', () => {
+test('preview is the host-captured final answer only once the turn ended', () => {
+  const finished = { ...baseList, byId: { ...baseList.byId, p: { ...baseList.byId.p, running: false } } }
   const projection = buildProjection({
-    list: baseList,
+    list: finished,
     statusMap: new Map(),
-    hostState: { previews: { p: { text: 'Implemented the adapter and ran tests.', at: 42 } } },
+    hostState: { previews: { p: { text: 'Implemented the adapter and ran tests.', at: 42 } }, turnEnd: { p: { at: 50, kind: 'completed' } } },
   })
   assert.equal(projection.byId.get('p').preview.text, 'Implemented the adapter and ran tests.')
+  assert.equal(projection.byId.get('p').preview.final, true)
+  // While the turn is still running, a mid-turn segment is NOT a final answer.
+  const running = buildProjection({
+    list: baseList,
+    statusMap: new Map(),
+    hostState: { previews: { p: { text: 'Let me call a tool…', at: 42 } } },
+  })
+  assert.equal(running.byId.get('p').preview.final, false)
+  assert.equal(running.byId.get('p').preview.text, '')
 })
 
 test('classifyStatus is total over the documented vocabulary', () => {

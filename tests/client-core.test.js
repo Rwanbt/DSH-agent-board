@@ -70,7 +70,9 @@ test('store merges native sessions with host state and reacts to native changes'
   assert.equal(snapshot.host.mode, 'supervised')
   assert.equal(snapshot.projection.nodes.length, 2)
   assert.equal(snapshot.projection.byId.get('s2').parentId, 's1')
-  assert.equal(snapshot.projection.byId.get('s1').preview.text, 'Last useful segment')
+  // s1 is still running: its mid-turn segment is not presented as a final answer.
+  assert.equal(snapshot.projection.byId.get('s1').preview.final, false)
+  assert.ok(snapshot.aggregates.get('s1').running)
 
   const before = store.getSnapshot()
   ctx.__bump()
