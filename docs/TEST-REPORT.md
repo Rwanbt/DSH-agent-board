@@ -220,3 +220,18 @@ On the running instance (`~/.dsh/agent-board`), `GET /state` returned
 `mode:"autonomous"`, `acks:{}` and a newer `lastTick`; four leaked
 `state.json.tmp-2096-*` files were present. That divergence is what the
 single-writer lock, the write-queue fix and the tmp cleanup address.
+
+### Live evidence collected for the client half (host process NOT restarted)
+
+The GUI host still runs the previous host build, so host-side changes are not
+live. The client bundle is served from disk and was reloaded in the real page:
+
+| Check | Result |
+|---|---|
+| Boot bundle `…/plugins/??…dsh-agent-board/client.js&rev=ae33…` | 5 525 192 bytes, `new Function` parse OK |
+| Bundle contains the fix | `addEventListener('state'` present, `statusRecovering`, `native_view`, `post('/resume'` present |
+| Real SSE endpoint from the page | `GET /dsh-agent-board/api/v2/events` connected, **1 named `state` frame received, 0 unnamed** — the old `onmessage` path received none, which is the fixed P0 |
+| Page reload | no `dsh-agent-board: import failed`; only the pre-existing `deepseek-account` profile error remains |
+
+This proves the SSE defect and its fix against the live host. It does NOT prove
+the host-side orchestration/durability changes, which need a host restart.
