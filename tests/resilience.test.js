@@ -359,3 +359,39 @@ test('a stale lock from a dead process is taken over instead of blocking the boa
     process.env.DSH_HOME = previousHome
   }
 })
+
+test('a second instance on the same state directory is read-only and cannot mutate', async () => {
+  const { home, previousHome, cleanup } = await withHome(async () => {})
+  process.env.DSH_HOME = home
+  const tasksRef = { tasks: [] }
+  const restoreFetch = installFetch(tasksRef)
+  const primary = makeCtx()
+  const disposePrimary = apply(primary.ctx)
+  let follower = null
+  let disposeFollower = () => {}
+  try {
+    // Wait until the primary owns the lock before starting the follower.
+    const primaryState = await callJson(primary.routeRef.current.handler, 'GET', '/state')
+    assert.equal(primaryState.body.value.instance.primary, true)
+    await callJson(primary.routeRef.current.handler, 'POST', '/mode', { mode: 'supervised' })
+
+    follower = makeCtx()
+    disposeFollower = apply(follower.ctx)
+    const followerState = await callJson(follower.routeRef.current.handler, 'GET', '/state')
+    assert.equal(followerState.body.value.instance.primary, false)
+    assert.ok(followerState.body.value.reconcileNotes.some(note => note.type === 'secondary_instance'))
+
+    const refused = await callJson(follower.routeRef.current.handler, 'POST', '/mode', { mode: 'autonomous' })
+    assert.equal(refused.status, 409)
+    assert.equal(refused.body.error, 'not_primary')
+
+    const after = await callJson(primary.routeRef.current.handler, 'GET', '/state')
+    assert.equal(after.body.value.mode, 'supervised', 'the follower must not mutate the primary state')
+  } finally {
+    disposeFollower()
+    disposePrimary()
+    restoreFetch()
+    await cleanup()
+    process.env.DSH_HOME = previousHome
+  }
+})
