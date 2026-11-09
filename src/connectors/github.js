@@ -55,11 +55,13 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
     } catch (error) {
       throw new AdapterError('github: network error', { code: 'transport', retryable: true, adapterId: 'github', cause: error })
     }
-    const remaining = Number(headerOf(response, 'x-ratelimit-remaining'))
+    const remainingRaw = headerOf(response, 'x-ratelimit-remaining')
+    const remaining = remainingRaw === null || remainingRaw === '' ? null : Number(remainingRaw)
     const resetSeconds = Number(headerOf(response, 'x-ratelimit-reset'))
     if (response.status === 429 || (response.status === 403 && remaining === 0)) {
       // GitHub signals exhaustion with 403 + x-ratelimit-remaining: 0 (and 429
-      // for secondary limits). That is a retryable quota, not a bad credential.
+      // for secondary limits). A 403 WITHOUT that header (SSO, IP allow-list,
+      // stripped proxy) is a credential/permission refusal, not a quota.
       const retryAfterMs = Number.isFinite(resetSeconds) && resetSeconds > 0 ? Math.max(0, resetSeconds * 1000 - Date.now()) : null
       throw new AdapterError('github: rate limit exhausted', {
         code: 'rate_limited', retryable: true, adapterId: 'github', retryAfterMs,

@@ -9,7 +9,8 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -381,12 +382,18 @@ test('a second instance on the same state directory is read-only and cannot muta
     assert.equal(followerState.body.value.instance.primary, false)
     assert.ok(followerState.body.value.reconcileNotes.some(note => note.type === 'secondary_instance'))
 
+    const journalPath = join(home, 'agent-board', 'audit.jsonl')
+    await new Promise(resolve => setTimeout(resolve, 100))
+    const before = existsSync(journalPath) ? (await readFile(journalPath, 'utf8')).split('\n').filter(Boolean).length : 0
     const refused = await callJson(follower.routeRef.current.handler, 'POST', '/mode', { mode: 'autonomous' })
     assert.equal(refused.status, 409)
     assert.equal(refused.body.error, 'not_primary')
+    await new Promise(resolve => setTimeout(resolve, 100))
+    const after = existsSync(journalPath) ? (await readFile(journalPath, 'utf8')).split('\n').filter(Boolean).length : 0
+    assert.equal(after, before, 'a follower must not append to the owner journal')
 
-    const after = await callJson(primary.routeRef.current.handler, 'GET', '/state')
-    assert.equal(after.body.value.mode, 'supervised', 'the follower must not mutate the primary state')
+    const afterState = await callJson(primary.routeRef.current.handler, 'GET', '/state')
+    assert.equal(afterState.body.value.mode, 'supervised', 'the follower must not mutate the primary state')
   } finally {
     disposeFollower()
     disposePrimary()

@@ -147,3 +147,13 @@ test('nextLinkOf parses only the rel=next entry', () => {
   assert.equal(nextLinkOf('<https://x/0>; rel="prev"'), null)
   assert.equal(nextLinkOf(undefined), null)
 })
+
+test('github: a 403 WITHOUT the rate-limit header is a credential refusal, not a quota', async () => {
+  const fetchImpl = fakeFetch(async () => response({ status: 403 }))
+  const adapter = createGithubAdapter({ repository: 'o/r', token: 'secret-token', fetchImpl })
+  await assert.rejects(() => adapter.list(), error => {
+    assert.equal(error.code, 'credentials_rejected')
+    assert.equal(error.retryable, false)
+    return true
+  })
+})

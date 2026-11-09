@@ -25,7 +25,7 @@ import { DEFAULT_POLICY, INTERRUPTED_TURN_KINDS, MODES, STATUS, allowedPermissio
 import { buildProjection, normalizeSessions } from '../supervisor/projection.js'
 import { selectDispatchable, stopPlan, readinessOf, mandateCheck, countRunning } from '../orchestrator/dag.js'
 import {
-  LEASE_STATUS, acquireLease, assignmentKey, ensureAssignment, reconcileAfterRestart,
+  LEASE_STATUS, acquireLease, assignmentKey, createLease, ensureAssignment, reconcileAfterRestart,
 } from '../orchestrator/lease.js'
 import { StateStore, compactState } from '../orchestrator/journal.js'
 import { DEFAULT_LOCK_TTL_MS, acquireInstanceLock, heartbeat, release } from '../orchestrator/lock.js'
@@ -145,7 +145,7 @@ export function apply(ctx, config = {}) {
 
   function broadcast() {
     if (streamClients.size === 0) return
-    const payload = `event: state\ndata: ${JSON.stringify(publicStateOf(state, connectors?.describe() ?? [], { projectionSummary: liveProjection?.counts ?? null, reconcileNotes }))}\n\n`
+    const payload = `event: state\ndata: ${JSON.stringify(publicStateOf(state, connectors?.describe() ?? [], { projectionSummary: liveProjection?.counts ?? null, reconcileNotes, instance: { primary: isPrimary, holder: lockHolder } }))}\n\n`
     for (const res of streamClients) {
       try {
         res.write(payload)
@@ -285,7 +285,8 @@ export function apply(ctx, config = {}) {
           : (typeof reason.kind === 'string' ? reason.kind : 'unknown')
         const error = typeof reason?.error?.message === 'string' ? truncate(reason.error.message, 300) : null
         state.turnEnd[sessionId] = { at: Number(event.time) || Date.now(), kind, error }
-        delete state.turnActivity[sessionId]
+        // Keep the turn activity until the next turn/start: onTurnEnd reads it
+        // (asynchronously) to decide whether output was already emitted.
         saveSoon()
         // Pass the provider facts the runtime exposes, when it exposes them:
         // classifying on the message alone loses the HTTP status and Retry-After.
@@ -507,6 +508,8 @@ export function apply(ctx, config = {}) {
       taskTitle: typeof task.title === 'string' ? truncate(task.title, 200) : null,
       taskDescription: typeof task.description === 'string' ? truncate(task.description, 1200) : null,
       taskPrompt: typeof task.prompt === 'string' ? truncate(task.prompt, 800) : null,
+      taskPermission: typeof task.permission === 'string' ? task.permission : null,
+      taskIsolation: typeof task.isolation === 'string' ? task.isolation : null,
       revision,
       workspaceId: task.workspaceId,
       attempt,
@@ -540,15 +543,25 @@ export function apply(ctx, config = {}) {
         if (typeof adapter?.runTask !== 'function') throw new Error('task board adapter has no run capability')
         const started = await adapter.runTask(task.id)
         if (state.stopEpoch !== epochAtLaunch || isStopped() || state.mode === MODES.OFF) {
-          try { ctx.agents.get(started.sessionId)?.cancel?.({ kind: 'user' }) } catch { /* best effort */ }
+          // Honest abort: only claim `stopped` when the session was cancelled.
+          let cancelled = false
+          let failure = null
+          try {
+            const agent = ctx.agents.get(started.sessionId)
+            if (typeof agent?.cancel !== 'function') throw new Error('agent is not live in this host yet')
+            agent.cancel({ kind: 'user' })
+            cancelled = true
+          } catch (error) {
+            failure = String(error?.message ?? error)
+          }
           assignment.sessionId = started.sessionId
           assignment.executionId = started.executionId
-          assignment.status = LEASE_STATUS.STOPPED
+          assignment.status = cancelled ? LEASE_STATUS.STOPPED : LEASE_STATUS.INTERRUPTED
           assignment.endedAt = Date.now()
-          assignment.error = 'stopped_during_launch'
-          audit({ type: 'launch_cancelled', taskId: task.id, assignmentId: assignment.id, sessionId: started.sessionId, backend })
+          assignment.error = cancelled ? 'stopped_during_launch' : `stop_failed:${failure ?? 'unknown'}`
+          audit({ type: 'launch_cancelled', taskId: task.id, assignmentId: assignment.id, sessionId: started.sessionId, backend, cancelled })
           touch()
-          return { ok: false, reason: 'stopped_during_launch', assignmentId: assignment.id, sessionId: started.sessionId }
+          return { ok: false, reason: cancelled ? 'stopped_during_launch' : 'stop_failed', assignmentId: assignment.id, sessionId: started.sessionId }
         }
         if (assignment.status !== LEASE_STATUS.STARTING) {
           audit({ type: 'launch_settled_early', taskId: task.id, assignmentId: assignment.id, status: assignment.status, backend })
@@ -616,7 +629,19 @@ export function apply(ctx, config = {}) {
     for (const assignment of state.assignments) {
       if (!ACTIVE_STATUSES.includes(assignment.status)) continue
       const expiresAt = Number(assignment.lease?.expiresAt)
-      if (!Number.isFinite(expiresAt) || expiresAt > now) continue
+      if (!Number.isFinite(expiresAt)) {
+        // A recovery record with no lease (old data or a crash between the
+        // handoff draft and its session) must not hold a slot forever.
+        if (assignment.status === LEASE_STATUS.RECOVERING && now - (Number(assignment.startedAt) || now) > state.policy.leaseTtlMs) {
+          assignment.status = LEASE_STATUS.INTERRUPTED
+          assignment.endedAt = now
+          assignment.error = assignment.error ?? 'recovering_without_lease'
+          changed = true
+          audit({ type: 'assignment_interrupted', assignmentId: assignment.id, taskId: assignment.taskId, reason: 'recovering_without_lease' })
+        }
+        continue
+      }
+      if (expiresAt > now) continue
       let live = false
       try {
         live = typeof assignment.sessionId === 'string' && ctx.agents.get(assignment.sessionId) !== undefined
@@ -672,7 +697,55 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  /**
+   * A handoff creates a session outside the normal launch gate. It must obey
+   * the SAME operator mandate as a fresh launch, and it must not continue a
+   * task that the Task Board no longer expects it to run.
+   */
+  async function authorizeHandoff(assignment, nextRoute) {
+    const synthetic = {
+      id: assignment.taskId,
+      workspaceId: assignment.workspaceId,
+      permission: assignment.taskPermission ?? null,
+      isolation: assignment.taskIsolation ?? null,
+      model: assignment.model,
+    }
+    const mandate = mandateCheck(synthetic, state.policy)
+    if (!mandate.ok) return { ok: false, reason: mandate.reason }
+    if (typeof synthetic.permission === 'string' && synthetic.permission !== '' && allowedPermissionOf(state.policy, synthetic.permission) === null) {
+      return { ok: false, reason: `permission_not_allowed:${synthetic.permission}` }
+    }
+    if (synthetic.isolation === 'worktree' && state.policy.executionBackend !== 'taskboard') {
+      return { ok: false, reason: 'worktree_isolation_not_supported' }
+    }
+    if (nextRoute !== null && nextRoute !== undefined) {
+      const allowed = isRouteAllowed(nextRoute, state.policy, assignment.model)
+      if (!allowed.ok) return { ok: false, reason: allowed.reason }
+    }
+    // Fresh ledger truth: a card that was trashed, submitted, moved or claimed by
+    // another executor during the run must not be continued from a stale copy.
+    try {
+      const listed = await connectors.get('dsh-taskboard').list()
+      const task = listed.items.find(item => String(item.id) === String(assignment.taskId))
+      if (task === undefined) return { ok: false, reason: 'task_missing' }
+      if (task.trashedAt !== null && task.trashedAt !== undefined) return { ok: false, reason: 'task_trashed' }
+      if (['done', 'canceled', 'archived', 'in_review'].includes(task.status)) return { ok: false, reason: `task_terminal:${task.status}` }
+      if (typeof task.claimedBy === 'string' && task.claimedBy !== '' && task.claimedBy !== assignment.sessionId) {
+        return { ok: false, reason: 'claimed_by_another_session' }
+      }
+      if (task.activeExecution === true) return { ok: false, reason: 'already_running_in_taskboard' }
+      return { ok: true, reason: 'allowed', task }
+    } catch (error) {
+      // Recovery is more valuable than a hard stop on a transient read failure;
+      // record that the ownership check could not be made.
+      return { ok: true, reason: 'unverified', unverified: String(error?.message ?? error) }
+    }
+  }
+
   async function onTurnEnd(sessionId, kind, error, details = {}) {
+    // A host that lost the lock must not keep driving sessions: the new primary
+    // owns the decisions, and a second handoff would duplicate the work.
+    if (!isPrimary) return
     const assignment = state.assignments.find(entry => entry.sessionId === sessionId && [LEASE_STATUS.STARTING, LEASE_STATUS.RUNNING].includes(entry.status))
     if (assignment === undefined) return
     const cwd = (() => {
@@ -862,20 +935,34 @@ export function apply(ctx, config = {}) {
         touch()
         return
       }
+      const nextRoute = plan.nextRoute
+      const verdict = await authorizeHandoff(assignment, nextRoute)
+      if (!verdict.ok) {
+        assignment.status = LEASE_STATUS.INTERRUPTED
+        assignment.error = truncate(`handoff_suppressed:${verdict.reason}`, 400)
+        audit({ type: 'recovery_suppressed', assignmentId: assignment.id, taskId: assignment.taskId, reason: verdict.reason, source: 'handoff_gate' })
+        touch()
+        return
+      }
+      if (verdict.unverified !== undefined) {
+        audit({ type: 'handoff_unverified', assignmentId: assignment.id, taskId: assignment.taskId, error: truncate(verdict.unverified, 200) })
+      }
       const attempt = (Number(assignment.attempt) || 0) + 1
       const key = assignmentKey({ taskId: assignment.taskId, revision: assignment.revision, attempt })
-      const nextRoute = plan.nextRoute
       const sessionIdNext = `session-agentboard-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`
       const switches = (Number(assignment.switches) || 0) + 1
       const routeHistory = [
         ...assignment.routeHistory,
         { at: Date.now(), from: routeKey(assignment.model), to: routeKey(nextRoute), reason: plan.reason, checkpointId: checkpoint.id, kind: failure.kind },
       ]
+      const recoveringLease = createLease({ owner: 'agent-board', now: Date.now(), ttlMs: state.policy.leaseTtlMs })
       const next = ensureAssignment(state.assignments, {
         taskId: assignment.taskId,
         taskTitle: assignment.taskTitle,
         taskDescription: assignment.taskDescription,
         taskPrompt: assignment.taskPrompt,
+        taskPermission: assignment.taskPermission ?? null,
+        taskIsolation: assignment.taskIsolation ?? null,
         revision: assignment.revision,
         workspaceId: assignment.workspaceId,
         attempt,
@@ -889,14 +976,38 @@ export function apply(ctx, config = {}) {
         routeHistory,
         switches,
         retries: 0,
+        lease: recoveringLease,
+        fencingToken: (Number(assignment.fencingToken) || 0) + 1,
+        reason: plan.reason,
+        recoveringAt: Date.now(),
         startedAt: Date.now(),
       })
       if (next.created) state.assignments.push(next.assignment)
+      const epochAtHandoff = state.stopEpoch
       try {
         const prompt = handoffPrompt(checkpoint, { task, fromRoute: assignment.model, toRoute: nextRoute, reason: plan.reason })
         const created = await createSession({ task, assignment: next.assignment, message: prompt, sessionId: sessionIdNext })
+        // A Stop that landed while the handoff session was being created wins.
+        if (state.stopEpoch !== epochAtHandoff || isStopped() || state.mode === MODES.OFF) {
+          let cancelled = false
+          try {
+            created.handle?.agent?.cancel?.({ kind: 'user' })
+            cancelled = true
+          } catch { /* best effort */ }
+          next.assignment.sessionId = created.sessionId
+          next.assignment.status = cancelled ? LEASE_STATUS.STOPPED : LEASE_STATUS.INTERRUPTED
+          next.assignment.error = cancelled ? 'stopped_during_handoff' : 'stop_race_cancel_failed'
+          next.assignment.endedAt = Date.now()
+          next.assignment.lease = null
+          audit({ type: 'handoff_cancelled', taskId: assignment.taskId, sessionId: created.sessionId, cancelled })
+          touch()
+          return
+        }
         next.assignment.sessionId = created.sessionId
         next.assignment.status = LEASE_STATUS.RUNNING
+        next.assignment.lease = { ...recoveringLease, expiresAt: Date.now() + state.policy.leaseTtlMs }
+        next.assignment.reason = null
+        next.assignment.recoveringAt = null
         audit({ type: 'handoff', taskId: assignment.taskId, from: sessionId, to: created.sessionId, route: routeKey(nextRoute), switches, reason: plan.reason })
       } catch (error) {
         next.assignment.status = LEASE_STATUS.FAILED
@@ -1120,7 +1231,7 @@ export function apply(ctx, config = {}) {
         if (method === 'GET' && route === '/events') {
           void readyPromise.then(() => {
             res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
-            res.write(`event: state\ndata: ${JSON.stringify(publicStateOf(state, connectors.describe(), { reconcileNotes }))}\n\n`)
+            res.write(`event: state\ndata: ${JSON.stringify(publicStateOf(state, connectors.describe(), { reconcileNotes, instance: { primary: isPrimary, holder: lockHolder } }))}\n\n`)
             streamClients.add(res)
             const remove = () => streamClients.delete(res)
             req.on('close', remove)
@@ -1146,7 +1257,8 @@ export function apply(ctx, config = {}) {
               const previous = state.mode
               state.mode = nextMode
               state.policy.mode = nextMode
-              if (nextMode !== MODES.OFF) state.stoppedAt = null
+              // Stop is an operator gate: only POST /resume lifts it. Switching
+              // mode must never silently re-enable delegation.
               // A proposal is an authorization to launch. Leaving it pending in
               // OFF would let an old approval start work in observation mode.
               if (nextMode === MODES.OFF) {
@@ -1292,7 +1404,9 @@ export function apply(ctx, config = {}) {
     }
     streamClients.clear()
     try { unsubscribe?.() } catch { /* already disposed */ }
-    if (isPrimary) void store.write(state).catch(() => {})
+    // Save synchronously BEFORE releasing the lock: a new primary must see the
+    // final document, and this process must not rename over it afterwards.
+    if (isPrimary) store.writeSync(state)
     // Release synchronously so a re-activation in the same tick can take the
     // lock back (the async release would race the next acquire).
     if (instanceLock !== null) {

@@ -145,10 +145,13 @@ test('SSE: the named state event updates host state (not only message)', async (
   const before = store.getHost()
   const notifiedBefore = notified
 
-  created.emit('state', { data: JSON.stringify({ ...hostState, mode: 'autonomous' }) })
+  created.emit('state', { data: JSON.stringify({ ...hostState, mode: 'autonomous', instance: { primary: false, holder: { pid: 1 } } }) })
 
   assert.notEqual(store.getHost(), before, 'the named state frame must replace host state')
   assert.equal(store.getHost().mode, 'autonomous')
+  // Both /state and every SSE frame must carry the instance role: the panel
+  // re-enables commands if a frame drops it (a follower would then 409).
+  assert.equal(store.getHost().instance?.primary, false)
   assert.ok(notified > notifiedBefore, 'subscribers must be notified after a named state frame')
   assert.equal(store.getSnapshot().host.mode, 'autonomous')
 

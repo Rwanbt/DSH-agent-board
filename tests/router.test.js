@@ -64,6 +64,23 @@ test('a deleted or undeployed model switches provider instead of retrying foreve
   assert.equal(plan.nextRoute.provider, 'backup')
 })
 
+test('a bare 404 is a configuration fault, not "the model was deleted"', () => {
+  const failure = classifyFailure({ status: 404, message: 'not found' })
+  assert.equal(failure.kind, FAILURE.CONFIG)
+  assert.equal(failure.retryable, false, 'a wrong base URL must not be retried on the same route')
+  const plan = planRoute({ failure, currentRoute: chain[0], chain, policy: { maxRetries: 2 } })
+  assert.equal(plan.action, 'switch')
+})
+
+test('a policy 403 with a 401-looking request id is still a refusal', () => {
+  // Word-boundary match: "req_401abc" and "1403" are not HTTP 401/403.
+  const refusal = classifyFailure({ status: 403, message: 'blocked by content policy (request req_401abc, trace 1403)' })
+  assert.equal(refusal.kind, FAILURE.POLICY_REFUSAL)
+  assert.equal(refusal.switchable, false)
+  const plan = planRoute({ failure: refusal, currentRoute: chain[0], chain, policy: { maxRetries: 2 } })
+  assert.equal(plan.action, 'stop')
+})
+
 test('a 403 caused by provider auth is switchable; a policy 403 is not', () => {
   const auth = classifyFailure({ status: 403, message: 'unauthorized: invalid api key' })
   assert.equal(auth.kind, FAILURE.AUTH)

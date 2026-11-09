@@ -10,7 +10,7 @@
 
 import { MODES } from '../contracts/model.js'
 
-const ACTIVE_ASSIGNMENT_STATUSES = Object.freeze(['starting', 'running'])
+const ACTIVE_ASSIGNMENT_STATUSES = Object.freeze(['starting', 'running', 'recovering'])
 const URGENCY_WEIGHT = Object.freeze({ urgent: 0, normal: 1, relaxed: 2 })
 
 export function taskStatusOf(task) {
@@ -169,7 +169,14 @@ export function selectDispatchable({ tasks, assignments = [], proposals = [], po
     // available to the operator.
     const prior = (assignments ?? []).filter(assignment => String(assignment.taskId) === String(task.id))
     const lastAttempt = prior[prior.length - 1]
-    if (lastAttempt !== undefined && ['failed', 'interrupted', 'stopped'].includes(lastAttempt.status)) {
+    // A `done` assignment whose card is STILL todo means the session ended
+    // without claiming/moving the task (e.g. a claim version conflict): that is
+    // exactly the unbounded-relaunch class, so it obeys the same retry bound.
+    const ended = lastAttempt !== undefined && (
+      ['failed', 'interrupted', 'stopped'].includes(lastAttempt.status)
+      || (lastAttempt.status === 'done' && taskStatusOf(task) === 'todo')
+    )
+    if (ended) {
       const revision = task.revision ?? task.version ?? task.rev ?? null
       const attemptsForRevision = prior.filter(assignment => String(assignment.revision ?? '') === String(revision ?? '')).length
       const maxAttempts = Number(policy?.maxAttemptsPerRevision) || 4

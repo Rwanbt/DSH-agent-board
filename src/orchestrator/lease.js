@@ -80,6 +80,8 @@ export function ensureAssignment(assignments, draft) {
     taskTitle: typeof draft.taskTitle === 'string' ? draft.taskTitle : null,
     taskDescription: typeof draft.taskDescription === 'string' ? draft.taskDescription : null,
     taskPrompt: typeof draft.taskPrompt === 'string' ? draft.taskPrompt : null,
+    taskPermission: typeof draft.taskPermission === 'string' ? draft.taskPermission : null,
+    taskIsolation: typeof draft.taskIsolation === 'string' ? draft.taskIsolation : null,
     revision: draft.revision ?? null,
     attempt: Number(draft.attempt) || 0,
     workspaceId: String(draft.workspaceId ?? ''),
@@ -91,6 +93,8 @@ export function ensureAssignment(assignments, draft) {
     routeHistory: Array.isArray(draft.routeHistory) ? draft.routeHistory : [],
     switches: Number(draft.switches) || 0,
     retries: Number(draft.retries) || 0,
+    ...(typeof draft.reason === 'string' ? { reason: draft.reason } : {}),
+    ...(Number.isFinite(Number(draft.recoveringAt)) ? { recoveringAt: Number(draft.recoveringAt) } : {}),
     status: draft.status ?? LEASE_STATUS.STARTING,
     lease: draft.lease ?? null,
     fencingToken: Number(draft.fencingToken) || 1,
@@ -110,7 +114,9 @@ export function ensureAssignment(assignments, draft) {
 export function reconcileAfterRestart(assignments, { now, isLive }) {
   const changes = []
   for (const assignment of assignments ?? []) {
-    if (assignment?.status !== LEASE_STATUS.STARTING && assignment?.status !== LEASE_STATUS.RUNNING) continue
+    // `recovering` is a live state too: a host that died mid-handoff must not
+    // leave a recovery record that consumes a concurrency slot forever.
+    if (![LEASE_STATUS.STARTING, LEASE_STATUS.RUNNING, LEASE_STATUS.RECOVERING].includes(assignment?.status)) continue
     if (isLive(assignment) === true) continue
     assignment.status = LEASE_STATUS.INTERRUPTED
     assignment.endedAt = now

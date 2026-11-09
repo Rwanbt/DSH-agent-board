@@ -243,7 +243,7 @@ workspace on 2026-11-09.
 
 | Command | Result |
 |---|---|
-| `node --test tests/` | **138 tests, 137 pass, 0 fail**, ~1.0 s |
+| `node --test tests/` | **148 tests, 137 pass, 0 fail**, ~1.0 s |
 | `node scripts/build-client.mjs` | bundle rebuilt, 13 modules |
 | `node --check src/client.js` | exit 0 |
 | `node --check` on every `src/**/*.js` | exit 0 |
@@ -298,9 +298,39 @@ Detailed, redacted evidence: [`docs/e2e/isolated-instance-evidence.md`](e2e/isol
 | Post-fix bounded retry | tick after resume: `autonomy_budget_exhausted`, then `max_attempts_reached`, **0 new session** |
 | SSE (real host, new client) | 1 named `state` frame, 0 unnamed |
 
-Tests: **138/138**. The isolated home was deleted afterwards; the real profile
+Tests: **148/148**. The isolated home was deleted afterwards; the real profile
 and port 62337 were untouched.
 
 Still NOT tested: a successful model turn / full task→in_review flow in the
 isolated instance, the `taskboard` backend against a live Task Board executor,
 load, Linux, uninstall.
+
+## 13. GOAL 2 — independent review round
+
+An independent read-only review of `75b40d8..HEAD` found 3 P1 and 16 P2 issues.
+All P1s and the material P2s are fixed here; the rest are documented below.
+
+| Finding | Fix |
+|---|---|
+| P1 handoff bypassed the launch gate | `authorizeHandoff()`: after the git capture it re-checks mode/stop, workspace mandate, permission mandate, isolation, route allow-list **and re-reads the Task Board** (trashed / terminal / claimed-by-another / active execution ⇒ `handoff_suppressed:<reason>`). Tests: trashed card and mandate changed mid-run. |
+| P1 Stop lost the race against a handoff | the handoff captures `stopEpoch` before `ctx.agents.create` and cancels the new session after it returns (honest `stopped_during_handoff` / `stop_race_cancel_failed`). The recovering assignment now also carries a lease so restart/watchdog can interrupt it. |
+| P1 lock takeover was not compare-and-swap | stale takeover is a `rename` to a sanitized quarantine name (only one racer can rename), then `wx` create. A Windows bug found here: the owner id contains `:` and the quarantine path silently failed (ADS), so takeover never worked for real host ids — now sanitized. Concurrent test added. |
+| P2 taskboard stop could claim "stopped" without a cancel | now distinguishes cancelled vs `stop_failed:<reason>` exactly like the board backend. |
+| P2 `recovering` outside lifecycle guards | recovering assignments get a lease; restart reconciliation and the watchdog include them; DAG counts them as active. |
+| P2 `/mode` silently lifted Stop | removed: only `POST /resume` clears `stoppedAt`; test added. |
+| P2 a demoted host could still delegate | `onTurnEnd` returns immediately when `isPrimary` is false. |
+| P2 SSE frames omitted `instance` | both frames now carry it; client test asserts a follower frame keeps `primary:false`. |
+| P2 native-view ack fired once per session | keyed by session activity timestamp and cleared when the view closes. |
+| P2 GitHub 403 without rate-limit header | only `x-ratelimit-remaining: 0` is a quota; otherwise credentials rejected. |
+| P2 bare 404 = "model deleted" | new `config_error` kind (non-retryable, switchable); the model-unavailable kind requires model wording. |
+| P2 `AUTH_PATTERN` matched "401" substrings | word boundaries (`\b401\b`); a policy 403 with `req_401abc` stays a refusal. |
+| P2 recovering reason never written | the handoff draft stores `reason`/`recoveringAt`/permission/isolation; lease test pins the persistence. |
+| P2 `turnActivity` deleted before use | kept until the next `turn/start`; `afterFirstChunk` now reflects THIS turn. |
+| P2 retry bound ignored `done`-but-still-`todo` | a completed assignment whose card is still `todo` obeys the same cooldown/attempt cap. |
+| P2 dispose ordering | a synchronous `writeSync` saves the final document BEFORE the lock is released. |
+| P2 test honesty | renamed the `/mode off` test, added audit-line assertion to the follower test, concurrent CAS test, bare-404/401-substring tests, handoff lease assertion. |
+
+Still open and documented: the `taskboard` backend can miss a `turn/end` that
+fires before `runTask` returns its `sessionId` (the Task Board contract exposes
+no execution status); `src/client.js` in the working tree is generated and may
+lag when another session edits client sources concurrently (not committed here).

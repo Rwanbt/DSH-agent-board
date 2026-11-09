@@ -27,6 +27,7 @@ export const FAILURE = Object.freeze({
   AUTHZ: 'authz',
   CONTEXT_OVERFLOW: 'context_overflow',
   MODEL_UNAVAILABLE: 'model_unavailable',
+  CONFIG: 'config_error',
   PARTIAL_STREAM: 'partial_stream',
   POLICY_REFUSAL: 'policy_refusal',
   NOT_MODEL: 'not_model',
@@ -40,7 +41,7 @@ const SAFETY_PATTERN = /(content policy|safety|policy refusal|moderation|refus(?
 const NOT_MODEL_PATTERN = /(assertion|test suite failed|failing test|tests? failed|build failed|type ?error|typescript|syntaxerror|eslint|ci (?:failed|red)|compile error)/i
 const QUOTA_PATTERN = /(quota|insufficient[ _]?(?:balance|credit|funds)|billing|out of credits|usage limit|plan limit)/i
 const CONTEXT_PATTERN = /(context (?:length|window)|maximum context|too many tokens|prompt is too long|context_length_exceeded)/i
-const AUTH_PATTERN = /(invalid[ _]?api[ _]?key|unauthori[sz]ed|token (?:expired|invalid)|authentication failed|401)/i
+const AUTH_PATTERN = /(invalid[ _]?api[ _]?key|unauthori[sz]ed|token (?:expired|invalid)|authentication failed|\b401\b)/i
 const OVERLOAD_PATTERN = /(overloaded|service unavailable|temporarily unavailable|529)/i
 const RATE_LIMIT_PATTERN = /(rate[ _-]?limit|too many requests|throttl|429)/i
 const MISSING_CREDENTIALS_PATTERN = /(no api[ _-]?key|missing api[ _-]?key|api[ _-]?key (?:is )?(?:missing|not (?:set|configured|found))|missing credentials?|credentials? (?:are )?(?:missing|not (?:set|configured|available))|no credential)/i
@@ -107,8 +108,14 @@ export function classifyFailure(input = {}) {
   }
   // A model that no longer exists (or is not deployed for this account) is a
   // route problem: retry on the same model can never succeed.
-  if (MODEL_UNAVAILABLE_PATTERN.test(text) || status === 404) {
+  if (MODEL_UNAVAILABLE_PATTERN.test(text)) {
     return { ...base, kind: FAILURE.MODEL_UNAVAILABLE, retryable: false, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }
+  }
+  // A bare 404 is a configuration/route fault (wrong base URL, proxy page, wrong
+  // endpoint), NOT proof that the model was deleted: do not claim that. It is
+  // still switchable because another route may be configured correctly.
+  if (status === 404) {
+    return { ...base, kind: FAILURE.CONFIG, retryable: false, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }
   }
   if (status === 408 || status === 504 || TIMEOUT_CODES.has(code) || /timeout|timed out/i.test(message)) {
     return { ...base, kind: FAILURE.TIMEOUT, retryable: true, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }

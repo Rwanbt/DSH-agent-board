@@ -116,6 +116,7 @@ export async function acquireInstanceLock({
   ttlMs = DEFAULT_LOCK_TTL_MS,
   ownerId,
   isAlive = isPidAlive,
+  renameFile = rename,
 } = {}) {
   if (typeof dir !== 'string' || dir === '') {
     throw new Error('agent-board: acquireInstanceLock needs a directory')
@@ -124,21 +125,34 @@ export async function acquireInstanceLock({
   const path = join(dir, LOCK_FILENAME)
   const owner = typeof ownerId === 'string' && ownerId !== '' ? ownerId : `${pid}-${randomUUID()}`
   let stale = false
-  // Bounded creation loop: `wx` makes creation atomic, so two processes racing
-  // for an absent lock cannot both win; the loser re-reads the winner.
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  // Bounded loop. Creation is atomic (`wx`), and a STALE takeover is a
+  // compare-and-swap via `rename`: only one racer can rename the existing file
+  // away, so two hosts can never both believe they won. (The previous
+  // unlink+create sequence let B delete A's fresh lock and both become primary.)
+  for (let attempt = 0; attempt < 5; attempt += 1) {
     const current = await readLockFile(path)
     if (current.present) {
       if (!(await lockIsStale(path, current, Number(now()), ttlMs, isAlive))) {
         return { ok: false, holder: current.corrupt ? null : current.record }
       }
-      stale = true
+      // Windows forbids ':' in a file name: the owner id is "name:pid:uuid", so
+      // sanitize it before using it in the quarantine path. (A colon made the
+      // rename silently target an alternate data stream and the takeover loop
+      // never freed the lock.)
+      const safeOwner = String(owner).replace(/[^a-zA-Z0-9_-]/g, '_')
+      const quarantine = `${path}.stale-${safeOwner}-${attempt}`
       try {
-        await unlink(path)
+        await renameFile(path, quarantine)
+        stale = true
       } catch (error) {
-        // Someone else may be replacing it right now; the `wx` below decides.
+        // ENOENT: another racer already took it over; loop re-reads the winner.
+        // Any other error: retry the read/decision rather than forcing a write.
         if (error?.code !== 'ENOENT') continue
       }
+      // Best effort: do not let quarantine files accumulate.
+      try {
+        await unlink(quarantine)
+      } catch { /* already gone */ }
     }
     const acquiredAt = Number(now())
     const lock = {
@@ -148,6 +162,7 @@ export async function acquireInstanceLock({
       acquiredAt,
       expiresAt: acquiredAt + Number(ttlMs),
       ttlMs: Number(ttlMs),
+      released: false,
     }
     try {
       await writeFile(path, `${JSON.stringify(publicRecord(lock))}\n`, {
@@ -176,6 +191,13 @@ export async function heartbeat(lock, { now = Date.now } = {}) {
   if (lock === null || typeof lock !== 'object' || typeof lock.path !== 'string') {
     throw new Error('agent-board: heartbeat needs a lock returned by acquireInstanceLock')
   }
+  // A heartbeat that was in flight across release/re-acquire must never recreate
+  // or overwrite the file: the old owner is gone once `release` ran.
+  if (lock.released === true) {
+    const released = new Error('agent-board: instance lock already released')
+    released.code = 'ELOCKLOST'
+    throw released
+  }
   const current = await readLockFile(lock.path)
   if (current.present) {
     if (current.corrupt) {
@@ -192,6 +214,14 @@ export async function heartbeat(lock, { now = Date.now } = {}) {
   const ttlMs = Number(lock.ttlMs ?? DEFAULT_LOCK_TTL_MS)
   const updated = { ...lock, expiresAt: Number(now()) + ttlMs, ttlMs }
   await writeLockAtomically(updated)
+  // Verify the write landed under our owner (a concurrent takeover can rename
+  // between the read and the rename; detection is the only portable option).
+  const after = await readLockFile(lock.path)
+  if (!after.present || after.corrupt || String(after.record?.ownerId) !== String(lock.ownerId)) {
+    const lost = new Error('agent-board: instance lock was taken over during heartbeat')
+    lost.code = 'ELOCKLOST'
+    throw lost
+  }
   lock.expiresAt = updated.expiresAt
   return lock
 }
@@ -199,6 +229,8 @@ export async function heartbeat(lock, { now = Date.now } = {}) {
 /** Delete the lock file only when it is still ours. Never throws on ENOENT. */
 export async function release(lock) {
   if (lock === null || typeof lock !== 'object' || typeof lock.path !== 'string') return false
+  // Mark first: an in-flight heartbeat must abort instead of recreating the lock.
+  lock.released = true
   const current = await readLockFile(lock.path)
   if (!current.present || current.corrupt) return false
   if (String(current.record.ownerId) !== String(lock.ownerId)) return false

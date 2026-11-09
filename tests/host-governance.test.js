@@ -217,7 +217,7 @@ test('a stop that lands during a launch wins the race: the new session is cancel
   }, { createDelayMs: 120 })
 })
 
-test('an operator stop suppresses failover recovery: no handoff session is created', async () => {
+test('leaving autonomous mode suppresses failover recovery: no handoff session is created', async () => {
   await withBoard([structuredClone(TASK)], async ({ routeRef, created, listeners }) => {
     const handler = () => routeRef.current.handler
     await callJson(handler(), 'POST', '/policy', {
@@ -315,5 +315,70 @@ test('the SSE stream uses the named `state` event the client subscribes to', asy
     assert.ok(await waitFor(() => res.body !== ''))
     assert.match(res.body, /^event: state\ndata: \{/)
     res.destroy?.()
+  })
+})
+
+test('switching mode does not lift an operator Stop: only /resume does', async () => {
+  await withBoard([structuredClone(TASK)], async ({ routeRef, created }) => {
+    const handler = () => routeRef.current.handler
+    await callJson(handler(), 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(handler(), 'POST', '/tick', {})
+    assert.equal(created.length, 1)
+    await callJson(handler(), 'POST', '/stop', {})
+    // Clicking another mode is not consent to resume.
+    const mode = await callJson(handler(), 'POST', '/mode', { mode: 'supervised' })
+    assert.equal(mode.status, 200)
+    assert.notEqual(mode.body.value.stoppedAt, null, 'the stop gate must survive a mode change')
+    const dispatch = await callJson(handler(), 'POST', '/dispatch', { taskId: TASK.id })
+    assert.equal(dispatch.status, 409)
+    assert.equal(dispatch.body.reason, 'stopped_by_operator')
+    const resumed = await callJson(handler(), 'POST', '/resume', {})
+    assert.equal(resumed.status, 200)
+  })
+})
+
+test('a handoff is suppressed when the card was trashed during the run', async () => {
+  await withBoard([structuredClone(TASK)], async ({ routeRef, created, listeners, tasksRef }) => {
+    const handler = () => routeRef.current.handler
+    await callJson(handler(), 'POST', '/policy', {
+      policy: { routeChain: [{ provider: 'primary', model: 'big' }, { provider: 'backup', model: 'medium' }], maxSwitches: 2 },
+    })
+    await callJson(handler(), 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(handler(), 'POST', '/tick', {})
+    assert.equal(created.length, 1)
+    const sessionId = created[0].sessionId
+    // The card is trashed while the session works.
+    tasksRef.tasks[0] = { ...tasksRef.tasks[0], trashedAt: Date.now(), status: 'todo' }
+    const listener = listeners.get('session/event')
+    listener({ id: sessionId }, { type: 'assistant/message', time: Date.now(), data: { message: { content: [{ type: 'text', text: 'partial' }] } } })
+    listener({ id: sessionId }, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'error', error: { message: '503 service unavailable' } } } })
+    await new Promise(resolve => setTimeout(resolve, 80))
+    assert.equal(created.length, 1, 'a trashed card must not be continued in a new session')
+    const state = await callJson(handler(), 'GET', '/state')
+    const assignment = state.body.value.assignments[0]
+    assert.equal(assignment.status, 'interrupted')
+    assert.match(assignment.error, /handoff_suppressed:task_trashed/)
+    assert.ok(state.body.value.audit.some(entry => entry.type === 'recovery_suppressed' && entry.source === 'handoff_gate'))
+  })
+})
+
+test('a handoff obeys the workspace mandate enforced after the launch', async () => {
+  await withBoard([structuredClone(TASK)], async ({ routeRef, created, listeners }) => {
+    const handler = () => routeRef.current.handler
+    await callJson(handler(), 'POST', '/policy', {
+      policy: { routeChain: [{ provider: 'primary', model: 'big' }, { provider: 'backup', model: 'medium' }], maxSwitches: 2 },
+    })
+    await callJson(handler(), 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(handler(), 'POST', '/tick', {})
+    const sessionId = created[0].sessionId
+    // The operator removes the workspace from the mandate while the run is active.
+    await callJson(handler(), 'POST', '/policy', { policy: { allowedWorkspaces: ['w2'] } })
+    const listener = listeners.get('session/event')
+    listener({ id: sessionId }, { type: 'assistant/message', time: Date.now(), data: { message: { content: [{ type: 'text', text: 'partial' }] } } })
+    listener({ id: sessionId }, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'error', error: { message: '503 service unavailable' } } } })
+    await new Promise(resolve => setTimeout(resolve, 80))
+    assert.equal(created.length, 1, 'the handoff must not bypass the workspace mandate')
+    const state = await callJson(handler(), 'GET', '/state')
+    assert.match(state.body.value.assignments[0].error, /handoff_suppressed:workspace_not_in_mandate/)
   })
 })
