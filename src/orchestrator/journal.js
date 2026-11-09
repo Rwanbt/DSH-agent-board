@@ -239,7 +239,7 @@ export function turnEndProtected(turnEnd, acks, id) {
 const TURN_END_CEILING_FACTOR = 4
 
 /** Keep the in-memory document bounded (previews/audit are caches, not archives). */
-export function compactState(state, { maxPreviews = 200, maxAudit = 200, maxTurnEnds = 400 } = {}) {
+export function compactState(state, { maxPreviews = 200, maxAudit = 200, maxTurnEnds = 400, maxProposals = 200, maxAssignments = 200, maxAcks = 1000 } = {}) {
   const previews = state.previews ?? {}
   const previewKeys = Object.keys(previews)
   if (previewKeys.length > maxPreviews) {
@@ -272,6 +272,27 @@ export function compactState(state, { maxPreviews = 200, maxAudit = 200, maxTurn
   }
   if (Array.isArray(state.audit) && state.audit.length > maxAudit) {
     state.audit = state.audit.slice(-maxAudit)
+  }
+  // Resolved proposals and ended assignments are history, not state: keep the
+  // pending/active ones unconditionally and bound the rest (D16).
+  if (Array.isArray(state.proposals) && state.proposals.length > maxProposals) {
+    const pending = state.proposals.filter(proposal => proposal?.status === 'pending')
+    const resolved = state.proposals.filter(proposal => proposal?.status !== 'pending')
+    state.proposals = [...resolved.slice(-Math.max(0, maxProposals - pending.length)), ...pending]
+  }
+  if (Array.isArray(state.assignments) && state.assignments.length > maxAssignments) {
+    const active = state.assignments.filter(assignment => ['starting', 'running', 'recovering'].includes(assignment?.status))
+    const ended = state.assignments.filter(assignment => !['starting', 'running', 'recovering'].includes(assignment?.status))
+    state.assignments = [...ended.slice(-Math.max(0, maxAssignments - active.length)), ...active]
+  }
+  if (state.acks !== null && typeof state.acks === 'object' && !Array.isArray(state.acks)) {
+    const ackKeys = Object.keys(state.acks)
+    if (ackKeys.length > maxAcks) {
+      ackKeys
+        .sort((a, b) => (Number(state.acks[b]?.seenAt) || 0) - (Number(state.acks[a]?.seenAt) || 0))
+        .slice(maxAcks)
+        .forEach(key => { delete state.acks[key] })
+    }
   }
   return state
 }
