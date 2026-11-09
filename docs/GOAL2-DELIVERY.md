@@ -59,11 +59,14 @@ doublon → vérifier que la carte reste `in_review` (jamais `done`).
 
 ## Ce qui reste ouvert (P1)
 
-- **E2E instance isolée + provider factice**, test de redémarrage process réel.
-- **Failover live** sur une route sacrificielle (le failover est testé avec un
-  agent simulé ; aucun 429/5xx réel n'a été provoqué).
-- **Worktree** uniquement via `executionBackend:'taskboard'` ; le backend
-  `board` refuse la carte (pas d'exécution isolée native).
+- **Tour de modèle réussi** en instance isolée : bloqué par l'absence de
+  credentials dans un `DSH_HOME` neuf (aucune copie de secret faite). Le
+  parcours complet a été prouvé une fois en live lors du GOAL 1 (build
+  précédent) ; l'activation, le lancement réel, la reprise, le verrou, l'arrêt
+  et le SSE le sont désormais aussi en live sur l'instance isolée.
+- **Failover live** sur une route sacrificielle (testé avec des messages réels
+  d'erreur, pas avec un vrai 429/5xx réseau).
+- **Backend `taskboard`** non exercé contre un exécuteur Task Board live.
 - **Forge réelle** (GitHub/GitLab) : contrat + pagination + rate-limit testés
   sur fausse API, aucun appel live ni webhook.
 - Retour au provider principal, fencing enforced, réconciliation des effets

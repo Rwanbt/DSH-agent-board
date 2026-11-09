@@ -243,7 +243,7 @@ workspace on 2026-11-09.
 
 | Command | Result |
 |---|---|
-| `node --test tests/` | **133 tests, 133 pass, 0 fail**, ~1.0 s |
+| `node --test tests/` | **136 tests, 136 pass, 0 fail**, ~1.0 s |
 | `node scripts/build-client.mjs` | bundle rebuilt, 13 modules |
 | `node --check src/client.js` | exit 0 |
 | `node --check` on every `src/**/*.js` | exit 0 |
@@ -280,3 +280,27 @@ No isolated-instance DSH E2E, no real provider outage, no `dsh-llm-fallbacks`,
 no live forge/webhook, no process restart, no Linux, no load test. The
 `taskboard` backend is contract-tested against a fake HTTP API, not against a
 live Task Board instance from this process.
+
+## 12. GOAL 2 — isolated-instance E2E (real DSH host)
+
+Detailed, redacted evidence: [`docs/e2e/isolated-instance-evidence.md`](e2e/isolated-instance-evidence.md).
+
+| Check | Result |
+|---|---|
+| Fresh `DSH_HOME` + `dsh --profile e2e` (from `web`) + `link:` plugins | profile created and booted, no network needed |
+| Plugin activation (real host) | `/dsh-agent-board/api/v2/state` 200, `instance.primary: true`, 0 console errors |
+| Task Board contract (real HTTP) | `sync.ok: true`, real ledger `revision`/`tasks`, capability `run: true` |
+| Real task + real launch | task `t-mw9ue95x-90qkvm` created (201), autonomous tick launched a real `ctx.agents` session |
+| Model turn | **FAILED as expected**: no credentials in the isolated home (no secret copied) |
+| Defect found by E2E #1 | unbounded automatic relaunch (6 sessions in ~20 s) → **fixed** with `retryCooldownMs` + `maxAttemptsPerRevision` |
+| Defect found by E2E #2 | "no API key" classified `unknown` (2 retries) → **fixed** as non-retryable `AUTH` |
+| Restart (process killed, same home) | `stale_lock_taken_over`, primary true, `resume_requires_confirmation`, `/dispatch` 409 before `/resume` |
+| Post-fix bounded retry | tick after resume: `autonomy_budget_exhausted`, then `max_attempts_reached`, **0 new session** |
+| SSE (real host, new client) | 1 named `state` frame, 0 unnamed |
+
+Tests: **136/136**. The isolated home was deleted afterwards; the real profile
+and port 62337 were untouched.
+
+Still NOT tested: a successful model turn / full task→in_review flow in the
+isolated instance, the `taskboard` backend against a live Task Board executor,
+load, Linux, uninstall.

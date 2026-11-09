@@ -79,6 +79,11 @@ export const DEFAULT_POLICY = Object.freeze({
   maxSwitches: 2,
   proposalTtlMs: 30 * 60 * 1000,
   leaseTtlMs: 10 * 60 * 1000,
+  // Automatic retries are bounded: a task whose last attempt failed is not
+  // relaunched on the next tick, and a revision has a maximum number of
+  // sessions (manual dispatch stays available to the operator).
+  retryCooldownMs: 5 * 60 * 1000,
+  maxAttemptsPerRevision: 4,
   allowedWorkspaces: [],
   allowedProviders: [],
   // A card may ask for a permission level; the operator's mandate decides which
@@ -109,6 +114,8 @@ export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     maxSwitches,
     proposalTtlMs: clampInt(input.proposalTtlMs, 60_000, 86_400_000, fallback.proposalTtlMs),
     leaseTtlMs: clampInt(input.leaseTtlMs, 30_000, 86_400_000, fallback.leaseTtlMs),
+    retryCooldownMs: clampInt(input.retryCooldownMs, 0, 86_400_000, fallback.retryCooldownMs ?? 300_000),
+    maxAttemptsPerRevision: clampInt(input.maxAttemptsPerRevision, 1, 10, fallback.maxAttemptsPerRevision ?? 4),
     allowedWorkspaces: uniqueStrings(input.allowedWorkspaces ?? fallback.allowedWorkspaces),
     allowedProviders: uniqueStrings(input.allowedProviders ?? fallback.allowedProviders),
     allowedPermissions: uniqueStrings(input.allowedPermissions ?? fallback.allowedPermissions)

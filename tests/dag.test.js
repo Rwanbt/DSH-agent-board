@@ -79,6 +79,35 @@ test('a task asking for a permission outside the mandate is skipped with a reaso
   assert.deepEqual(widened.actions.map(action => action.taskId).sort(), ['p1', 'p2'])
 })
 
+test('automatic retries are bounded: cooldown then max attempts per revision', () => {
+  const task = { id: 'r1', title: 'Retry me', status: 'todo', workspaceId: 'w1', version: 2 }
+  const failed = [{ id: 'a1', taskId: 'r1', revision: 2, attempt: 0, status: 'failed', startedAt: 1000, endedAt: 2000 }]
+  const policy = normalizePolicy({ mode: MODES.AUTONOMOUS, maxConcurrent: 2, retryCooldownMs: 300_000, maxAttemptsPerRevision: 3 })
+  const cooling = selectDispatchable({ tasks: [task], assignments: failed, proposals: [], policy, now: 10_000 })
+  assert.deepEqual(cooling.actions, [])
+  assert.ok(cooling.skipped.some(entry => entry.reason === 'retry_cooldown'))
+  const afterCooldown = selectDispatchable({ tasks: [task], assignments: failed, proposals: [], policy, now: 400_000 })
+  assert.equal(afterCooldown.actions.length, 1)
+
+  const exhausted = [0, 1, 2].map(attempt => ({ id: `a${attempt}`, taskId: 'r1', revision: 2, attempt, status: 'failed', startedAt: attempt * 1000, endedAt: attempt * 1000 + 500 }))
+  const capped = selectDispatchable({ tasks: [task], assignments: exhausted, proposals: [], policy, now: 9_000_000 })
+  assert.deepEqual(capped.actions, [])
+  assert.ok(capped.skipped.some(entry => entry.reason === 'max_attempts_reached'))
+
+  // A new revision (the human rewrote the card) resets the automatic budget.
+  const newRevision = selectDispatchable({ tasks: [{ ...task, version: 3 }], assignments: exhausted, proposals: [], policy, now: 9_000_000 })
+  assert.equal(newRevision.actions.length, 1)
+})
+
+test('a stopped task is not automatically relaunched during the cooldown', () => {
+  const task = { id: 's1', title: 'Stopped', status: 'todo', workspaceId: 'w1', version: 1 }
+  const stopped = [{ id: 'a1', taskId: 's1', revision: 1, attempt: 0, status: 'stopped', startedAt: 1000, endedAt: 2000 }]
+  const policy = normalizePolicy({ mode: MODES.AUTONOMOUS, maxConcurrent: 2 })
+  const plan = selectDispatchable({ tasks: [task], assignments: stopped, proposals: [], policy, now: 5000 })
+  assert.deepEqual(plan.actions, [])
+  assert.ok(plan.skipped.some(entry => entry.reason === 'retry_cooldown'))
+})
+
 test('serializeSameWorkspace keeps one running agent per workspace when asked', () => {
   const sameProject = [
     { id: 'x', title: 'X', status: 'todo', urgency: 'normal', workspaceId: 'w1' },

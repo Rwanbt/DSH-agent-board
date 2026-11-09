@@ -43,6 +43,7 @@ const CONTEXT_PATTERN = /(context (?:length|window)|maximum context|too many tok
 const AUTH_PATTERN = /(invalid[ _]?api[ _]?key|unauthori[sz]ed|token (?:expired|invalid)|authentication failed|401)/i
 const OVERLOAD_PATTERN = /(overloaded|service unavailable|temporarily unavailable|529)/i
 const RATE_LIMIT_PATTERN = /(rate[ _-]?limit|too many requests|throttl|429)/i
+const MISSING_CREDENTIALS_PATTERN = /(no api[ _-]?key|missing api[ _-]?key|api[ _-]?key (?:is )?(?:missing|not (?:set|configured|found))|missing credentials?|credentials? (?:are )?(?:missing|not (?:set|configured|available))|no credential)/i
 const MODEL_UNAVAILABLE_PATTERN = /((?:model|deployment) (?:[^.\n]{0,40}?)(?:not found|unavailable|does not exist|no longer|deleted|removed|unsupported))|no such model|model_not_found/i
 const TRANSPORT_PATTERN = /(ECONNRESET|ECONNREFUSED|EPIPE|EAI_AGAIN|ENOTFOUND|ENETUNREACH|socket hang up|network error|connection reset)/i
 
@@ -85,6 +86,12 @@ export function classifyFailure(input = {}) {
   }
   if (CONTEXT_PATTERN.test(text)) {
     return { ...base, kind: FAILURE.CONTEXT_OVERFLOW, retryable: false, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }
+  }
+  // A missing/absent credential is a configuration fault, not a transient one:
+  // retrying the same route can never succeed, but another route may hold a
+  // valid credential, so a switch is legitimate.
+  if (MISSING_CREDENTIALS_PATTERN.test(text) && status !== 401) {
+    return { ...base, kind: FAILURE.AUTH, retryable: false, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }
   }
   if (QUOTA_PATTERN.test(text)) {
     return { ...base, kind: FAILURE.QUOTA, retryable: false, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }
