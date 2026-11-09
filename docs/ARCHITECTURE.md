@@ -48,7 +48,8 @@ disappears is `unknown`, not “finished”. `aborted` and `blocked` turns are
 
 The preview follows the same honesty rule: only a segment that closed a
 completed turn is `final`. A segment from an errored, aborted or unknown turn is
-`partial` and the panel says so.
+`partial`; the panel then shows “no final answer yet” instead of a misleading
+final line.
 
 ## Click semantics
 
@@ -77,10 +78,14 @@ consulted card does not keep polluting the home view.
 5. supervised emits a proposal, autonomous launches while `maxConcurrent` slots
    remain and the hourly budget is not exhausted.
 
-Every launch path — timer tick, `POST /dispatch`, proposal approval, failover
-handoff — goes through one `authorizeLaunch()` gate. OFF, Stop, the workspace
-mandate, the provider allow-list, the permission allow-list and the concurrency
-limit are therefore enforced in one place; no route can bypass them.
+Every launch path — timer tick, `POST /dispatch`, proposal approval — goes
+through one `authorizeLaunch()` gate. OFF, Stop, the workspace mandate, the
+provider allow-list, the permission allow-list and the concurrency limit are
+therefore enforced in one place; no route can bypass them. A **failover handoff**
+has its own `authorizeHandoff()` gate (same mandate/permission/isolation/route
+rules, plus a FRESH Task Board read: a trashed, terminal or differently-claimed
+card suppresses the recovery) and re-checks the stop epoch after
+`ctx.agents.create` returns, so a Stop that lands during the handoff wins.
 
 Two execution backends exist (`policy.executionBackend`):
 
@@ -100,7 +105,7 @@ launch becomes a new attempt. A watchdog expires a lease whose agent is gone
 into `interrupted`, so `maxConcurrent` cannot be consumed forever.
 `reconcileAfterRestart` does the same at boot and never relaunches silently.
 Overlapping ticks coalesce (`tickInFlight`), and a single-writer `instance.lock`
-keeps a second DSH host read-only instead of clobbering `state.json`. A durable
+keeps a second DSH host read-only instead of clobbering `state.json`; the takeover of a stale lock is a rename-based compare-and-swap, so two hosts can never both win. A durable
 autonomous mode requires an explicit resume after a restart
 (`resume_requires_confirmation`) unless `autoResumeOnRestart` is set.
 
@@ -114,7 +119,7 @@ when the operator's `allowedPermissions` mandate grants it.
 
 **Stop** is separate from OFF: it bumps a `stopEpoch`, calls
 `agent.cancel({kind:'user'})` on every in-flight assignment, blocks new
-delegation (tick, dispatch, approval, failover) until `POST /resume`, and records
+delegation (tick, dispatch, approval, failover) until `POST /resume` — switching mode does NOT lift it — and records
 `stopped_by_operator`. A launch in flight during the stop self-cancels when
 `ctx.agents.create` returns. If the cancel itself fails, the assignment becomes
 `interrupted` with `stop_failed:<reason>` — it never pretends to be stopped. OFF
@@ -171,7 +176,7 @@ commands, instead of silently overwriting the journal.
 - Every HTTP route checks `ctx.connection.requestRejection` first; a secondary
   instance refuses every mutation.
 - No ledger writes: the Task Board remains the single source of truth.
-- `done` is never set by the board or by the launched agent.
+- The board never writes `done`. A launched session cannot either: the Task Board's own `taskboard_move` refuses `done` at code level (`requires explicit user confirmation`). The prompt states it too, but the guarantee is the tool guard, not the prompt.
 - The card's permission is clamped by the policy `allowedPermissions`; the
   default mandate never grants `danger-full-access` from a ledger row.
 - Card text is delimited and labelled as untrusted data in every prompt.

@@ -93,7 +93,7 @@ This build has two execution backends, chosen by `policy.executionBackend`:
 
 ## Non-negotiable rules encoded in code
 
-1. `done` is never set by the board or by a launched agent.
+1. The board never writes `done`; the launched session cannot either — the Task Board `taskboard_move` tool refuses `done` at code level. The prompt repeats it, but the enforcement is the tool guard.
 2. No work item is written by the board; external systems stay authoritative.
 3. One LIVE assignment per task (`idempotencyKey` = task + revision + attempt);
    a duplicate tick, dispatch or proposal never starts a second session.

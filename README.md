@@ -124,7 +124,7 @@ handler runs.
 ## Tests
 
 ```sh
-node --test tests/            # 138 tests, ~1.0 s
+node --test tests/            # 148 tests, ~1.0 s
 node scripts/build-client.mjs # regenerate src/client.js
 node --check src/client.js && node --check src/host/index.js
 ```

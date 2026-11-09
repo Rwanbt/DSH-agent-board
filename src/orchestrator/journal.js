@@ -14,6 +14,7 @@
  */
 
 import { appendFile, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
+import { renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 let writeCounter = 0
@@ -204,6 +205,31 @@ export class StateStore {
     const current = this.queue.then(start, start)
     this.queue = current.then(() => undefined, () => undefined)
     return current
+  }
+
+  /**
+   * Synchronous last-resort save used at shutdown, BEFORE the instance lock is
+   * released: a new primary must never read the pre-shutdown document and then
+   * be overwritten by this process' late asynchronous write.
+   *
+   * @returns {boolean} true when the rename landed
+   */
+  writeSync(state) {
+    const payload = { ...state, schemaVersion: 1, savedAt: this.now() }
+    const tmp = `${this.statePath}.tmp-${process.pid}-exit`
+    try {
+      writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+      renameSync(tmp, this.statePath)
+      return true
+    } catch (error) {
+      this.lastFailure = `shutdown save failed: ${error?.code ?? 'UNKNOWN'} ${error?.message ?? String(error)}`
+      try {
+        unlinkSync(tmp)
+      } catch {
+        /* best effort */
+      }
+      return false
+    }
   }
 
   /** Append one audit event; a failed append must not break the caller. */

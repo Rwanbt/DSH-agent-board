@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -194,4 +195,34 @@ test('isPidAlive recognises the current process and rejects invalid pids', () =>
   assert.equal(isPidAlive(-1), false)
   assert.equal(isPidAlive(0), false)
   assert.equal(isPidAlive('not-a-pid'), false)
+})
+
+test('concurrent stale takeover: exactly one host wins (rename CAS)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dab-lock-cas-'))
+  const stale = {
+    ownerId: 'dead-owner',
+    pid: 999999,
+    acquiredAt: Date.now() - 120_000,
+    expiresAt: Date.now() - 60_000,
+  }
+  await writeFile(join(dir, 'instance.lock'), JSON.stringify(stale), 'utf8')
+  const results = await Promise.all([
+    acquireInstanceLock({ dir, pid: 111, ownerId: 'agent-board:111:host-a', isAlive: pid => Number(pid) !== 999999 }),
+    acquireInstanceLock({ dir, pid: 222, ownerId: 'agent-board:222:host-b', isAlive: pid => Number(pid) !== 999999 }),
+  ])
+  const winners = results.filter(result => result.ok === true)
+  assert.equal(winners.length, 1, `expected exactly one winner, got ${winners.length}`)
+  const lock = JSON.parse(await readFile(join(dir, 'instance.lock'), 'utf8'))
+  assert.equal(lock.ownerId, winners[0].lock.ownerId)
+  await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+})
+
+test('a heartbeat after release refuses instead of recreating the lock', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dab-lock-rel-'))
+  const acquired = await acquireInstanceLock({ dir, pid: 1, ownerId: 'host-x' })
+  assert.equal(acquired.ok, true)
+  await release(acquired.lock)
+  await assert.rejects(() => heartbeat(acquired.lock), error => error.code === 'ELOCKLOST')
+  assert.equal(existsSync(join(dir, 'instance.lock')), false, 'a released lock must stay released')
+  await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 })

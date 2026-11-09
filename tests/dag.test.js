@@ -197,3 +197,15 @@ test('stop plan only targets in-flight assignments', () => {
   ])
   assert.deepEqual(plan, [{ assignmentId: '1', taskId: 'a', sessionId: 's1' }])
 })
+
+test('a done assignment whose card is still todo is bound like a failure', () => {
+  const task = { id: 'd1', title: 'Did not claim', status: 'todo', workspaceId: 'w1', version: 1 }
+  const done = [{ id: 'a1', taskId: 'd1', revision: 1, attempt: 0, status: 'done', startedAt: 1000, endedAt: 2000 }]
+  const policy = normalizePolicy({ mode: MODES.AUTONOMOUS, maxConcurrent: 2, maxAttemptsPerRevision: 2 })
+  const cooling = selectDispatchable({ tasks: [task], assignments: done, proposals: [], policy, now: 10_000 })
+  assert.deepEqual(cooling.actions, [])
+  assert.ok(cooling.skipped.some(entry => entry.reason === 'retry_cooldown'))
+  const exhausted = selectDispatchable({ tasks: [task], assignments: [...done, { ...done[0], id: 'a2', attempt: 1 }], proposals: [], policy, now: 9_000_000 })
+  assert.deepEqual(exhausted.actions, [])
+  assert.ok(exhausted.skipped.some(entry => entry.reason === 'max_attempts_reached'))
+})

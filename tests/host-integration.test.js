@@ -226,6 +226,8 @@ test('autonomous mode launches; a 503 after work started switches provider with 
     const handoff = assignments.find(assignment => assignment.previousSessionId === firstSession)
     assert.ok(handoff !== undefined, 'the new assignment links to the previous session')
     assert.equal(handoff.status, 'running')
+    assert.equal(handoff.backend, 'board')
+    assert.ok(handoff.lease !== null && Number(handoff.lease.expiresAt) > Date.now(), 'the handed-off session holds a live lease')
     assert.equal(handoff.model.provider, 'backup')
     assert.ok(state.body.value.routeEvents.some(event => event.action === 'handoff' || event.action === 'switch'))
 

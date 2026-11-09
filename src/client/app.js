@@ -136,17 +136,24 @@ function dabMakePage(store, ctx) {
     }, [])
 
     // Reading a session OUTSIDE the board (native main view) is still reading:
-    // once the runtime reports the session open in the main view, the board
-    // acknowledges it so an old consulted session never pollutes the home view.
-    const nativeAcked = React.useRef(new Set())
+    // The key includes the session activity timestamp: a LATER turn that
+    // completes while the same session is still open is acknowledged again, and
+    // leaving the view clears the entry.
+    const nativeAcked = React.useRef(new Map())
     React.useEffect(() => {
+      const viewing = new Set()
       for (const node of projection.nodes) {
         if (node.viewing !== true) continue
-        if (nativeAcked.current.has(node.id)) continue
+        viewing.add(node.id)
+        const activityKey = String(Number(node.updatedAt) || 0)
+        if (nativeAcked.current.get(node.id) === activityKey) continue
         if (node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true)) {
-          nativeAcked.current.add(node.id)
+          nativeAcked.current.set(node.id, activityKey)
           void store.ack(node.id, { source: 'native_view' })
         }
+      }
+      for (const id of [...nativeAcked.current.keys()]) {
+        if (!viewing.has(id)) nativeAcked.current.delete(id)
       }
     }, [projection])
 
