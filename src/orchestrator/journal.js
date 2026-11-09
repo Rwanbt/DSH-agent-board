@@ -127,10 +127,17 @@ export class StateStore {
     return removed
   }
 
-  /** Create the directory and read the current state (or the defaults). */
-  async init(defaults) {
+  /**
+   * Create the directory and read the current state (or the defaults).
+   *
+   * @param {object} defaults
+   * @param {{write?: boolean}} [options] `write:false` is the follower mode: it
+   *   must never create/quarantine/clean anything (the lock owner's temp files
+   *   and journal are not ours to touch).
+   */
+  async init(defaults, { write = true } = {}) {
     await mkdir(this.dir, { recursive: true })
-    await this.cleanupStaleTemps()
+    if (write) await this.cleanupStaleTemps()
     let parsed = null
     try {
       const raw = await readFile(this.statePath, 'utf8')
@@ -139,17 +146,19 @@ export class StateStore {
       if (error?.code !== 'ENOENT') {
         // Never destroy evidence: move the unreadable file aside and start clean.
         this.lastFailure = `state.json unreadable (${error?.code ?? error?.message}); quarantined`
-        try {
-          await rename(this.statePath, `${this.statePath}.corrupt-${this.now()}`)
-        } catch {
-          /* the rename is best-effort, the failure stays reported */
+        if (write) {
+          try {
+            await rename(this.statePath, `${this.statePath}.corrupt-${this.now()}`)
+          } catch {
+            /* the rename is best-effort, the failure stays reported */
+          }
         }
       }
       parsed = null
     }
     if (parsed === null || typeof parsed !== 'object' || parsed.schemaVersion !== 1) {
       const initial = { ...defaults, schemaVersion: 1 }
-      await this.write(initial)
+      if (write) await this.write(initial)
       return initial
     }
     return { ...defaults, ...parsed }

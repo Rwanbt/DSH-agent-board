@@ -243,7 +243,7 @@ workspace on 2026-11-09.
 
 | Command | Result |
 |---|---|
-| `node --test tests/` | **136 tests, 136 pass, 0 fail**, ~1.0 s |
+| `node --test tests/` | **137 tests, 137 pass, 0 fail**, ~1.0 s |
 | `node scripts/build-client.mjs` | bundle rebuilt, 13 modules |
 | `node --check src/client.js` | exit 0 |
 | `node --check` on every `src/**/*.js` | exit 0 |
@@ -298,7 +298,7 @@ Detailed, redacted evidence: [`docs/e2e/isolated-instance-evidence.md`](e2e/isol
 | Post-fix bounded retry | tick after resume: `autonomy_budget_exhausted`, then `max_attempts_reached`, **0 new session** |
 | SSE (real host, new client) | 1 named `state` frame, 0 unnamed |
 
-Tests: **136/136**. The isolated home was deleted afterwards; the real profile
+Tests: **137/137**. The isolated home was deleted afterwards; the real profile
 and port 62337 were untouched.
 
 Still NOT tested: a successful model turn / full task→in_review flow in the

@@ -109,8 +109,11 @@ export function apply(ctx, config = {}) {
   let instanceLock = null
   // A secondary DSH host loading the same profile shares $DSH_HOME/agent-board.
   // Only the lock owner may write, tick or mutate: the others serve reads and
-  // refuse commands instead of silently clobbering the journal.
-  let isPrimary = true
+  // refuse commands instead of silently clobbering the journal. `primary` starts
+  // false so nothing is written before the lock decision is known.
+  let isPrimary = false
+  let lockPending = true
+  const pendingAudit = []
   let lockHolder = null
   const streamClients = new Set()
   const reconcileNotes = []
@@ -155,7 +158,12 @@ export function apply(ctx, config = {}) {
   function audit(event) {
     state.audit.push({ at: Date.now(), ...event })
     if (state.audit.length > MAX_AUDIT) state.audit = state.audit.slice(-MAX_AUDIT)
-    void store.append(event)
+    // Only the lock owner appends to the shared JSONL. A follower keeps the
+    // event in its in-memory view but must not write another writer's journal;
+    // events raised before the lock is resolved are buffered and flushed by the
+    // primary once it owns the state.
+    if (isPrimary) void store.append(event)
+    else if (lockPending) pendingAudit.push(event)
   }
 
   function touch() {
@@ -180,10 +188,13 @@ export function apply(ctx, config = {}) {
       isPrimary = result.ok === true
       instanceLock = result.ok ? result.lock : null
       lockHolder = result.ok ? null : (result.holder ?? null)
+      lockPending = false
       if (!isPrimary) {
+        pendingAudit.length = 0
         reconcileNotes.push({ type: 'secondary_instance', holder: lockHolder })
         warn(`another host owns the board state (pid ${lockHolder?.pid ?? '?'}): running read-only`)
       } else {
+        for (const event of pendingAudit.splice(0)) void store.append(event)
         if (result.stale) reconcileNotes.push({ type: 'stale_lock_taken_over' })
         startTimer()
         lockTimer = setInterval(() => {
@@ -201,9 +212,11 @@ export function apply(ctx, config = {}) {
     } catch (error) {
       // A lock that cannot be taken must not silently allow two writers.
       isPrimary = false
+      lockPending = false
+      pendingAudit.length = 0
       warn(`instance lock unavailable (${String(error)}); running read-only`)
     }
-    const loaded = await store.init(createDefaultState())
+    const loaded = await store.init(createDefaultState(), { write: isPrimary })
     state = loaded
     state.policy = normalizePolicy(state.policy ?? {})
     if (isMode(state.mode)) state.policy.mode = state.mode
