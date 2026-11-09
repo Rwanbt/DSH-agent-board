@@ -66,7 +66,8 @@ test('task board adapter normalizes tasks and keeps only read capabilities', asy
   assert.equal(listed.items[4].activeExecution, true)
   assert.equal(listed.items[4].activeExecutionId, 'e1')
   const caps = adapter.describe().capabilities
-  assert.deepEqual(Object.keys(caps).filter(key => caps[key]).sort(), ['get', 'list'])
+  assert.deepEqual(Object.keys(caps).filter(key => caps[key]).sort(), ['get', 'list', 'run'])
+  assert.equal(typeof adapter.runTask, 'function')
   assert.equal(fetchImpl.calls[0].url, 'http://127.0.0.1:62337/dsh-taskboard/state')
 })
 
@@ -133,6 +134,7 @@ test('github adapter stays honest: disabled without a repository, read-only when
   assert.equal(listed.items[0].canonicalId, 'github:7')
   const caps = enabled.describe().capabilities
   assert.deepEqual(Object.keys(caps).filter(key => caps[key]).sort(), ['get', 'list'])
+  assert.equal(typeof enabled.runTask, 'undefined')
 })
 
 test('checkpoint captures git reality and the handoff prompt states the prohibitions', () => {

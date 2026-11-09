@@ -235,3 +235,48 @@ live. The client bundle is served from disk and was reloaded in the real page:
 
 This proves the SSE defect and its fix against the live host. It does NOT prove
 the host-side orchestration/durability changes, which need a host restart.
+
+## 11. GOAL 2 — second batch: resilience, forge contract, Task Board backend
+
+Same branch, after the first delivery commit. Every command run in this
+workspace on 2026-11-09.
+
+| Command | Result |
+|---|---|
+| `node --test tests/` | **133 tests, 133 pass, 0 fail**, ~1.0 s |
+| `node scripts/build-client.mjs` | bundle rebuilt, 13 modules |
+| `node --check src/client.js` | exit 0 |
+| `node --check` on every `src/**/*.js` | exit 0 |
+
+New coverage in this batch:
+
+- `tests/resilience.test.js` (6) — a `turn/end` that lands while
+  `ctx.agents.create` is still in flight settles the assignment (never flipped
+  back to `running`); duplicate and unknown `turn/end` events are ignored;
+  the lease watchdog interrupts a running assignment whose live agent is gone;
+  a restart in autonomous mode requires an explicit `/resume` before delegating;
+  overlapping ticks coalesce and concurrent dispatches start exactly one
+  session; a stale lock from a dead process is taken over.
+- `tests/forge-contract.test.js` (8) — fake GitHub API: bounded `Link`
+  pagination (3 pages max, truncation flag), exhausted quota is `rate_limited`
+  + retryable with a delay, 401 is a non-retryable credential refusal, 5xx and
+  transport errors are retryable, the token never appears in an error, `get()`
+  returns the forge revision usable as a conflict token, and the declared
+  capability matrix stays read-only.
+- `tests/backend-taskboard.test.js` (5) — `executionBackend:'taskboard'` runs a
+  worktree card through `POST /dsh-taskboard/tasks/:id/run` without creating a
+  board session, records `executionId` + `sessionId` + `backend`, a refused run
+  fails the assignment, a provider error is visible as `backend_no_failover`
+  with no handoff session, Stop cancels the Task Board session, and an unknown
+  backend falls back to `board`.
+- `tests/dag.test.js` — a permission outside the mandate is skipped with
+  `permission_not_allowed:<level>`; the widened mandate allows it.
+- `tests/host-governance.test.js` — permission refused before launch; an allowed
+  permission is applied through `permissionPresets`.
+
+### Explicit NOT TESTED (unchanged)
+
+No isolated-instance DSH E2E, no real provider outage, no `dsh-llm-fallbacks`,
+no live forge/webhook, no process restart, no Linux, no load test. The
+`taskboard` backend is contract-tested against a fake HTTP API, not against a
+live Task Board instance from this process.

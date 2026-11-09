@@ -178,10 +178,9 @@ export function selectDispatchable({ tasks, assignments = [], proposals = [], po
       skipped.push({ taskId: task.id, reason: 'owned_by_taskboard_scheduler' })
       continue
     }
-    // A board-launched session always runs in the workspace directory. A card
-    // that requires a worktree cannot be honoured here, and silently ignoring
-    // it would let two agents write the same files.
-    if (task.isolation === 'worktree') {
+    // A board-launched session always runs in the workspace directory. Only the
+    // Task Board's own executor can create the worktree the card asks for.
+    if (task.isolation === 'worktree' && policy?.executionBackend !== 'taskboard') {
       skipped.push({ taskId: task.id, reason: 'worktree_isolation_not_supported' })
       continue
     }
@@ -193,6 +192,15 @@ export function selectDispatchable({ tasks, assignments = [], proposals = [], po
     if (!mandate.ok) {
       skipped.push({ taskId: task.id, reason: mandate.reason })
       continue
+    }
+    // A card may ask for a permission level; the operator's mandate decides
+    // whether the board may grant it. Refuse before launching, visibly.
+    if (typeof task.permission === 'string' && task.permission !== '') {
+      const allowedPermissions = Array.isArray(policy?.allowedPermissions) ? policy.allowedPermissions : []
+      if (!allowedPermissions.includes(task.permission)) {
+        skipped.push({ taskId: task.id, reason: `permission_not_allowed:${task.permission}` })
+        continue
+      }
     }
     const action = {
       task,

@@ -360,19 +360,29 @@ export function apply(ctx, config = {}) {
       const mandate = mandateCheck(task, state.policy)
       if (!mandate.ok) return { ok: false, reason: mandate.reason }
       if (countRunning(state.assignments) >= state.policy.maxConcurrent) return { ok: false, reason: 'concurrency_limit' }
-      if (task?.isolation === 'worktree') {
-        // Honest refusal: this build cannot create the Task Board worktree for a
-        // board-launched session, and running a worktree-isolated card in the
-        // shared workspace would violate the card contract.
+      // The permission mandate applies to both backends: delegating to the Task
+      // Board executor must not grant a level this operator forbade.
+      if (typeof task?.permission === 'string' && task.permission !== '' && allowedPermissionOf(state.policy, task.permission) === null) {
+        return { ok: false, reason: `permission_not_allowed:${task.permission}` }
+      }
+      if (state.policy.executionBackend === 'taskboard') {
+        // The Task Board executor honours isolation, permission, preset and
+        // prompt itself; the board only observes the session it returns.
+      } else if (task?.isolation === 'worktree') {
+        // Honest refusal: a board-launched session cannot create the Task Board
+        // worktree, and running a worktree-isolated card in the shared
+        // workspace would violate the card contract.
         return { ok: false, reason: 'worktree_isolation_not_supported' }
       }
       if (task?.activeExecution === true) return { ok: false, reason: 'already_running_in_taskboard' }
       if (typeof task?.claimedBy === 'string' && task.claimedBy !== '') return { ok: false, reason: 'claimed_by_another_session' }
       if (task?.execution?.mode === 'scheduled') return { ok: false, reason: 'owned_by_taskboard_scheduler' }
-      const route = routeForTask(task)
-      if (route !== null && route !== undefined) {
-        const allowed = isRouteAllowed(route, state.policy, null)
-        if (!allowed.ok) return { ok: false, reason: allowed.reason }
+      if (state.policy.executionBackend !== 'taskboard') {
+        const route = routeForTask(task)
+        if (route !== null && route !== undefined) {
+          const allowed = isRouteAllowed(route, state.policy, null)
+          if (!allowed.ok) return { ok: false, reason: allowed.reason }
+        }
       }
     }
     return { ok: true, reason: 'allowed' }
@@ -469,7 +479,11 @@ export function apply(ctx, config = {}) {
       .map(assignment => Number(assignment.attempt) || 0)
     const attempt = priorAttempts.length === 0 ? 0 : Math.max(...priorAttempts) + 1
     const key = assignmentKey({ taskId: task.id, revision, attempt })
-    const sessionId = `session-agentboard-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`
+    const backend = state.policy.executionBackend === 'taskboard' ? 'taskboard' : 'board'
+    // The board path needs a pre-generated session id (an early turn/end can be
+    // attributed before `ctx.agents.create` resolves); the Task Board path gets
+    // the session id from the Task Board executor.
+    const sessionId = backend === 'board' ? `session-agentboard-${globalThis.crypto?.randomUUID?.() ?? Date.now()}` : null
     const { lease, fencingToken } = acquireLease(undefined, {
       owner: 'agent-board',
       now: Date.now(),
@@ -485,6 +499,8 @@ export function apply(ctx, config = {}) {
       attempt,
       idempotencyKey: key,
       model: routeForTask(task),
+      backend,
+      executionId: null,
       status: LEASE_STATUS.STARTING,
       sessionId,
       lease,
@@ -503,6 +519,37 @@ export function apply(ctx, config = {}) {
     const epochAtLaunch = state.stopEpoch
     touch()
     try {
+      if (backend === 'taskboard') {
+        // Delegate execution to the Task Board's own executor: it creates the
+        // session, the execution record, the claim, the permission/preset and
+        // the worktree. The board records the link and observes the session.
+        const adapter = connectors.get('dsh-taskboard')
+        if (typeof adapter?.runTask !== 'function') throw new Error('task board adapter has no run capability')
+        const started = await adapter.runTask(task.id)
+        if (state.stopEpoch !== epochAtLaunch || isStopped() || state.mode === MODES.OFF) {
+          try { ctx.agents.get(started.sessionId)?.cancel?.({ kind: 'user' }) } catch { /* best effort */ }
+          assignment.sessionId = started.sessionId
+          assignment.executionId = started.executionId
+          assignment.status = LEASE_STATUS.STOPPED
+          assignment.endedAt = Date.now()
+          assignment.error = 'stopped_during_launch'
+          audit({ type: 'launch_cancelled', taskId: task.id, assignmentId: assignment.id, sessionId: started.sessionId, backend })
+          touch()
+          return { ok: false, reason: 'stopped_during_launch', assignmentId: assignment.id, sessionId: started.sessionId }
+        }
+        if (assignment.status !== LEASE_STATUS.STARTING) {
+          audit({ type: 'launch_settled_early', taskId: task.id, assignmentId: assignment.id, status: assignment.status, backend })
+          touch()
+          return { ok: true, assignmentId: assignment.id, sessionId: started.sessionId, settled: assignment.status }
+        }
+        assignment.sessionId = started.sessionId
+        assignment.executionId = started.executionId
+        assignment.status = LEASE_STATUS.RUNNING
+        assignment.lease = { ...lease, expiresAt: Date.now() + state.policy.leaseTtlMs }
+        audit({ type: 'launch', taskId: task.id, assignmentId: assignment.id, sessionId: started.sessionId, executionId: started.executionId, backend, source })
+        touch()
+        return { ok: true, assignmentId: assignment.id, sessionId: started.sessionId, executionId: started.executionId }
+      }
       const { handle } = await createSession({ task, assignment, message: buildLaunchBody(task, assignment), sessionId })
       // Stop during launch: no session may survive an operator stop that landed
       // while `ctx.agents.create` was in flight.
@@ -521,16 +568,25 @@ export function apply(ctx, config = {}) {
         touch()
         return { ok: false, reason: 'stopped_during_launch', assignmentId: assignment.id, sessionId }
       }
+      // A very early `turn/end` (or a Stop) may already have settled the
+      // assignment while `ctx.agents.create` was in flight. Never overwrite a
+      // decided state with `running`: that was how a completed or stopped
+      // execution could come back to life on the card.
+      if (assignment.status !== LEASE_STATUS.STARTING) {
+        audit({ type: 'launch_settled_early', taskId: task.id, assignmentId: assignment.id, sessionId, status: assignment.status })
+        touch()
+        return { ok: true, assignmentId: assignment.id, sessionId, settled: assignment.status }
+      }
       assignment.status = LEASE_STATUS.RUNNING
       assignment.lease = { ...lease, expiresAt: Date.now() + state.policy.leaseTtlMs }
-      audit({ type: 'launch', taskId: task.id, assignmentId: assignment.id, sessionId, route: routeKey(assignment.model), source })
+      audit({ type: 'launch', taskId: task.id, assignmentId: assignment.id, sessionId, route: routeKey(assignment.model), backend, source })
       touch()
       return { ok: true, assignmentId: assignment.id, sessionId }
     } catch (error) {
       assignment.status = LEASE_STATUS.FAILED
       assignment.endedAt = Date.now()
       assignment.error = truncate(String(error?.message ?? error), 400)
-      audit({ type: 'launch_failed', taskId: task.id, assignmentId: assignment.id, error: assignment.error })
+      audit({ type: 'launch_failed', taskId: task.id, assignmentId: assignment.id, error: assignment.error, backend })
       touch()
       return { ok: false, reason: 'launch_failed', error: assignment.error }
     }
@@ -652,6 +708,18 @@ export function apply(ctx, config = {}) {
       assignment.outcome = 'error'
       assignment.error = truncate(`delegation_stopped: ${error ?? 'turn ended in error'}`, 400)
       audit({ type: 'recovery_suppressed', taskId: assignment.taskId, assignmentId: assignment.id, reason: state.mode === MODES.OFF ? 'mode_off' : 'stopped_by_operator' })
+      touch()
+      return
+    }
+    if (assignment.backend === 'taskboard' && kind === 'error') {
+      // The Task Board executor pins the model on the card. Switching provider
+      // would require writing that card, which the board must never do: say so
+      // instead of pretending a recovery happened.
+      assignment.status = LEASE_STATUS.INTERRUPTED
+      assignment.endedAt = Date.now()
+      assignment.outcome = 'error'
+      assignment.error = truncate(`backend_no_failover: ${error ?? 'turn ended in error'}`, 400)
+      audit({ type: 'recovery_unavailable', taskId: assignment.taskId, assignmentId: assignment.id, backend: 'taskboard', reason: 'model_pinned_by_taskboard' })
       touch()
       return
     }

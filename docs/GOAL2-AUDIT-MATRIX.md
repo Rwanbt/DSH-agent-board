@@ -15,7 +15,7 @@ Audits détaillés et sourcés : [`docs/audit/A-status-sessions.md`](audit/A-sta
 | `dsh-taskboard` | **`0.10.2`**, `link:.../default-workspace/dsh-taskboard` | `package.json` du fork + lien profil |
 | `dsh-llm-fallbacks` | **NON INSTALLÉ** | absent de `plugin_manager list_plugins` et de `profiles/desktop/node_modules` |
 | Node | `v26.13.0` (plugin exige `>=22`) | `node --version` |
-| Tests de départ | **69/69**, puis **112/112** après corrections | `node --test tests/` |
+| Tests de départ | **69/69**, puis **133/133** après corrections | `node --test tests/` |
 | Worktree de départ | propre, aucun changement non commité | `git status --porcelain` vide |
 
 ## Matrice : implémenté / partiel / absent / non testable
@@ -37,10 +37,10 @@ Audits détaillés et sourcés : [`docs/audit/A-status-sessions.md`](audit/A-sta
 | Leases + fencing | **décoratif** | `lease.js:38-61` jamais appelés | jeton toujours 1, aucune expiration (watchdog ajouté ; fencing reste non bloquant) |
 | Scheduler mono-écrivain | **absent** | `setInterval` sans verrou | mutex de tick + verrou d'instance ajoutés |
 | Durabilité de la file / audit | partiel | `journal.js:66-87` | file empoisonnée après un échec, tmp orphelins (corrigés) |
-| Task Board : source de vérité | respectée (lecture seule) | `connectors/taskboard.js` (`list/get` seulement) | contrat réel mal lu (`revision` vs `version`, `claim` vs `claimedBy`, `executions`) → corrigé |
-| Déduplication task ↔ exécution | absent | `dag.js` ignorait `executions[]` | double exécution possible (garde ajoutée) |
-| Isolation worktree | **absent** | `task.isolation` ignoré | refuse désormais honnêtement au lieu d'écrire dans le workspace partagé |
-| Liens durables task ↔ session ↔ exécution | absent | `connectors/taskboard.js` sans écriture | `taskboard_execution_report` échoue sans exécution native (P0 documenté, non corrigé) |
+| Task Board : source de vérité | respectée (lecture seule) | `connectors/taskboard.js` (`list/get/run`) | contrat réel mal lu (`revision` vs `version`, `claim` vs `claimedBy`, `executions`) → corrigé |
+| Déduplication task ↔ exécution | implémenté | `dag.js` (executions/claim/scheduler), `taskboard.js` `activeExecution` | plus de double exécution possible |
+| Isolation worktree | partiel (opt-in) | `policy.executionBackend='taskboard'` → `POST /tasks/:id/run` | en backend `board` la carte worktree est refusée ; en backend `taskboard` le Task Board crée le worktree |
+| Liens durables task ↔ session ↔ exécution | partiel | `assignment.executionId` + `backend`, `POST /tasks/:id/run` | disponible en backend `taskboard` uniquement ; le backend `board` n'a toujours pas d'exécution Task Board (nécessaire au failover de modèle) |
 | Scheduling (cron Task Board) | absent côté board | `task.execution.mode='scheduled'` | délégué au Task Board : refus explicite `owned_by_taskboard_scheduler` |
 | Failover : classifieur | partiel | `routing/classify.js` | 429 sans chiffre, transport en message, 404 modèle, 403 auth (corrigés) |
 | Failover : chaîne/cooldown/allow-list | partiel | `routing/router.js:50-137` | non appliqué au lancement initial (corrigé) ; `maxSwitches` non cumulé (corrigé) |
@@ -48,7 +48,7 @@ Audits détaillés et sourcés : [`docs/audit/A-status-sessions.md`](audit/A-sta
 | Effets externes non idempotents | **absent** | `actions: []` en dur | capture des tool calls mutateurs → `effect:unknown`, vérification imposée |
 | Retour au provider principal | absent | `router.js:154-159` jamais appelé | P1 ouvert |
 | Providers / `dsh-llm-fallbacks` | non évaluable | plugin absent | API publique non inventoriée ; ne pas recopier ses internals |
-| Forges (GitHub) | non validé | `connectors/github.js` lecture seule | aucun appel runtime ni token exercé ; `validatedLive:false` honnête |
+| Forges (GitHub) | contrat testé sur fausse API | `connectors/github.js` lecture seule + pagination bornée + rate limit | aucun appel live ni token exercé ; `validatedLive:false` honnête |
 | GitLab/Forgejo/Gitea/Bitbucket/Jira/Linear | squelettes | `connectors/registry.js` | `list/get` annoncés `true` dans la matrice de capacités (corrigé : capacités déclarées seulement) |
 | Webhooks / signature | absent | aucune route | hors périmètre de cette livraison |
 | CI / Git / worktrees | absent côté board | `gatherGit` lecture seule | aucun push/PR, aucune création de worktree |
@@ -72,16 +72,16 @@ Audits détaillés et sourcés : [`docs/audit/A-status-sessions.md`](audit/A-sta
 | P0-7 | OFF/Stop n'arrêtaient pas le moteur de failover (nouvelles sessions) | **corrigé** |
 | P0-8 | Contrat Task Board mal lu (`revision`, `claim`) → clé d'idempotence figée, exécutions invisibles | **corrigé** + tests contrat |
 | P0-9 | Aucun mono-écrivain : plusieurs hôtes clobber `state.json` (acks/mode perdus, ticks dupliqués) | **corrigé** (verrou d'instance + ticks coalescés) |
-| P0-10 | Aucun lien d'exécution Task Board (`taskboard_execution_report` échoue) | **ouvert** — nécessite l'API `run` du Task Board, hors première livraison |
+| P0-10 | Aucun lien d'exécution Task Board (`taskboard_execution_report` échoue) | **corrigé en opt-in** : `executionBackend:'taskboard'` délègue au `POST /tasks/:id/run` (exécution/worktree/claim réels) ; le backend `board` reste requis pour le failover de modèle |
 | P0-11 | Effets externes non idempotents rejouables après handoff | **partiellement corrigé** (tool calls capturés, effet `unknown`, vérification imposée ; pas de réconciliation externe) |
 
 ## Écarts P1 — ouverts après cette livraison
 
 - Retour au provider principal au checkpoint sûr (`shouldReturnToPrimary` non branché).
 - `fencingToken` non vérifié à l'écriture (le watchdog de bail et le verrou d'instance couvrent le cas multi-hôte, pas la reprise concurrente intra-hôte).
-- Intégration worktree native (les cartes `isolation:'worktree'` sont refusées, pas exécutées isolées).
-- Forge réelle (GitHub/GitLab) : contrat de capacités + tests sur fausse API, aucun appel live.
-- Webhooks signés, pagination/rate-limit des forges, conflits de mise à jour externe.
+- Intégration worktree native **uniquement en backend `taskboard`** ; le backend `board` refuse la carte (choix honnête, pas d'exécution isolée).
+- Forge réelle (GitHub/GitLab) : contrat + pagination + rate-limit testés sur **fausse API**, aucun appel live.
+- Webhooks signés, conflits de mise à jour externe, suppression/édition de dépendances côté forge.
 - E2E sur instance DSH isolée avec provider factice OpenAI-compatible.
 - Test de charge 30 agents / 200 sessions, Linux, désinstallation réversible.
 - `taskboard` : `presetId`, `branch`, `checklist` non exploités par le board.

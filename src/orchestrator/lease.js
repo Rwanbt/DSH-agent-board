@@ -86,6 +86,8 @@ export function ensureAssignment(assignments, draft) {
     sessionId: draft.sessionId ?? null,
     previousSessionId: draft.previousSessionId ?? null,
     model: draft.model ?? null,
+    backend: draft.backend === 'taskboard' ? 'taskboard' : 'board',
+    executionId: typeof draft.executionId === 'string' ? draft.executionId : null,
     routeHistory: Array.isArray(draft.routeHistory) ? draft.routeHistory : [],
     switches: Number(draft.switches) || 0,
     retries: Number(draft.retries) || 0,

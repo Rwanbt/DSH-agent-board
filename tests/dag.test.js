@@ -61,6 +61,24 @@ test('a task the Task Board already runs, claims or schedules is never launched 
   assert.equal(reasons.get('wt'), 'worktree_isolation_not_supported')
 })
 
+test('a task asking for a permission outside the mandate is skipped with a reason', () => {
+  const withPermission = [
+    { id: 'p1', title: 'Needs full access', status: 'todo', workspaceId: 'w1', permission: 'danger-full-access' },
+    { id: 'p2', title: 'Read only', status: 'todo', workspaceId: 'w1', permission: 'read-only' },
+  ]
+  const policy = normalizePolicy({ mode: MODES.AUTONOMOUS, maxConcurrent: 4 })
+  const plan = selectDispatchable({ tasks: withPermission, assignments: [], proposals: [], policy })
+  assert.deepEqual(plan.actions.map(action => action.taskId), ['p2'])
+  assert.ok(plan.skipped.some(entry => entry.taskId === 'p1' && entry.reason === 'permission_not_allowed:danger-full-access'))
+  const widened = selectDispatchable({
+    tasks: withPermission,
+    assignments: [],
+    proposals: [],
+    policy: normalizePolicy({ mode: MODES.AUTONOMOUS, maxConcurrent: 4, allowedPermissions: ['read-only', 'danger-full-access'] }),
+  })
+  assert.deepEqual(widened.actions.map(action => action.taskId).sort(), ['p1', 'p2'])
+})
+
 test('serializeSameWorkspace keeps one running agent per workspace when asked', () => {
   const sameProject = [
     { id: 'x', title: 'X', status: 'todo', urgency: 'normal', workspaceId: 'w1' },

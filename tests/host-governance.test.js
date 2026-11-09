@@ -75,7 +75,9 @@ function makeCtx({ createDelayMs = 0, permissionPresets = [] } = {}) {
     },
     get(name) {
       if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'primary', model: 'big' }) }
-      if (name === 'sessions') return { get: () => undefined }
+      // A created session is visible through the native session table, which is
+      // what permissionPresets/rename are applied to.
+      if (name === 'sessions') return { get: id => (created.some(option => option.sessionId === id) ? { id } : undefined) }
       if (name === 'permissionPresets') {
         return { set: (session, preset) => { presets.push({ session, preset }); permissionPresets.push(preset) } }
       }
@@ -273,10 +275,24 @@ test('a card cannot escalate to danger-full-access beyond the operator mandate',
     const handler = () => routeRef.current.handler
     await callJson(handler(), 'POST', '/mode', { mode: 'autonomous' })
     await callJson(handler(), 'POST', '/tick', {})
-    assert.equal(created.length, 1)
-    assert.equal(presets.length, 0, 'danger-full-access must not be applied by default')
+    assert.equal(created.length, 0, 'a permission outside the mandate must be refused before launching')
+    assert.equal(presets.length, 0)
     const state = await callJson(handler(), 'GET', '/state')
-    assert.ok(state.body.value.audit.some(entry => entry.type === 'permission_refused'))
+    const reasons = state.body.value.lastTick.skipped.map(entry => entry.reason)
+    assert.ok(reasons.includes('permission_not_allowed:danger-full-access'), JSON.stringify(reasons))
+    assert.equal(state.body.value.lastTick.actions.length, 0)
+  })
+})
+
+test('a permission explicitly allowed by the mandate is applied', async () => {
+  const task = { ...structuredClone(TASK), permission: 'read-only' }
+  await withBoard([task], async ({ routeRef, created, presets }) => {
+    const handler = () => routeRef.current.handler
+    await callJson(handler(), 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(handler(), 'POST', '/policy', { policy: { allowedPermissions: ['read-only', 'workspace-write'] } })
+    await callJson(handler(), 'POST', '/tick', {})
+    assert.equal(created.length, 1)
+    assert.deepEqual(presets.map(entry => entry.preset), ['read-only'])
   })
 })
 

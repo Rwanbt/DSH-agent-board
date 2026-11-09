@@ -13,6 +13,7 @@
 import { AdapterError, defineAdapter } from '../contracts/adapters.js'
 
 export const TASKBOARD_STATE_PATH = '/dsh-taskboard/state'
+export const TASKBOARD_RUN_PATH = '/dsh-taskboard/tasks'
 
 /**
  * Normalize one Task Board `TaskRecord` (schema 0.10.2) into the board's shape.
@@ -79,12 +80,21 @@ export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, 
   if (typeof baseUrl !== 'string' || baseUrl === '') throw new Error('agent-board: taskboard adapter needs a base URL')
 
   async function getJson(path) {
+    return requestJson('GET', path)
+  }
+
+  async function requestJson(method, path, body = undefined) {
     const url = new URL(path, baseUrl).toString()
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     let response
     try {
-      response = await fetchImpl(url, { headers: { accept: 'application/json' }, signal: controller.signal })
+      response = await fetchImpl(url, {
+        method,
+        headers: { accept: 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: controller.signal,
+      })
     } catch (error) {
       throw new AdapterError(`task board unreachable: ${String(error?.message ?? error)}`, {
         code: 'unreachable', retryable: true, adapterId: 'dsh-taskboard', cause: error,
@@ -97,28 +107,29 @@ export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, 
         code: `http_${response.status}`, retryable: response.status >= 500, adapterId: 'dsh-taskboard',
       })
     }
-    let body
+    let envelope
     try {
-      body = await response.json()
+      envelope = await response.json()
     } catch (error) {
       throw new AdapterError('task board returned invalid JSON', { code: 'invalid_json', cause: error, adapterId: 'dsh-taskboard' })
     }
-    if (body === null || typeof body !== 'object' || body.ok !== true) {
-      throw new AdapterError(`task board refused the read: ${String(body?.error ?? 'unknown error')}`, {
+    if (envelope === null || typeof envelope !== 'object' || envelope.ok !== true) {
+      const message = typeof envelope?.error === 'object' ? envelope.error?.message : envelope?.error
+      throw new AdapterError(`task board refused the request: ${String(message ?? 'unknown error')}`, {
         code: 'refused', adapterId: 'dsh-taskboard',
       })
     }
-    return body.value
+    return envelope.value
   }
 
   const adapter = defineAdapter({
     id: 'dsh-taskboard',
     kind: 'work-source',
     title: 'DSH Task Board',
-    capabilities: ['list', 'get'],
+    capabilities: ['list', 'get', 'run'],
     status: 'available',
     validatedLive: false,
-    notes: 'Read-only. Claim/in_review are performed by the launched agent session; done stays human-only.',
+    notes: 'Read-only ledger. `run` delegates execution to the Task Board executor (session/execution/worktree created by it); claim/in_review are performed by the session; done stays human-only.',
     async list() {
       const state = await getJson(TASKBOARD_STATE_PATH)
       // The ledger exposes `revision` (global monotonic counter), not `rev`.
@@ -138,6 +149,29 @@ export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, 
       const { items } = await adapter.list()
       return items.find(task => task.id === id) ?? null
     },
+    /**
+     * Ask the Task Board's OWN executor to run this task.
+     *
+     * This is deliberately NOT a ledger write: the Task Board creates the
+     * session, the execution record, the claim, the permission/preset and the
+     * worktree. The board only records `executionId` + `sessionId` and observes
+     * the session. Contract: `POST /dsh-taskboard/tasks/:id/run` -> 202
+     * `{ ok:true, value:{ ok:true, executionId, sessionId } }`.
+     */
+    async runTask(id, { reuseWorktree = false } = {}) {
+      const value = await requestJson(
+        'POST',
+        `${TASKBOARD_RUN_PATH}/${encodeURIComponent(String(id))}/run`,
+        reuseWorktree === true ? { reuse: true } : {},
+      )
+      if (value === null || typeof value !== 'object' || value.ok !== true || typeof value.sessionId !== 'string') {
+        throw new AdapterError('task board did not start an execution', { code: 'run_refused', adapterId: 'dsh-taskboard' })
+      }
+      return {
+        executionId: typeof value.executionId === 'string' ? value.executionId : null,
+        sessionId: value.sessionId,
+      }
+    },
     describe() {
       return {
         id: 'dsh-taskboard',
@@ -146,7 +180,7 @@ export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, 
         status: 'available',
         validatedLive: adapter.validatedLive === true,
         capabilities: {
-          list: true, get: true, subscribe: false, create: false,
+          list: true, get: true, run: true, subscribe: false, create: false,
           update: false, comment: false, transition: false,
         },
         notes: adapter.notes,
