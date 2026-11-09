@@ -240,3 +240,27 @@ test('compactState bounds a flood of unacked turn ends at the hard ceiling', () 
   assert.equal(Object.keys(state.turnEnd).length, 4)
   assert.deepEqual(Object.keys(state.turnEnd).sort(), ['s0', 's1', 's2', 's3'])
 })
+
+test('compactState bounds proposals, assignments and acks without dropping live state', () => {
+  const proposals = []
+  for (let index = 0; index < 10; index += 1) proposals.push({ id: `p${index}`, status: 'expired', createdAt: index })
+  proposals.push({ id: 'pending-old', status: 'pending', createdAt: 0 })
+  proposals.push({ id: 'pending-new', status: 'pending', createdAt: 1 })
+  const assignments = []
+  for (let index = 0; index < 10; index += 1) assignments.push({ id: `a${index}`, status: 'done', endedAt: index })
+  assignments.push({ id: 'active', status: 'running', attempt: 0 })
+  const acks = {}
+  for (let index = 0; index < 10; index += 1) acks[`s${index}`] = { seenAt: index }
+  const state = {
+    previews: {}, turnEnd: {}, audit: [],
+    proposals, assignments, acks,
+  }
+  compactState(state, { maxProposals: 4, maxAssignments: 4, maxAcks: 5, maxAudit: 10 })
+  assert.equal(state.proposals.length, 4)
+  assert.deepEqual(state.proposals.filter(proposal => proposal.status === 'pending').map(proposal => proposal.id).sort(), ['pending-new', 'pending-old'])
+  assert.equal(state.assignments.length, 4)
+  assert.ok(state.assignments.some(assignment => assignment.id === 'active'), 'a running assignment is never evicted')
+  assert.deepEqual(state.assignments.filter(assignment => assignment.status === 'done').map(assignment => assignment.id).sort(), ['a7', 'a8', 'a9'])
+  assert.equal(Object.keys(state.acks).length, 5)
+  assert.deepEqual(Object.keys(state.acks).sort(), ['s5', 's6', 's7', 's8', 's9'])
+})
