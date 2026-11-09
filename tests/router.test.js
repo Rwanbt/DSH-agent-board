@@ -73,6 +73,20 @@ test('a 403 caused by provider auth is switchable; a policy 403 is not', () => {
   assert.equal(refusal.switchable, false)
 })
 
+test('a missing API key is a non-retryable auth fault, never an "unknown" retry loop', () => {
+  const failure = classifyFailure({ message: 'llm-deepseek: no API key for provider route "deepseek-official"; store DEEPSEEK_API_KEY through the credentials service' })
+  assert.equal(failure.kind, FAILURE.AUTH)
+  assert.equal(failure.retryable, false)
+  assert.equal(failure.switchable, true)
+  // No alternate route: blocked immediately, not retried on the same route.
+  const blocked = planRoute({ failure, currentRoute: chain[0], chain: [chain[0]], policy: { maxRetries: 3 } })
+  assert.equal(blocked.action, 'blocked')
+  // An alternate route that may hold a credential is a legitimate switch.
+  const switched = planRoute({ failure, currentRoute: chain[0], chain, policy: { maxRetries: 3 } })
+  assert.equal(switched.action, 'switch')
+  assert.equal(switched.nextRoute.provider, 'backup')
+})
+
 test('classify: no alternate route after a partial stream is a visible blocked state', () => {
   const failure = classifyFailure({ message: 'connection reset', code: 'ECONNRESET', afterFirstChunk: true })
   const plan = planRoute({ failure, currentRoute: { provider: 'primary', model: 'big' }, chain: [], policy: {} })

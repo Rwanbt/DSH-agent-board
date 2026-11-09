@@ -163,6 +163,27 @@ export function selectDispatchable({ tasks, assignments = [], proposals = [], po
       skipped.push({ taskId: task.id, reason: 'awaiting_approval' })
       continue
     }
+    // Bounded automatic retries: a card whose last attempt failed is not
+    // relaunched on every tick (the isolated E2E showed an unbounded loop), and
+    // one revision cannot spawn unlimited sessions. Manual `/dispatch` remains
+    // available to the operator.
+    const prior = (assignments ?? []).filter(assignment => String(assignment.taskId) === String(task.id))
+    const lastAttempt = prior[prior.length - 1]
+    if (lastAttempt !== undefined && ['failed', 'interrupted', 'stopped'].includes(lastAttempt.status)) {
+      const revision = task.revision ?? task.version ?? task.rev ?? null
+      const attemptsForRevision = prior.filter(assignment => String(assignment.revision ?? '') === String(revision ?? '')).length
+      const maxAttempts = Number(policy?.maxAttemptsPerRevision) || 4
+      const cooldownMs = Number.isFinite(Number(policy?.retryCooldownMs)) ? Number(policy.retryCooldownMs) : 300_000
+      const endedAt = Number(lastAttempt.endedAt ?? lastAttempt.startedAt) || 0
+      if (attemptsForRevision >= maxAttempts) {
+        skipped.push({ taskId: task.id, reason: 'max_attempts_reached' })
+        continue
+      }
+      if (cooldownMs > 0 && now - endedAt < cooldownMs) {
+        skipped.push({ taskId: task.id, reason: 'retry_cooldown' })
+        continue
+      }
+    }
     // The Task Board owns its own executions and its own scheduler. Launching a
     // session for a task another executor already runs would create a second
     // writer for the same work: skip it and say why.

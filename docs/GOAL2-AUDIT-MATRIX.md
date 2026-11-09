@@ -54,7 +54,7 @@ Audits détaillés et sourcés : [`docs/audit/A-status-sessions.md`](audit/A-sta
 | CI / Git / worktrees | absent côté board | `gatherGit` lecture seule | aucun push/PR, aucune création de worktree |
 | Secrets | non exposés | aucune lecture de credential dans `src/` | `GITHUB_TOKEN` lu par l'adaptateur GitHub (variable d'env, non journalisée) |
 | Tests unitaires / intégration | solides | 69 → **112** | voir matrice A–E dans `docs/audit/D-tests-coverage.md` |
-| E2E instance isolée | **NON TESTÉ** | `DSH_HOME`/`--profile`/`--port 0` documentés | credentials absents d'un `DSH_HOME` neuf ; aucun serveur factice monté dans cette livraison |
+| E2E instance isolée | partiel | `docs/e2e/isolated-instance-evidence.md` | activation plugin, contrat Task Board réel, lancement réel, garde de reprise, verrou, SSE et relance bornée **vérifiés live** ; aucun tour de modèle réussi (pas de credentials dans un `DSH_HOME` neuf) |
 | Charge 30 agents / 200 sessions | non testable ici | test de perf synthétique `projection` < 30 ms | pas d'instance réelle chargée |
 | Windows 11 | vérifié | tests + runtime local | Linux : NON TESTÉ |
 | Désinstallation | non testée | `plugin_manager remove_bundle` non exécuté | pas de profil isolé créé |
@@ -77,12 +77,15 @@ Audits détaillés et sourcés : [`docs/audit/A-status-sessions.md`](audit/A-sta
 
 ## Écarts P1 — ouverts après cette livraison
 
+- **Tour de modèle réussi** dans l'instance isolée : impossible sans credentials
+  (aucune copie de secret faite) ; le parcours complet tâche → session → rapport
+  → `in_review` reste prouvé uniquement par l'E2E live du GOAL 1 (build
+  précédent). Les gardes, le lancement réel, la reprise et l'arrêt le sont en live.
 - Retour au provider principal au checkpoint sûr (`shouldReturnToPrimary` non branché).
 - `fencingToken` non vérifié à l'écriture (le watchdog de bail et le verrou d'instance couvrent le cas multi-hôte, pas la reprise concurrente intra-hôte).
-- Intégration worktree native **uniquement en backend `taskboard`** ; le backend `board` refuse la carte (choix honnête, pas d'exécution isolée).
+- Backend `taskboard` non exercé contre un exécuteur Task Board live (test contrat sur fausse API).
 - Forge réelle (GitHub/GitLab) : contrat + pagination + rate-limit testés sur **fausse API**, aucun appel live.
 - Webhooks signés, conflits de mise à jour externe, suppression/édition de dépendances côté forge.
-- E2E sur instance DSH isolée avec provider factice OpenAI-compatible.
 - Test de charge 30 agents / 200 sessions, Linux, désinstallation réversible.
 - `taskboard` : `presetId`, `branch`, `checklist` non exploités par le board.
 
