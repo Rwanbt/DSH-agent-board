@@ -870,8 +870,9 @@ export function apply(ctx, config = {}) {
       assignment.retryAt = Date.now() + delayMs
       const message = `The previous turn failed with ${failure.kind}. Retry the unfinished work in this session. Do not duplicate side effects that already succeeded; re-read the files first. Report the outcome as usual (at most in_review).`
       const dispatchRetry = () => {
-        // The operator may have stopped the board while the backoff waited.
-        if (state.mode === MODES.OFF || isStopped() || assignment.status !== LEASE_STATUS.RUNNING) {
+        // The operator may have stopped the board while the backoff waited, or
+        // this host may have lost the lock to a new primary.
+        if (!isPrimary || state.mode === MODES.OFF || isStopped() || assignment.status !== LEASE_STATUS.RUNNING) {
           assignment.retryAt = null
           audit({ type: 'retry_suppressed', assignmentId: assignment.id, taskId: assignment.taskId, reason: 'delegation_stopped' })
           touch()
