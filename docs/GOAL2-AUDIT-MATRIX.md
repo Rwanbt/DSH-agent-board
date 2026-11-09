@@ -15,7 +15,7 @@ Audits détaillés et sourcés : [`docs/audit/A-status-sessions.md`](audit/A-sta
 | `dsh-taskboard` | **`0.10.2`**, `link:.../default-workspace/dsh-taskboard` | `package.json` du fork + lien profil |
 | `dsh-llm-fallbacks` | **NON INSTALLÉ** | absent de `plugin_manager list_plugins` et de `profiles/desktop/node_modules` |
 | Node | `v26.13.0` (plugin exige `>=22`) | `node --version` |
-| Tests de départ | **69/69**, puis **133/133** après corrections | `node --test tests/` |
+| Tests de départ | **69/69**, puis **148/148** après corrections | `node --test tests/` |
 | Worktree de départ | propre, aucun changement non commité | `git status --porcelain` vide |
 
 ## Matrice : implémenté / partiel / absent / non testable

@@ -82,4 +82,17 @@ doublon → vérifier que la carte reste `in_review` (jamais `done`).
 | `cee333f` | consignes de reprise/rollback/essai |
 | *(ce lot)* | résilience (restart, watchdog, ticks concurrents, lock), contrat forge sur fausse API, backend `taskboard` (exécution native/worktree) |
 
-Tests : **133/133**. Voir TEST-REPORT §11.
+Tests : **148/148** (revue indépendante incluse). Voir TEST-REPORT §11–§13.
+
+### Lot 3 — revue croisée indépendante
+
+| Commit | Contenu |
+|---|---|
+| `1253729` | bornage du document durable |
+| `92f8f8c` | un hôte secondaire n'écrit plus le journal ni l'état |
+| `c06087a` | P1 : porte de handoff, course Stop/handoff, verrou CAS (bug Windows `:` réel) ; P2 revue |
+| `86dc5b0` | un hôte démis ne relance pas les retries différés |
+
+Tests : **148/148**, trois exécutions consécutives sans échec. Les points restants
+sont documentés dans TEST-REPORT §13 (turn/end précoce du backend `taskboard`,
+dérive du bundle généré quand une autre session édite `src/client/**`).
