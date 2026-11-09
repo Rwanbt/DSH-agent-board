@@ -16,6 +16,7 @@
  */
 
 import { buildProjection } from '../supervisor/projection.js'
+import { aggregateSubtrees } from '../board/view.js'
 
 export function emptyHostState() {
   return {
@@ -64,11 +65,25 @@ export function createBoardStore(ctx, options = {}) {
     }
   }
 
-  function bump() {
-    dirty = true
+  // Native sources can notify many times per second while agents stream.
+  // Notifications are coalesced: at most one projection rebuild per window.
+  const notifyWindowMs = Number.isFinite(options.notifyWindowMs) ? options.notifyWindowMs : 200
+  let notifyTimer = null
+  let stats = { notifications: 0, rebuilds: 0 }
+
+  function flush() {
+    notifyTimer = null
     for (const listener of listeners) {
       try { listener() } catch { /* listener errors must not break the store */ }
     }
+  }
+
+  function bump() {
+    dirty = true
+    stats.notifications += 1
+    if (notifyWindowMs <= 0) { flush(); return }
+    if (notifyTimer !== null) return
+    notifyTimer = setTimeout(flush, notifyWindowMs)
   }
 
   function bind() {
@@ -99,8 +114,10 @@ export function createBoardStore(ctx, options = {}) {
       try { return service('workspaces')?.list?.getSnapshot?.() ?? {} } catch { return {} }
     })()
     const projection = buildProjection({ list, statusMap, hostState: host, workspaces, now: Date.now() })
+    stats.rebuilds += 1
     return {
       projection,
+      aggregates: aggregateSubtrees(projection),
       host,
       hostError,
       phase: typeof list?.phase === 'string' ? list.phase : 'ready',
@@ -188,8 +205,10 @@ export function createBoardStore(ctx, options = {}) {
     tick: () => post('/tick', {}),
     decide: (proposalId, approve) => post(`/proposals/${encodeURIComponent(proposalId)}/decide`, { approve }),
     dispatch: taskId => post('/dispatch', { taskId }),
+    getStats: () => ({ ...stats }),
     destroy() {
       destroyed = true
+      if (notifyTimer !== null) { clearTimeout(notifyTimer); notifyTimer = null }
       for (const unsubscribe of unsubscribers.splice(0)) {
         try { unsubscribe() } catch { /* ignore */ }
       }
