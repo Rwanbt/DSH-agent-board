@@ -23,7 +23,7 @@ function DabAgentCardImpl(props) {
   const model = dabModelText(node.model)
   const age = dabFormatAge(node.updatedAt)
   const statusText = dabStatusLabel(node.status)
-  const calm = !(node.status === 'running' || node.status === 'waiting_user' || node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true))
+  const calm = !(node.status === 'running' || node.status === 'recovering' || node.status === 'waiting_user' || node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true))
   const label = [node.title, statusText, node.role, groupActive ? dabT('groupActive') : null].filter(Boolean).join(' — ')
 
   const stop = event => { event.stopPropagation() }

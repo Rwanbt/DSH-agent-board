@@ -30,16 +30,20 @@ OFF / SUPERVISED / AUTONOMOUS modes, and a task-level failover/recovery path.
   touch/keyboard) navigates through `uiWorkspace.openSession`.
 - **Orchestration** — OFF (observe only), SUPERVISED (proposals wait for
   approval), AUTONOMOUS (launches inside the mandate), plus a separate
-  **Stop executions** action that cancels in-flight agents.
-- **Restart-safe** — assignments carry leases, fencing tokens and
-  idempotency keys; a persisted JSON state + JSONL audit journal survives
-  plugin reloads; an assignment whose agent is gone becomes `interrupted`
-  instead of being relaunched.
-- **Failover** — error classification (429, 5xx, timeout, transport, quota,
-  auth, context overflow, partial stream), bounded retry, provider switch along
-  an explicit chain, and checkpoint → handoff into a compatible session when
-  the in-flight request cannot be repaired. Policy refusals and CI/code
-  failures are never treated as provider outages.
+  **Stop executions** action that cancels in-flight agents and blocks new
+  delegation until **Resume**. OFF, Stop, approval and manual dispatch all pass
+  through one host-side authorization gate.
+- **Restart-safe** — assignments carry leases, idempotency keys and a
+  persisted JSON state + JSONL audit journal; a single-writer instance lock
+  prevents two DSH hosts from clobbering the same state; an assignment whose
+  agent is gone becomes `interrupted` instead of being relaunched, and durable
+  autonomy requires an explicit resume after a restart.
+- **Failover** — error classification (429 and rate-limit wording, 5xx,
+  timeout, transport, quota, auth, model unavailable, context overflow, partial
+  stream), bounded retry that honours `Retry-After`, provider switch along an
+  explicit chain, and checkpoint → handoff into a compatible session when the
+  in-flight request cannot be repaired. Policy refusals and CI/code failures
+  are never treated as provider outages.
 
 ## Install
 
@@ -107,9 +111,10 @@ the claiming and the `in_review` transition, and `done` stays human-only.
 | GET | `/dsh-agent-board/api/v2/adapters` | capability matrix |
 | POST | `/mode` | `{mode: off\|supervised\|autonomous}` |
 | POST | `/policy` | merge a policy patch |
-| POST | `/stop` | cancel in-flight executions |
-| POST | `/ack` | `{sessionId}` read cursor |
+| POST | `/stop` | cancel in-flight executions and block new delegation |
+| POST | `/ack` | acknowledge one session (`{sessionId, seen?:false}`) |
 | POST | `/tick` | run one orchestration tick now |
+| POST | `/resume` | clear the operator stop (Stop is not OFF) |
 | POST | `/dispatch` | `{taskId}` explicit manual launch |
 | POST | `/proposals/:id/decide` | `{approve:boolean}` |
 
@@ -119,7 +124,7 @@ handler runs.
 ## Tests
 
 ```sh
-node --test tests/            # 53 tests, ~0.6 s
+node --test tests/            # 112 tests, ~0.9 s
 node scripts/build-client.mjs # regenerate src/client.js
 node --check src/client.js && node --check src/host/index.js
 ```

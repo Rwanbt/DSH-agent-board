@@ -132,8 +132,23 @@ function dabMakePage(store, ctx) {
 
     const acknowledge = React.useCallback(id => {
       const node = nodeRef.current.byId.get(id)
-      if (node && (node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true))) void store.ack(id)
+      if (node && (node.status === 'finished_unread' || node.status === 'recovering' || (node.status === 'failed' && node.seen !== true))) void store.ack(id, { source: 'board_click' })
     }, [])
+
+    // Reading a session OUTSIDE the board (native main view) is still reading:
+    // once the runtime reports the session open in the main view, the board
+    // acknowledges it so an old consulted session never pollutes the home view.
+    const nativeAcked = React.useRef(new Set())
+    React.useEffect(() => {
+      for (const node of projection.nodes) {
+        if (node.viewing !== true) continue
+        if (nativeAcked.current.has(node.id)) continue
+        if (node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true)) {
+          nativeAcked.current.add(node.id)
+          void store.ack(node.id, { source: 'native_view' })
+        }
+      }
+    }, [projection])
 
     const openSession = React.useCallback(id => {
       setOpenError('')
@@ -226,8 +241,11 @@ function dabMakePage(store, ctx) {
     return h('div', { className: 'dab-root', ref: rootRef, 'data-dsh-agent-board': '', 'data-narrow': narrow ? 'true' : 'false' },
       h(DabToolbar, {
         counts, visibleCount: view.visibleCount, mode, busy, hostDown, canStop, ui, setUi, projects: projectList, narrow,
+        stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
+        secondary: host.instance?.primary === false,
         onMode: value => act('mode', () => store.setMode(value)),
         onStop: () => act('stop', () => store.stop()),
+        onResume: () => act('resume', () => store.resume()),
         onRefresh: () => { void store.refreshHost(); void act('refresh', () => store.refreshHost()) },
         onHistory: () => setHistoryOpen(true),
       }),

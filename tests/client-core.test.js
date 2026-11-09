@@ -95,6 +95,93 @@ test('ack persists through the host API and the store survives destroy', async (
   store.destroy()
 })
 
+// An EventSource double that records subscribed event types and dispatches
+// frames by type, exactly like the browser: `message` reaches onmessage, a
+// named event only reaches addEventListener listeners.
+function recordingEventSource() {
+  const ref = { current: null }
+  class RecordingEventSource {
+    constructor(url) {
+      this.url = url
+      this.closed = false
+      this.listenedTypes = new Set()
+      this.listeners = new Map()
+      ref.current = this
+    }
+    addEventListener(type, handler) {
+      this.listenedTypes.add(type)
+      if (!this.listeners.has(type)) this.listeners.set(type, [])
+      this.listeners.get(type).push(handler)
+    }
+    emit(type, event) {
+      for (const handler of this.listeners.get(type) ?? []) handler(event)
+      if (type === 'message' && typeof this.onmessage === 'function') this.onmessage(event)
+    }
+    close() { this.closed = true }
+  }
+  return { EventSourceImpl: RecordingEventSource, ref }
+}
+
+async function startedStore(options = {}) {
+  const ctx = makeCtx()
+  const fetchImpl = fakeFetch(hostState)
+  const store = createBoardStore(ctx, { fetchImpl, notifyWindowMs: 0, ...options })
+  store.start()
+  await new Promise(resolve => setTimeout(resolve, 20))
+  return { ctx, fetchImpl, store }
+}
+
+test('SSE: the named state event updates host state (not only message)', async () => {
+  const { EventSourceImpl, ref } = recordingEventSource()
+  const { store } = await startedStore({ EventSourceImpl })
+  const created = ref.current
+  assert.ok(created !== null)
+  assert.equal(created.url, '/dsh-agent-board/api/v2/events')
+  assert.ok(created.listenedTypes.has('state'), 'the client must subscribe to the named `state` event')
+
+  let notified = 0
+  store.subscribe(() => { notified += 1 })
+  store.getSnapshot()
+  const before = store.getHost()
+  const notifiedBefore = notified
+
+  created.emit('state', { data: JSON.stringify({ ...hostState, mode: 'autonomous' }) })
+
+  assert.notEqual(store.getHost(), before, 'the named state frame must replace host state')
+  assert.equal(store.getHost().mode, 'autonomous')
+  assert.ok(notified > notifiedBefore, 'subscribers must be notified after a named state frame')
+  assert.equal(store.getSnapshot().host.mode, 'autonomous')
+
+  // Idempotent: a second connectStream() must not register a duplicate handler.
+  store.connectStream()
+  assert.equal(created.listeners.get('state').length, 1)
+  store.destroy()
+})
+
+test('SSE: an unnamed message frame still updates host state', async () => {
+  const { EventSourceImpl, ref } = recordingEventSource()
+  const { store } = await startedStore({ EventSourceImpl })
+  const created = ref.current
+
+  created.emit('message', { data: JSON.stringify({ ...hostState, mode: 'manual' }) })
+  assert.equal(store.getHost().mode, 'manual')
+  store.destroy()
+})
+
+test('SSE: invalid JSON on the state event is ignored and keeps the previous state', async () => {
+  const { EventSourceImpl, ref } = recordingEventSource()
+  const { store } = await startedStore({ EventSourceImpl })
+  const created = ref.current
+  const before = store.getHost()
+
+  assert.doesNotThrow(() => created.emit('state', { data: '{not json' }))
+  assert.doesNotThrow(() => created.emit('state', {}))
+  assert.doesNotThrow(() => created.emit('state', { data: '42' }))
+  assert.equal(store.getHost(), before)
+  assert.equal(store.getHost().mode, 'supervised')
+  store.destroy()
+})
+
 test('EventSource updates are applied to the next snapshot', async () => {
   const ctx = makeCtx()
   let created = null

@@ -4,12 +4,18 @@ Run date: 2026-11-09 (Europe/Paris). Host: DSH `0.2.2-rc.1`, profile `desktop`,
 GUI `http://127.0.0.1:62337`. Everything below was executed on this machine; no
 result is inferred from a mock unless it says so.
 
+> **GOAL 2 update (same day, branch `fix/agent-board-runtime-e2e`).** The
+> original report below is kept as the GOAL 1 evidence. The suite is now
+> **112 tests / 112 pass / 0 fail**; see §10 for the exact GOAL 2 commands,
+> the new test files, and what remains **NON TESTÉ**. The GOAL 2 audit matrix
+> is `docs/GOAL2-AUDIT-MATRIX.md`.
+
 ## 1. Commands and raw results
 
 | Command | Result |
 |---|---|
-| `node --test tests/` | **53 pass, 0 fail**, ~0.6 s wall clock |
-| `node scripts/build-client.mjs` | bundle built, 61 972 bytes, 4 modules |
+| `node --test tests/` (GOAL 1) | **53 pass, 0 fail**, ~0.6 s wall clock |
+| `node scripts/build-client.mjs` (GOAL 1) | bundle built, 61 972 bytes, 4 modules |
 | `node --check src/host/index.js` | exit 0 |
 | `node --check src/client.js` | exit 0 |
 | `node --check src/client/core.js` | exit 0 |
@@ -155,3 +161,62 @@ must not be read as live provider-outage or reboot guarantees.
 4. A DSH upgrade may rename `uiSession.sessionStatus` or
    `uiWorkspace.openSession`; the UI then degrades to `unknown`/no navigation
    rather than crashing.
+
+## 10. GOAL 2 — runtime truth, governance and failover run
+
+Branch `fix/agent-board-runtime-e2e`, base `75b40d8` (GOAL 1 UX commit).
+Every command below was run in this workspace on 2026-11-09.
+
+| Command | Result |
+|---|---|
+| `node --test tests/` | **112 tests, 112 pass, 0 fail**, ~0.9 s |
+| `npm run check` | exit 0 (`node --check` on host + client, then the suite) |
+| `node scripts/build-client.mjs` | bundle rebuilt from the 13 authored modules |
+| `node --check src/client.js` | exit 0 |
+| `node scripts/smoke-host.mjs` | `smoke: OK` |
+
+New test files and what they pin:
+
+- `tests/host-governance.test.js` — OFF refuses approval and `/dispatch`; Stop
+  blocks new delegation and cancels live agents; a stop during an in-flight
+  launch cancels the created session; a stop suppresses failover recovery; a
+  stopped attempt can be relaunched as a new attempt; a card cannot escalate to
+  `danger-full-access`; a worktree card is not run unisolated; the SSE stream
+  uses the named `state` event.
+- `tests/lock.test.js` — single-writer instance lock (create/refuse/stale
+  takeover/corrupt/heartbeat/release/pid liveness).
+- `tests/journal.test.js` — a failed write no longer poisons the queue, Windows
+  rename retry, stale tmp cleanup, unacked `turnEnd` protection.
+- `tests/projection.test.js` — native-only failure stays visible, preview of an
+  errored turn is `partial`, `recovering` and `unavailable` are distinct,
+  `viewing` (native main view), ack vs `completionUnread`.
+- `tests/connectors.test.js` — real Task Board 0.10.2 field mapping (`version`,
+  `claimedBy`, `executions`), legacy `rev` alias, skeleton capability honesty.
+- `tests/router.test.js` — rate-limit wording, transport-in-message, deleted
+  model, 403 auth vs policy.
+- `tests/dag.test.js` — tasks already running/claimed/scheduled by the Task
+  Board are skipped, worktree cards skipped, workspace serialization.
+
+### What is NOT tested (explicit)
+
+- **No isolated-instance E2E in this delivery.** A fresh `DSH_HOME` has no
+  `.credentials.yaml`; the documented path (`dsh --profile e2e
+  --from-default-profile web`, `--port 0`, fake OpenAI-compatible provider,
+  `link:` plugins) was not executed. The new runtime paths are therefore
+  **unit/integration tested, not live-E2E tested**.
+- **No process restart** of the DSH host (would kill the session hosting this
+  work). Restart reconciliation and the resume gate are observed at plugin
+  level only.
+- **No real provider outage** and no `dsh-llm-fallbacks` (not installed).
+- **No forge call** (GitHub/GitLab): no credential, no repository, no webhook.
+- **No Linux run**, no 30-agent/200-session load test, no uninstall rehearsal.
+- **The live GOAL 1 E2E evidence in §2–§9** was produced by the PREVIOUS build
+  (65 tests). It is real, but it does not exercise the GOAL 2 code paths.
+
+### Live evidence of the multi-writer defect fixed here
+
+On the running instance (`~/.dsh/agent-board`), `GET /state` returned
+`mode:"off"` with 16 acks while `state.json` on disk (same time window) held
+`mode:"autonomous"`, `acks:{}` and a newer `lastTick`; four leaked
+`state.json.tmp-2096-*` files were present. That divergence is what the
+single-writer lock, the write-queue fix and the tmp cleanup address.
