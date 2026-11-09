@@ -17,7 +17,6 @@
  */
 
 import { execFile } from 'node:child_process'
-import { readFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -28,7 +27,7 @@ import {
   LEASE_STATUS, acquireLease, assignmentKey, createLease, ensureAssignment, reconcileAfterRestart,
 } from '../orchestrator/lease.js'
 import { StateStore, compactState } from '../orchestrator/journal.js'
-import { DEFAULT_LOCK_TTL_MS, acquireInstanceLock, heartbeat, release } from '../orchestrator/lock.js'
+import { DEFAULT_LOCK_TTL_MS, acquireInstanceLock, heartbeat, release, releaseSync } from '../orchestrator/lock.js'
 import { classifyFailure, parseRetryAfter } from '../routing/classify.js'
 import { isRouteAllowed, planRoute, recordHealth, routeKey } from '../routing/router.js'
 import { buildCheckpoint, handoffPrompt } from '../recovery/checkpoint.js'
@@ -730,10 +729,22 @@ export function apply(ctx, config = {}) {
       if (task === undefined) return { ok: false, reason: 'task_missing' }
       if (task.trashedAt !== null && task.trashedAt !== undefined) return { ok: false, reason: 'task_trashed' }
       if (['done', 'canceled', 'archived', 'in_review'].includes(task.status)) return { ok: false, reason: `task_terminal:${task.status}` }
-      if (typeof task.claimedBy === 'string' && task.claimedBy !== '' && task.claimedBy !== assignment.sessionId) {
-        return { ok: false, reason: 'claimed_by_another_session' }
+      // A claim is a session identity, and a handoff replaces the session: the
+      // ledger keeps pointing at the FIRST board session even after the card was
+      // continued in a later one. Accept the claim when it belongs to ANY session
+      // of this task's assignment history (accepting only the just-ended session
+      // made every second hop fail). A foreign executor is still refused.
+      if (typeof task.claimedBy === 'string' && task.claimedBy !== '') {
+        const ownSession = task.claimedBy === assignment.sessionId
+        const ownChain = state.assignments.some(entry => String(entry.taskId) === String(assignment.taskId) && entry.sessionId === task.claimedBy)
+        if (!ownSession && !ownChain) return { ok: false, reason: 'claimed_by_another_session' }
       }
-      if (task.activeExecution === true) return { ok: false, reason: 'already_running_in_taskboard' }
+      // An execution started by the Task Board for THIS assignment is ours; only
+      // a foreign/unknown active execution suppresses the recovery.
+      if (task.activeExecution === true) {
+        const ours = assignment.executionId !== null && assignment.executionId !== undefined && task.activeExecutionId === assignment.executionId
+        if (!ours) return { ok: false, reason: 'already_running_in_taskboard' }
+      }
       return { ok: true, reason: 'allowed', task }
     } catch (error) {
       // Recovery is more valuable than a hard stop on a transient read failure;
@@ -1001,6 +1012,22 @@ export function apply(ctx, config = {}) {
           next.assignment.endedAt = Date.now()
           next.assignment.lease = null
           audit({ type: 'handoff_cancelled', taskId: assignment.taskId, sessionId: created.sessionId, cancelled })
+          touch()
+          return
+        }
+        // A watchdog/restart reconciliation may have interrupted the recovering
+        // record while createSession was in flight. Never resurrect a decided
+        // state: cancel the just-created session and keep the interruption.
+        if (next.assignment.status !== LEASE_STATUS.RECOVERING) {
+          let cancelled = false
+          try {
+            created.handle?.agent?.cancel?.({ kind: 'user' })
+            cancelled = true
+          } catch { /* best effort */ }
+          next.assignment.sessionId = created.sessionId
+          next.assignment.endedAt = next.assignment.endedAt ?? Date.now()
+          next.assignment.lease = null
+          audit({ type: 'handoff_settled_early', taskId: assignment.taskId, sessionId: created.sessionId, status: next.assignment.status, cancelled })
           touch()
           return
         }
@@ -1409,17 +1436,10 @@ export function apply(ctx, config = {}) {
     // final document, and this process must not rename over it afterwards.
     if (isPrimary) store.writeSync(state)
     // Release synchronously so a re-activation in the same tick can take the
-    // lock back (the async release would race the next acquire).
+    // lock back (the async release would race the next acquire), and mark it
+    // released so an in-flight heartbeat cannot recreate it after shutdown.
     if (instanceLock !== null) {
-      let released = false
-      try {
-        const parsed = JSON.parse(readFileSync(instanceLock.path, 'utf8'))
-        if (String(parsed.ownerId) === String(instanceLock.ownerId)) {
-          unlinkSync(instanceLock.path)
-          released = true
-        }
-      } catch { /* fall through to the async release */ }
-      if (!released) void release(instanceLock).catch(() => {})
+      if (!releaseSync(instanceLock)) void release(instanceLock).catch(() => {})
       instanceLock = null
     }
   }

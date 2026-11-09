@@ -86,11 +86,20 @@ const DEFAULT_POLICY = Object.freeze({
   maxSwitches: 2,
   proposalTtlMs: 30 * 60 * 1000,
   leaseTtlMs: 10 * 60 * 1000,
+  // Automatic retries are bounded: a task whose last attempt failed is not
+  // relaunched on the next tick, and a revision has a maximum number of
+  // sessions (manual dispatch stays available to the operator).
+  retryCooldownMs: 5 * 60 * 1000,
+  maxAttemptsPerRevision: 4,
   allowedWorkspaces: [],
   allowedProviders: [],
   // A card may ask for a permission level; the operator's mandate decides which
   // levels this board may grant. `danger-full-access` is never inherited by default.
   allowedPermissions: ['read-only', 'workspace-write'],
+  // 'board' = the board creates the session (model-level failover possible, but
+  // the Task Board gets no execution record). 'taskboard' = the Task Board's own
+  // executor creates the session/execution/worktree (no model-level failover).
+  executionBackend: 'board',
   allowCloudFallback: false,
   autoResumeOnRestart: false,
   serializeSameWorkspace: false,
@@ -99,6 +108,7 @@ const DEFAULT_POLICY = Object.freeze({
 })
 
 const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
+const EXECUTION_BACKENDS = Object.freeze(['board', 'taskboard'])
 
 function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
   const mode = isMode(input.mode) ? input.mode : fallback.mode
@@ -111,10 +121,15 @@ function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     maxSwitches,
     proposalTtlMs: clampInt(input.proposalTtlMs, 60_000, 86_400_000, fallback.proposalTtlMs),
     leaseTtlMs: clampInt(input.leaseTtlMs, 30_000, 86_400_000, fallback.leaseTtlMs),
+    retryCooldownMs: clampInt(input.retryCooldownMs, 0, 86_400_000, fallback.retryCooldownMs ?? 300_000),
+    maxAttemptsPerRevision: clampInt(input.maxAttemptsPerRevision, 1, 10, fallback.maxAttemptsPerRevision ?? 4),
     allowedWorkspaces: uniqueStrings(input.allowedWorkspaces ?? fallback.allowedWorkspaces),
     allowedProviders: uniqueStrings(input.allowedProviders ?? fallback.allowedProviders),
     allowedPermissions: uniqueStrings(input.allowedPermissions ?? fallback.allowedPermissions)
       .filter(level => PERMISSION_LEVELS.includes(level)),
+    executionBackend: EXECUTION_BACKENDS.includes(input.executionBackend)
+      ? input.executionBackend
+      : (fallback.executionBackend ?? 'board'),
     allowCloudFallback: input.allowCloudFallback === true,
     autoResumeOnRestart: input.autoResumeOnRestart === true,
     serializeSameWorkspace: input.serializeSameWorkspace === true,
@@ -2551,17 +2566,24 @@ function dabMakePage(store, ctx) {
     }, [])
 
     // Reading a session OUTSIDE the board (native main view) is still reading:
-    // once the runtime reports the session open in the main view, the board
-    // acknowledges it so an old consulted session never pollutes the home view.
-    const nativeAcked = React.useRef(new Set())
+    // The key includes the session activity timestamp: a LATER turn that
+    // completes while the same session is still open is acknowledged again, and
+    // leaving the view clears the entry.
+    const nativeAcked = React.useRef(new Map())
     React.useEffect(() => {
+      const viewing = new Set()
       for (const node of projection.nodes) {
         if (node.viewing !== true) continue
-        if (nativeAcked.current.has(node.id)) continue
+        viewing.add(node.id)
+        const activityKey = String(Number(node.updatedAt) || 0)
+        if (nativeAcked.current.get(node.id) === activityKey) continue
         if (node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true)) {
-          nativeAcked.current.add(node.id)
+          nativeAcked.current.set(node.id, activityKey)
           void store.ack(node.id, { source: 'native_view' })
         }
+      }
+      for (const id of [...nativeAcked.current.keys()]) {
+        if (!viewing.has(id)) nativeAcked.current.delete(id)
       }
     }, [projection])
 

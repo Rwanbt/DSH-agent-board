@@ -382,3 +382,52 @@ test('a handoff obeys the workspace mandate enforced after the launch', async ()
     assert.match(state.body.value.assignments[0].error, /handoff_suppressed:workspace_not_in_mandate/)
   })
 })
+
+test('a handoff accepts a claim held by an EARLIER board session of the same task', async () => {
+  await withBoard([structuredClone(TASK)], async ({ routeRef, created, listeners, tasksRef }) => {
+    const handler = () => routeRef.current.handler
+    await callJson(handler(), 'POST', '/policy', {
+      policy: { routeChain: [{ provider: 'primary', model: 'big' }, { provider: 'backup', model: 'medium' }, { provider: 'third', model: 'small' }], maxSwitches: 3 },
+    })
+    await callJson(handler(), 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(handler(), 'POST', '/tick', {})
+    assert.equal(created.length, 1)
+    const session1 = created[0].sessionId
+    // The ledger keeps pointing at the first session (the Task Board releases
+    // the claim on its own turn/end; this simulates the race where it has not).
+    tasksRef.tasks[0] = { ...tasksRef.tasks[0], status: 'in_progress', claimedBy: session1 }
+    const listener = listeners.get('session/event')
+    const fail = id => {
+      listener({ id }, { type: 'assistant/message', time: Date.now(), data: { message: { content: [{ type: 'text', text: 'partial' }] } } })
+      listener({ id }, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'error', error: { message: '503 service unavailable' } } } })
+    }
+    fail(session1)
+    assert.ok(await waitFor(() => created.length === 2), 'first hop must be allowed')
+    const session2 = created[1].sessionId
+    // Second hop: the claim still names session1, not session2.
+    fail(session2)
+    assert.ok(await waitFor(() => created.length === 3), 'a claim held by a previous board session must not block the second hop')
+    const state = await callJson(handler(), 'GET', '/state')
+    assert.ok(!state.body.value.assignments.some(entry => /claimed_by_another_session/.test(entry.error ?? '')), 'no hop may be suppressed for our own claim chain')
+  })
+})
+
+test('a handoff is suppressed when a FOREIGN session holds the claim', async () => {
+  await withBoard([structuredClone(TASK)], async ({ routeRef, created, listeners, tasksRef }) => {
+    const handler = () => routeRef.current.handler
+    await callJson(handler(), 'POST', '/policy', {
+      policy: { routeChain: [{ provider: 'primary', model: 'big' }, { provider: 'backup', model: 'medium' }], maxSwitches: 2 },
+    })
+    await callJson(handler(), 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(handler(), 'POST', '/tick', {})
+    tasksRef.tasks[0] = { ...tasksRef.tasks[0], status: 'in_progress', claimedBy: 'foreign-session' }
+    const sessionId = created[0].sessionId
+    const listener = listeners.get('session/event')
+    listener({ id: sessionId }, { type: 'assistant/message', time: Date.now(), data: { message: { content: [{ type: 'text', text: 'partial' }] } } })
+    listener({ id: sessionId }, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'error', error: { message: '503 service unavailable' } } } })
+    await new Promise(resolve => setTimeout(resolve, 80))
+    assert.equal(created.length, 1)
+    const state = await callJson(handler(), 'GET', '/state')
+    assert.match(state.body.value.assignments[0].error, /handoff_suppressed:claimed_by_another_session/)
+  })
+})

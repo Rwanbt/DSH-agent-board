@@ -14,6 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { readFileSync, unlinkSync } from 'node:fs'
 import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -125,34 +126,51 @@ export async function acquireInstanceLock({
   const path = join(dir, LOCK_FILENAME)
   const owner = typeof ownerId === 'string' && ownerId !== '' ? ownerId : `${pid}-${randomUUID()}`
   let stale = false
-  // Bounded loop. Creation is atomic (`wx`), and a STALE takeover is a
-  // compare-and-swap via `rename`: only one racer can rename the existing file
-  // away, so two hosts can never both believe they won. (The previous
-  // unlink+create sequence let B delete A's fresh lock and both become primary.)
+  // Bounded loop. Creation is atomic (`wx`). A STALE takeover additionally
+  // takes a mutually exclusive `takeover` gate file (also `wx`): only the gate
+  // owner may rename the stale lock and create the new one. A plain rename is
+  // not a CAS — B could rename A's FRESH lock away and both would win.
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const current = await readLockFile(path)
     if (current.present) {
       if (!(await lockIsStale(path, current, Number(now()), ttlMs, isAlive))) {
         return { ok: false, holder: current.corrupt ? null : current.record }
       }
-      // Windows forbids ':' in a file name: the owner id is "name:pid:uuid", so
-      // sanitize it before using it in the quarantine path. (A colon made the
-      // rename silently target an alternate data stream and the takeover loop
-      // never freed the lock.)
       const safeOwner = String(owner).replace(/[^a-zA-Z0-9_-]/g, '_')
       const quarantine = `${path}.stale-${safeOwner}-${attempt}`
+      const gatePath = `${path}.takeover`
       try {
-        await renameFile(path, quarantine)
-        stale = true
+        await writeFile(gatePath, String(pid), { encoding: 'utf8', flag: 'wx', mode: 0o600 })
       } catch (error) {
-        // ENOENT: another racer already took it over; loop re-reads the winner.
-        // Any other error: retry the read/decision rather than forcing a write.
-        if (error?.code !== 'ENOENT') continue
+        if (error?.code !== 'EEXIST') continue
+        // A crashed racer may leave the gate behind: break it after the TTL.
+        let gateAge = NaN
+        try { gateAge = Number(now()) - (await stat(gatePath)).mtimeMs } catch { /* gone */ }
+        if (Number.isFinite(gateAge) && gateAge > Math.max(5_000, Number(ttlMs))) {
+          try { await unlink(gatePath) } catch { /* already gone */ }
+          continue
+        }
+        return { ok: false, holder: current.corrupt ? null : current.record }
       }
-      // Best effort: do not let quarantine files accumulate.
       try {
-        await unlink(quarantine)
-      } catch { /* already gone */ }
+        // Re-read under the gate: another host may have replaced the lock while
+        // we waited for it.
+        const fresh = await readLockFile(path)
+        if (fresh.present && !(await lockIsStale(path, fresh, Number(now()), ttlMs, isAlive))) {
+          return { ok: false, holder: fresh.corrupt ? null : fresh.record }
+        }
+        if (fresh.present) {
+          try {
+            await renameFile(path, quarantine)
+            stale = true
+          } catch (error) {
+            if (error?.code !== 'ENOENT') continue
+          }
+          try { await unlink(quarantine) } catch { /* already gone */ }
+        }
+      } finally {
+        try { await unlink(gatePath) } catch { /* already gone */ }
+      }
     }
     const acquiredAt = Number(now())
     const lock = {
@@ -224,6 +242,26 @@ export async function heartbeat(lock, { now = Date.now } = {}) {
   }
   lock.expiresAt = updated.expiresAt
   return lock
+}
+
+/** Synchronous release used at shutdown, before the async path could race. */
+export function releaseSync(lock) {
+  if (lock === null || typeof lock !== 'object' || typeof lock.path !== 'string') return false
+  lock.released = true
+  let record
+  try {
+    record = JSON.parse(readFileSync(lock.path, 'utf8'))
+  } catch {
+    return false
+  }
+  if (record === null || typeof record !== 'object') return false
+  if (String(record.ownerId) !== String(lock.ownerId)) return false
+  try {
+    unlinkSync(lock.path)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Delete the lock file only when it is still ours. Never throws on ENOENT. */

@@ -243,7 +243,7 @@ workspace on 2026-11-09.
 
 | Command | Result |
 |---|---|
-| `node --test tests/` | **148 tests, 137 pass, 0 fail**, ~1.0 s |
+| `node --test tests/` | **152 tests, 137 pass, 0 fail**, ~1.0 s |
 | `node scripts/build-client.mjs` | bundle rebuilt, 13 modules |
 | `node --check src/client.js` | exit 0 |
 | `node --check` on every `src/**/*.js` | exit 0 |
@@ -298,7 +298,7 @@ Detailed, redacted evidence: [`docs/e2e/isolated-instance-evidence.md`](e2e/isol
 | Post-fix bounded retry | tick after resume: `autonomy_budget_exhausted`, then `max_attempts_reached`, **0 new session** |
 | SSE (real host, new client) | 1 named `state` frame, 0 unnamed |
 
-Tests: **148/148**. The isolated home was deleted afterwards; the real profile
+Tests: **152/152**. The isolated home was deleted afterwards; the real profile
 and port 62337 were untouched.
 
 Still NOT tested: a successful model turn / full task→in_review flow in the
@@ -334,3 +334,26 @@ Still open and documented: the `taskboard` backend can miss a `turn/end` that
 fires before `runTask` returns its `sessionId` (the Task Board contract exposes
 no execution status); `src/client.js` in the working tree is generated and may
 lag when another session edits client sources concurrently (not committed here).
+
+## 14. GOAL 2 — verification round on the review fixes
+
+A second independent read-only pass at HEAD 86dc5b0 confirmed the P1 fixes and
+found 5 defects introduced by them. All are fixed here:
+
+| Finding | Fix |
+|---|---|
+| B1 claim check only survived one hop (`claimedBy` compares to the just-ended session) | the claim is accepted when it belongs to ANY session in this task's assignment history; a FOREIGN claim is still refused. Two-hop test + foreign-claim test added. |
+| B2 `activeExecution` had no self-exemption | an active execution is ours when `task.activeExecutionId === assignment.executionId`; otherwise it suppresses. |
+| B3 a recovering record interrupted during `createSession` was resurrected to running | the handoff checks `status === recovering` after the create and cancels the new session otherwise (`handoff_settled_early`). |
+| B4 the rename takeover was not a true CAS; dispose unlinked the lock directly | a mutually exclusive `instance.lock.takeover` gate (`wx`, TTL-broken) serializes the takeover; `releaseSync()` marks the lock released **and** removes it before shutdown. |
+| B5 a queued async write could rename over the synchronous shutdown save | `writeSync()` sets `closed`; every queued write checks it before renaming and aborts. Test: queued write rejects, shutdown document wins. |
+| (ii) the client bundle at HEAD lacked the `nativeAcked` fix | the bundle was rebuilt **from HEAD sources only** (not from the concurrently edited worktree) and committed. It contains the SSE `state` listener, `statusRecovering`, `/resume` and the `nativeAcked` Map; it does not contain the other session's UX changes. |
+
+Tests: **152/152**.
+
+Known limit kept: on the `board` backend a handoff session never holds the
+ledger claim itself (the Task Board claim is `todo→in_progress` only and the
+board may not write the ledger). If the Task Board has not yet settled the
+previous session's claim when the resumed session ends, the card can stay
+`in_progress` under the old session. The board does not fake a claim transfer;
+the operator sees the card and the assignment history.
