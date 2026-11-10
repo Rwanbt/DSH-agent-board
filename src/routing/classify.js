@@ -26,6 +26,8 @@ export const FAILURE = Object.freeze({
   AUTH: 'auth',
   AUTHZ: 'authz',
   CONTEXT_OVERFLOW: 'context_overflow',
+  MODEL_UNAVAILABLE: 'model_unavailable',
+  CONFIG: 'config_error',
   PARTIAL_STREAM: 'partial_stream',
   POLICY_REFUSAL: 'policy_refusal',
   NOT_MODEL: 'not_model',
@@ -39,8 +41,12 @@ const SAFETY_PATTERN = /(content policy|safety|policy refusal|moderation|refus(?
 const NOT_MODEL_PATTERN = /(assertion|test suite failed|failing test|tests? failed|build failed|type ?error|typescript|syntaxerror|eslint|ci (?:failed|red)|compile error)/i
 const QUOTA_PATTERN = /(quota|insufficient[ _]?(?:balance|credit|funds)|billing|out of credits|usage limit|plan limit)/i
 const CONTEXT_PATTERN = /(context (?:length|window)|maximum context|too many tokens|prompt is too long|context_length_exceeded)/i
-const AUTH_PATTERN = /(invalid[ _]?api[ _]?key|unauthori[sz]ed|token (?:expired|invalid)|authentication failed|401)/i
+const AUTH_PATTERN = /(invalid[ _]?api[ _]?key|unauthori[sz]ed|token (?:expired|invalid)|authentication failed|\b401\b)/i
 const OVERLOAD_PATTERN = /(overloaded|service unavailable|temporarily unavailable|529)/i
+const RATE_LIMIT_PATTERN = /(rate[ _-]?limit|too many requests|throttl|429)/i
+const MISSING_CREDENTIALS_PATTERN = /(no api[ _-]?key|missing api[ _-]?key|api[ _-]?key (?:is )?(?:missing|not (?:set|configured|found))|missing credentials?|credentials? (?:are )?(?:missing|not (?:set|configured|available))|no credential)/i
+const MODEL_UNAVAILABLE_PATTERN = /((?:model|deployment) (?:[^.\n]{0,40}?)(?:not found|unavailable|does not exist|no longer|deleted|removed|unsupported))|no such model|model_not_found/i
+const TRANSPORT_PATTERN = /(ECONNRESET|ECONNREFUSED|EPIPE|EAI_AGAIN|ENOTFOUND|ENETUNREACH|socket hang up|network error|connection reset)/i
 
 /**
  * @param {object|Error} input
@@ -71,21 +77,45 @@ export function classifyFailure(input = {}) {
     return { ...base, kind: FAILURE.NOT_MODEL, retryable: false, switchable: false, requiresHandoff: false, notModel: true, retryAfterMs: null }
   }
   // A refusal is a decision, not a fault: never bypass it with another provider.
-  if (SAFETY_PATTERN.test(text) || status === 403) {
+  // A 403 is a policy refusal UNLESS it is an authentication/permission failure
+  // of the provider itself (then another provider can legitimately serve us).
+  if (SAFETY_PATTERN.test(text) && !(status === 403 && AUTH_PATTERN.test(text))) {
+    return { ...base, kind: FAILURE.POLICY_REFUSAL, retryable: false, switchable: false, requiresHandoff: false, notModel: false, retryAfterMs: null }
+  }
+  if (status === 403 && !AUTH_PATTERN.test(text)) {
     return { ...base, kind: FAILURE.POLICY_REFUSAL, retryable: false, switchable: false, requiresHandoff: false, notModel: false, retryAfterMs: null }
   }
   if (CONTEXT_PATTERN.test(text)) {
     return { ...base, kind: FAILURE.CONTEXT_OVERFLOW, retryable: false, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }
   }
+  // A missing/absent credential is a configuration fault, not a transient one:
+  // retrying the same route can never succeed, but another route may hold a
+  // valid credential, so a switch is legitimate.
+  if (MISSING_CREDENTIALS_PATTERN.test(text) && status !== 401) {
+    return { ...base, kind: FAILURE.AUTH, retryable: false, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }
+  }
   if (QUOTA_PATTERN.test(text)) {
     return { ...base, kind: FAILURE.QUOTA, retryable: false, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }
   }
-  if (status === 401 || (AUTH_PATTERN.test(text) && status !== 403)) {
+  if (status === 401 || AUTH_PATTERN.test(text)) {
     return { ...base, kind: FAILURE.AUTH, retryable: false, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }
   }
-  if (status === 429) {
+  // Rate limiting is recognised from the STATUS or from the wording: providers
+  // often say "Too many requests" without ever printing the number 429.
+  if (status === 429 || RATE_LIMIT_PATTERN.test(text)) {
     const retryAfterMs = Number.isFinite(Number(input.retryAfterMs)) ? Number(input.retryAfterMs) : null
     return { ...base, kind: FAILURE.RATE_LIMIT, retryable: true, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs }
+  }
+  // A model that no longer exists (or is not deployed for this account) is a
+  // route problem: retry on the same model can never succeed.
+  if (MODEL_UNAVAILABLE_PATTERN.test(text)) {
+    return { ...base, kind: FAILURE.MODEL_UNAVAILABLE, retryable: false, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }
+  }
+  // A bare 404 is a configuration/route fault (wrong base URL, proxy page, wrong
+  // endpoint), NOT proof that the model was deleted: do not claim that. It is
+  // still switchable because another route may be configured correctly.
+  if (status === 404) {
+    return { ...base, kind: FAILURE.CONFIG, retryable: false, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }
   }
   if (status === 408 || status === 504 || TIMEOUT_CODES.has(code) || /timeout|timed out/i.test(message)) {
     return { ...base, kind: FAILURE.TIMEOUT, retryable: true, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }
@@ -93,7 +123,7 @@ export function classifyFailure(input = {}) {
   if (status >= 500 && status < 600) {
     return { ...base, kind: status === 529 || OVERLOAD_PATTERN.test(text) ? FAILURE.OVERLOADED : FAILURE.SERVER_ERROR, retryable: true, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }
   }
-  if (TRANSPORT_CODES.has(code)) {
+  if (TRANSPORT_CODES.has(code) || TRANSPORT_PATTERN.test(text)) {
     return { ...base, kind: FAILURE.TRANSPORT, retryable: true, switchable: true, requiresHandoff: afterFirstChunk, notModel: false, retryAfterMs: null }
   }
   if (afterFirstChunk) {

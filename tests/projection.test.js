@@ -105,13 +105,23 @@ test('workspace grouping uses the workspace item session membership', () => {
   assert.equal(projection.projects[0].nodes.length, 3)
 })
 
-test('preview comes from the host-captured last assistant segment', () => {
+test('preview is the host-captured final answer only once the turn ended', () => {
+  const finished = { ...baseList, byId: { ...baseList.byId, p: { ...baseList.byId.p, running: false } } }
   const projection = buildProjection({
-    list: baseList,
+    list: finished,
     statusMap: new Map(),
-    hostState: { previews: { p: { text: 'Implemented the adapter and ran tests.', at: 42 } } },
+    hostState: { previews: { p: { text: 'Implemented the adapter and ran tests.', at: 42 } }, turnEnd: { p: { at: 50, kind: 'completed' } } },
   })
   assert.equal(projection.byId.get('p').preview.text, 'Implemented the adapter and ran tests.')
+  assert.equal(projection.byId.get('p').preview.final, true)
+  // While the turn is still running, a mid-turn segment is NOT a final answer.
+  const running = buildProjection({
+    list: baseList,
+    statusMap: new Map(),
+    hostState: { previews: { p: { text: 'Let me call a tool…', at: 42 } } },
+  })
+  assert.equal(running.byId.get('p').preview.final, false)
+  assert.equal(running.byId.get('p').preview.text, '')
 })
 
 test('classifyStatus is total over the documented vocabulary', () => {
@@ -130,4 +140,126 @@ test('compact rows keep every node, sorted by project then status rank', () => {
   const projection = buildProjection({ list: baseList, statusMap: new Map(), hostState: {} })
   const rows = compactRows(projection)
   assert.equal(rows.length, 3)
+})
+
+test('a failure known only from the native lifecycle stays visible and unread', () => {
+  const list = {
+    ids: ['n'],
+    byId: {
+      n: {
+        id: 'n',
+        displayTitle: 'Native failure',
+        running: false,
+        updatedAt: 500,
+        projectionValues: { mobilePushLifecycle: { lastTurnEnd: { turn: 2, reason: 'error' } } },
+      },
+    },
+    projectionsBySession: {},
+  }
+  const node = buildProjection({ list, statusMap: new Map(), hostState: {} }).byId.get('n')
+  assert.equal(node.status, STATUS.FAILED)
+  assert.equal(node.seen, false, 'a failure the host never acked must not be marked seen')
+  assert.equal(node.statusSource, 'session_projection')
+  assert.match(node.statusReason, /native_turn_end:error/)
+})
+
+test('an explicit ack after a host-recorded failure marks it seen', () => {
+  const list = { ...baseList, byId: { ...baseList.byId, p: { id: 'p', displayTitle: 'P', running: false } } }
+  const node = buildProjection({
+    list,
+    statusMap: new Map(),
+    hostState: { turnEnd: { p: { at: 1000, kind: 'error', error: 'boom' } }, acks: { p: { seenAt: 1200 } } },
+  }).byId.get('p')
+  assert.equal(node.status, STATUS.FAILED)
+  assert.equal(node.seen, true)
+})
+
+test('a preview from an errored turn is partial, never "the final answer"', () => {
+  const list = { ...baseList, byId: { ...baseList.byId, p: { id: 'p', displayTitle: 'P', running: false } } }
+  const node = buildProjection({
+    list,
+    statusMap: new Map(),
+    hostState: {
+      previews: { p: { text: 'I started to call a tool', at: 42 } },
+      turnEnd: { p: { at: 50, kind: 'error', error: 'boom' } },
+    },
+  }).byId.get('p')
+  assert.equal(node.preview.final, false)
+  assert.equal(node.preview.partial, true)
+  assert.equal(node.preview.turnEndKind, 'error')
+  assert.equal(node.status, STATUS.FAILED)
+})
+
+test('a recovering assignment is shown as recovering with its reason', () => {
+  const list = { ids: ['r'], byId: { r: { id: 'r', displayTitle: 'Recovering', running: false } }, projectionsBySession: {} }
+  const node = buildProjection({
+    list,
+    statusMap: new Map(),
+    hostState: {
+      assignments: [{
+        id: 'asg-1',
+        sessionId: 'r',
+        status: 'recovering',
+        taskId: 't1',
+        reason: 'partial_output_handoff:server_error',
+        recoveringAt: 900,
+        routeHistory: [{ from: 'primary/big', to: 'backup/medium', reason: 'switch_after_server_error' }],
+      }],
+    },
+  }).byId.get('r')
+  assert.equal(node.status, STATUS.RECOVERING)
+  assert.match(node.statusReason, /partial_output_handoff/)
+  assert.equal(node.statusAt, 900)
+  assert.equal(node.assignmentStatus, 'recovering')
+  assert.equal(node.routeHistory.length, 1)
+})
+
+test('an unavailable agent is distinct from unknown and from idle', () => {
+  const list = {
+    ids: ['u', 'i'],
+    byId: {
+      u: { id: 'u', displayTitle: 'Gone', running: false, agentAvailable: false },
+      i: { id: 'i', displayTitle: 'Idle', running: false, agentAvailable: true },
+    },
+    projectionsBySession: {},
+  }
+  const projection = buildProjection({ list, statusMap: new Map(), hostState: {} })
+  assert.equal(projection.byId.get('u').status, STATUS.UNAVAILABLE)
+  assert.equal(projection.byId.get('i').status, STATUS.IDLE)
+  const ghost = buildProjection({
+    list: { ids: [], byId: {}, projectionsBySession: { p: { values: { subagentCatalog: [{ sessionId: 'ghost' }] } } } },
+    statusMap: new Map(),
+    hostState: {},
+  }).byId.get('ghost')
+  assert.equal(ghost.status, STATUS.UNKNOWN)
+})
+
+test('a session open in the native main view is reported as being viewed', () => {
+  const list = {
+    ids: ['v'],
+    byId: { v: { id: 'v', displayTitle: 'Viewed', running: false, retainedBy: { mainView: 1 } } },
+    projectionsBySession: {},
+  }
+  const node = buildProjection({ list, statusMap: new Map(), hostState: {} }).byId.get('v')
+  assert.equal(node.viewing, true)
+})
+
+test('an ack newer than native unread activity clears the native-only pill', () => {
+  const list = {
+    ids: ['c'],
+    byId: { c: { id: 'c', displayTitle: 'Native unread', running: false, updatedAt: 1000 } },
+    projectionsBySession: {},
+  }
+  const unread = buildProjection({
+    list,
+    statusMap: new Map([['c', { completionUnread: true }]]),
+    hostState: { acks: { c: { seenAt: 500 } } },
+  }).byId.get('c')
+  assert.equal(unread.status, STATUS.FINISHED_UNREAD)
+  const read = buildProjection({
+    list,
+    statusMap: new Map([['c', { completionUnread: true }]]),
+    hostState: { acks: { c: { seenAt: 1500 } } },
+  }).byId.get('c')
+  assert.equal(read.status, STATUS.FINISHED_READ)
 })

@@ -10,16 +10,16 @@ future storage migration. Canonical definitions live in
 |---|---|---|
 | `ProjectRef` | `{ id, path, title }` | `id` = DSH workspace id when known, otherwise the path |
 | `WorkItemRef` | `{ system, externalId, canonicalId, revision, authority, url }` | `canonicalId = "<system>:<externalId>"`; `authority` names which system owns which field |
-| `AgentNode` | projection output: `{ id, parentId, projectId, title, status, model, preview, expectedAction, assignmentId, taskId, routeHistory }` | one node per agent; parent/child from `parentId` or the sub-agent catalog |
-| `Assignment` | `{ id, idempotencyKey, taskId, revision, attempt, sessionId, previousSessionId, model, status, lease, fencingToken, checkpoint, routeHistory }` | exactly one live assignment per idempotency key |
-| `Mandate` | policy: `{ mode, maxConcurrent, allowedWorkspaces, allowedProviders, routeChain, maxSwitches, autonomyBudget }` | autonomous work only inside the mandate |
+| `AgentNode` | projection output: `{ id, parentId, projectId, title, status, statusReason, statusSource, statusAt, model, preview, expectedAction, assignmentId, taskId, previousSessionId, routeHistory, viewing }` | one node per agent; parent/child from `parentId` or the sub-agent catalog |
+| `Assignment` | `{ id, idempotencyKey, taskId, taskTitle, taskDescription, revision, attempt, sessionId, previousSessionId, model, status, lease, fencingToken, checkpoint, routeHistory, switches, retries }` | exactly one LIVE assignment per task; a new attempt gets a new key |
+| `Mandate` | policy: `{ mode, maxConcurrent, allowedWorkspaces, allowedProviders, allowedPermissions, executionBackend, routeChain, maxSwitches, autonomyBudget }` | autonomous work only inside the mandate |
 | `Checkpoint` | `{ id, at, sessionId, git, tests, actions, stepsDone, stepsRemaining, lastText }` | an action with unknown effect is never replayed blindly |
 | `RoutePolicy` | `routeChain[]` entries `{ provider, model, locality?, reasoningEffort? }` | an explicit chain, no implicit “any model” fallback |
 | `ProviderHealthEvent` | `{ failures, lastFailureKind, lastFailureAt, cooldownUntil }` per provider | a provider in cooldown is skipped |
 | `AuditEvent` | `{ at, type, ... }` | append-only JSONL, bounded in memory |
 
-Statuses: `running`, `waiting_user`, `finished_unread`, `finished_read`,
-`failed`, `idle`, `unknown`. Assignment statuses: `starting`, `running`,
+Statuses: `running`, `waiting_user`, `recovering`, `finished_unread`, `finished_read`,
+`failed`, `idle`, `unknown`, `unavailable`. Assignment statuses: `starting`, `running`, `recovering`,
 `done`, `failed`, `stopped`, `interrupted`, `superseded`.
 
 ## Adapter capabilities
@@ -46,10 +46,14 @@ not mocks presented as working integrations.
 
 ### Current matrix
 
+Values are the DECLARED capabilities, which are also what `POST /tick` may use.
+A skeleton carries throwing `list`/`get` stubs for typing, but declares nothing,
+so the matrix reports all `false` for it.
+
 | Adapter | Kind | list | get | create/update/comment/transition | Validated live |
 |---|---|---|---|---|---|
-| `dsh-taskboard` | work source | ✅ | ✅ | ❌ (by design: read-only) | ✅ (read) |
-| `github` | forge | ✅ | ✅ | ❌ | ❌ (no live repo/token used) |
+| `dsh-taskboard` | work source | ✅ | ✅ | ❌ (by design: read-only ledger) | ✅ (read) · `run` opt-in |
+| `github` | forge | ✅ | ✅ | ❌ | ❌ (fake-API contract only, no live repo/token) |
 | `gitlab`, `forgejo`, `gitea`, `bitbucket` | forge | ❌ | ❌ | ❌ | ❌ (skeleton) |
 | `jira`, `linear` | work source | ❌ | ❌ | ❌ | ❌ (skeleton) |
 | executor `dsh` | executor | — | — | create/observe/cancel via `ctx.agents` | ✅ |
@@ -58,24 +62,52 @@ not mocks presented as working integrations.
 ### Task Board bridge
 
 `src/connectors/taskboard.js` talks only to `GET /dsh-taskboard/state` (the
-board’s own HTTP contract), normalizes each task, and exposes **no write
-method**. That is deliberate:
+board’s own HTTP contract) and exposes **no write method**. It reads the REAL
+0.10.2 record fields: per-task `version` (never the global ledger `revision`),
+`claimedBy`, `execution.mode`, `isolation`, `executions[].outcome`. That
+deliberate mapping is what lets the orchestrator refuse a task the Task Board
+already runs, claims or schedules:
 
 - the Task Board ledger is not read or written directly;
 - claiming and `in_review` are performed by the launched agent session through
   the official `taskboard_*` tools;
 - `done` remains a human action.
 
-If a future Task Board version exposes a typed service for executions, the
-orchestrator should attach its assignments to it (this build only launches plain
-sessions — see `docs/LIMITATIONS.md`).
+This build launches plain `ctx.agents` sessions, so the Task Board has no
+execution record for them: `taskboard_execution_report` is refused by the Task
+Board tool. That gap is tracked as P0 in `docs/LIMITATIONS.md`; the honest fix is
+to run through the Task Board’s own `POST /dsh-taskboard/tasks/:id/run` path, not
+to fake an execution.
+
+This build has two execution backends, chosen by `policy.executionBackend`:
+
+- **`board`** (default): the board creates the session itself. It can switch
+  model/provider on failure, but the Task Board gets no execution record, so
+  `taskboard_execution_report` is refused there.
+- **`taskboard`**: the board calls `POST /dsh-taskboard/tasks/:id/run` and the
+  **Task Board's own executor** creates the session, execution record, claim,
+  permission/preset and worktree. The board records `executionId` + `sessionId`
+  and observes the session. The model is pinned on the card, so model-level
+  failover is explicitly unavailable on this backend (`backend_no_failover`).
+  `task.isolation:'worktree'` cards are only runnable on this backend.
 
 ## Non-negotiable rules encoded in code
 
-1. `done` is never set by the board or by a launched agent.
+1. The board never writes `done`; the launched session cannot either — the Task Board `taskboard_move` tool refuses `done` at code level. The prompt repeats it, but the enforcement is the tool guard.
 2. No work item is written by the board; external systems stay authoritative.
-3. Two identical events produce one assignment (`idempotencyKey`).
+3. One LIVE assignment per task (`idempotencyKey` = task + revision + attempt);
+   a duplicate tick, dispatch or proposal never starts a second session.
 4. A blocked or `in_review` prerequisite is never launched through.
-5. OFF creates nothing; Stop cancels; they are distinct controls.
+5. OFF creates nothing; Stop cancels and blocks new delegation until Resume;
+   they are distinct controls, and both also gate approval and `/dispatch`.
 6. A policy refusal and a CI/code failure never trigger a provider switch.
 7. A partial stream is reported as a handoff, never as a resumed request.
+8. A task already running/claimed/scheduled by the Task Board is skipped with an
+   explicit reason; a worktree-isolated card is only runnable through the Task
+   Board executor (`executionBackend:'taskboard'`).
+9. A card cannot grant itself a permission level the policy mandate does not
+   allow; the refusal is a pre-flight reason, not a silent downgrade.
+10. Only one host process writes the board state (`instance.lock`); a secondary
+    host serves reads and refuses mutations.
+11. `/run` is an execution request, not a ledger write: the board never edits a
+    task, never moves it to `done`, and never changes the model pinned on a card.

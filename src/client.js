@@ -19,29 +19,55 @@ window.__ModuleLoader__.load({
 
 const SCHEMA_VERSION = 1
 
-/** Native-ish agent statuses. Never derived from elapsed time alone. */
+/**
+ * Native-ish agent statuses. Never derived from elapsed time alone.
+ *
+ * Five different facts are kept apart on purpose:
+ *   - session state      -> `unavailable` (the runtime says the agent is gone)
+ *   - turn state         -> `running` / `finished_*` / `failed`
+ *   - agent state        -> `waiting_user` / `recovering`
+ *   - task state         -> the Task Board ledger (never mirrored as a status)
+ *   - user read state    -> `finished_unread` vs `finished_read` (persisted ack)
+ */
 const STATUS = Object.freeze({
   RUNNING: 'running',
   WAITING_USER: 'waiting_user',
+  RECOVERING: 'recovering',
   FINISHED_UNREAD: 'finished_unread',
   FINISHED_READ: 'finished_read',
   FAILED: 'failed',
   IDLE: 'idle',
   UNKNOWN: 'unknown',
+  UNAVAILABLE: 'unavailable',
 })
 
 const STATUS_VALUES = Object.freeze(Object.values(STATUS))
+
+/** Statuses that mean "the user still has something to look at". */
+const ATTENTION_STATUSES = Object.freeze([
+  STATUS.WAITING_USER,
+  STATUS.FAILED,
+  STATUS.FINISHED_UNREAD,
+  STATUS.RECOVERING,
+])
 
 /** Ranking used for stable ordering (lower = shown first). */
 const STATUS_RANK = Object.freeze({
   [STATUS.WAITING_USER]: 0,
   [STATUS.RUNNING]: 1,
-  [STATUS.FINISHED_UNREAD]: 2,
-  [STATUS.FAILED]: 3,
-  [STATUS.IDLE]: 4,
-  [STATUS.FINISHED_READ]: 5,
-  [STATUS.UNKNOWN]: 6,
+  [STATUS.RECOVERING]: 2,
+  [STATUS.FINISHED_UNREAD]: 3,
+  [STATUS.FAILED]: 4,
+  [STATUS.IDLE]: 5,
+  [STATUS.FINISHED_READ]: 6,
+  [STATUS.UNKNOWN]: 7,
+  [STATUS.UNAVAILABLE]: 8,
 })
+
+/** Turn-end kinds that must be surfaced as a failure, not as "finished". */
+const ERROR_TURN_KINDS = Object.freeze(['error', 'failed'])
+/** Turn-end kinds that mean the work was interrupted, not completed. */
+const INTERRUPTED_TURN_KINDS = Object.freeze(['aborted', 'blocked'])
 
 /** Orchestration modes. Default is always `off`. */
 const MODES = Object.freeze({
@@ -52,8 +78,76 @@ const MODES = Object.freeze({
 
 const MODE_VALUES = Object.freeze(Object.values(MODES))
 
-/** Turn-end kinds that must be surfaced as a failure, not as "finished". */
-const ERROR_TURN_KINDS = Object.freeze(['error', 'failed'])
+/** Default limits. Every one is configurable through the board API. */
+const DEFAULT_POLICY = Object.freeze({
+  mode: MODES.OFF,
+  maxConcurrent: 2,
+  maxRetries: 2,
+  maxSwitches: 2,
+  proposalTtlMs: 30 * 60 * 1000,
+  leaseTtlMs: 10 * 60 * 1000,
+  // Automatic retries are bounded: a task whose last attempt failed is not
+  // relaunched on the next tick, and a revision has a maximum number of
+  // sessions (manual dispatch stays available to the operator).
+  retryCooldownMs: 5 * 60 * 1000,
+  maxAttemptsPerRevision: 4,
+  allowedWorkspaces: [],
+  allowedProviders: [],
+  // A card may ask for a permission level; the operator's mandate decides which
+  // levels this board may grant. `danger-full-access` is never inherited by default.
+  allowedPermissions: ['read-only', 'workspace-write'],
+  // 'board' = the board creates the session (model-level failover possible, but
+  // the Task Board gets no execution record). 'taskboard' = the Task Board's own
+  // executor creates the session/execution/worktree (no model-level failover).
+  executionBackend: 'board',
+  allowCloudFallback: false,
+  autoResumeOnRestart: false,
+  serializeSameWorkspace: false,
+  routeChain: [],
+  autonomyBudget: { maxTasksPerHour: 6 },
+})
+
+const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
+const EXECUTION_BACKENDS = Object.freeze(['board', 'taskboard'])
+
+function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
+  const mode = isMode(input.mode) ? input.mode : fallback.mode
+  const maxConcurrent = clampInt(input.maxConcurrent, 0, 8, fallback.maxConcurrent)
+  const maxSwitches = clampInt(input.maxSwitches, 0, 5, fallback.maxSwitches)
+  return {
+    mode,
+    maxConcurrent,
+    maxRetries: clampInt(input.maxRetries, 0, 5, fallback.maxRetries ?? 2),
+    maxSwitches,
+    proposalTtlMs: clampInt(input.proposalTtlMs, 60_000, 86_400_000, fallback.proposalTtlMs),
+    leaseTtlMs: clampInt(input.leaseTtlMs, 30_000, 86_400_000, fallback.leaseTtlMs),
+    retryCooldownMs: clampInt(input.retryCooldownMs, 0, 86_400_000, fallback.retryCooldownMs ?? 300_000),
+    maxAttemptsPerRevision: clampInt(input.maxAttemptsPerRevision, 1, 10, fallback.maxAttemptsPerRevision ?? 4),
+    allowedWorkspaces: uniqueStrings(input.allowedWorkspaces ?? fallback.allowedWorkspaces),
+    allowedProviders: uniqueStrings(input.allowedProviders ?? fallback.allowedProviders),
+    allowedPermissions: uniqueStrings(input.allowedPermissions ?? fallback.allowedPermissions)
+      .filter(level => PERMISSION_LEVELS.includes(level)),
+    executionBackend: EXECUTION_BACKENDS.includes(input.executionBackend)
+      ? input.executionBackend
+      : (fallback.executionBackend ?? 'board'),
+    allowCloudFallback: input.allowCloudFallback === true,
+    autoResumeOnRestart: input.autoResumeOnRestart === true,
+    serializeSameWorkspace: input.serializeSameWorkspace === true,
+    routeChain: normalizeRouteChain(input.routeChain ?? fallback.routeChain),
+    autonomyBudget: {
+      maxTasksPerHour: clampInt(input.autonomyBudget?.maxTasksPerHour, 0, 100, fallback.autonomyBudget.maxTasksPerHour),
+    },
+  }
+}
+
+/** The permission level this board is allowed to grant for a card, or null. */
+function allowedPermissionOf(policy, requested) {
+  if (typeof requested !== 'string' || requested === '') return null
+  const allowed = Array.isArray(policy?.allowedPermissions) ? policy.allowedPermissions : DEFAULT_POLICY.allowedPermissions
+  return allowed.includes(requested) ? requested : null
+}
+
+/** Orchestration modes. Default is always `off`. */
 
 function isMode(value) {
   return typeof value === 'string' && MODE_VALUES.includes(value)
@@ -136,40 +230,6 @@ function textOfContent(content) {
 function requireString(value, field) {
   if (typeof value !== 'string' || value === '') throw new Error(`agent-board: ${field} must be a non-empty string`)
   return value
-}
-
-/** Default limits. Every one is configurable through the board API. */
-const DEFAULT_POLICY = Object.freeze({
-  mode: MODES.OFF,
-  maxConcurrent: 2,
-  maxSwitches: 2,
-  proposalTtlMs: 30 * 60 * 1000,
-  leaseTtlMs: 10 * 60 * 1000,
-  allowedWorkspaces: [],
-  allowedProviders: [],
-  allowCloudFallback: false,
-  routeChain: [],
-  autonomyBudget: { maxTasksPerHour: 6 },
-})
-
-function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
-  const mode = isMode(input.mode) ? input.mode : fallback.mode
-  const maxConcurrent = clampInt(input.maxConcurrent, 0, 8, fallback.maxConcurrent)
-  const maxSwitches = clampInt(input.maxSwitches, 0, 5, fallback.maxSwitches)
-  return {
-    mode,
-    maxConcurrent,
-    maxSwitches,
-    proposalTtlMs: clampInt(input.proposalTtlMs, 60_000, 86_400_000, fallback.proposalTtlMs),
-    leaseTtlMs: clampInt(input.leaseTtlMs, 30_000, 86_400_000, fallback.leaseTtlMs),
-    allowedWorkspaces: uniqueStrings(input.allowedWorkspaces ?? fallback.allowedWorkspaces),
-    allowedProviders: uniqueStrings(input.allowedProviders ?? fallback.allowedProviders),
-    allowCloudFallback: input.allowCloudFallback === true,
-    routeChain: normalizeRouteChain(input.routeChain ?? fallback.routeChain),
-    autonomyBudget: {
-      maxTasksPerHour: clampInt(input.autonomyBudget?.maxTasksPerHour, 0, 100, fallback.autonomyBudget.maxTasksPerHour),
-    },
-  }
 }
 
 function normalizeRouteChain(chain) {
@@ -274,7 +334,7 @@ function catalogChildrenOf(projectionsBySession, parentId) {
       if (id === null) return null
       return {
         id,
-        title: typeof entry.title === 'string' ? entry.title : undefined,
+        title: typeof entry.title === 'string' ? entry.title : (typeof entry.label === 'string' ? entry.label : undefined),
         mode: typeof entry.mode === 'string' ? entry.mode : undefined,
         status: typeof entry.status === 'string' ? entry.status : undefined,
       }
@@ -294,33 +354,115 @@ function isSubagentRow(row) {
 }
 
 /**
- * Classify one agent. `live` is its unified status entry, `turnEnd` the last
- * turn/end fact the host recorded, `ack` the persisted read cursor.
+ * Classify one agent and explain why. `live` is its unified status entry,
+ * `turnEnd` the last turn/end fact the host recorded, `ack` the persisted read
+ * cursor, `assignment` the board assignment bound to that session.
+ *
+ * The returned `reason`/`source`/`at` triple is what the UI shows in the card
+ * details: a status without provenance is not allowed to be invented.
+ *
+ * @returns {{status:string, reason:string, source:string, at:number|null}}
  */
-function classifyStatus({ row, live, turnEnd, ack }) {
-  if (row === undefined && live === undefined) return STATUS.UNKNOWN
-  const pendingKind = live?.pendingInteraction?.kind ?? live?.pendingInteraction
-  if (typeof pendingKind === 'string' && pendingKind !== '') return STATUS.WAITING_USER
-  if (row?.running === true || live?.running === true) return STATUS.RUNNING
+function classifyStatusDetailed({ row, live, turnEnd, ack, assignment }) {
   const end = turnEnd !== null && typeof turnEnd === 'object' ? turnEnd : null
-  if (end !== null && ERROR_TURN_KINDS.includes(end.kind)) return STATUS.FAILED
-  if (end !== null && Number.isFinite(Number(end.at))) {
-    const seenAt = Number(ack?.seenAt)
-    if (Number.isFinite(seenAt) && seenAt >= Number(end.at)) return STATUS.FINISHED_READ
-    return STATUS.FINISHED_UNREAD
+  const seenAt = Number(ack?.seenAt)
+  const hasSeen = Number.isFinite(seenAt)
+  const updatedAt = Number(row?.updatedAt)
+  const nativeEnd = nativeTurnEndOf(row)
+
+  if (row === undefined && live === undefined && assignment === undefined) {
+    return { status: STATUS.UNKNOWN, reason: 'no_row_and_no_live_status', source: 'none', at: null }
   }
-  if (live?.completionUnread === true) return STATUS.FINISHED_UNREAD
-  if (row === undefined) return STATUS.UNKNOWN
-  return STATUS.IDLE
+  const action = expectedActionOf(live, row)
+  if (action !== null) {
+    return { status: STATUS.WAITING_USER, reason: `pending_interaction:${action}`, source: live?.pendingInteraction !== undefined ? 'host_status' : 'session_projection', at: null }
+  }
+  if (row?.running === true || live?.running === true) {
+    return { status: STATUS.RUNNING, reason: 'turn_in_progress', source: row?.running === true ? 'session_row' : 'host_status', at: null }
+  }
+  if (assignment?.status === 'recovering') {
+    return { status: STATUS.RECOVERING, reason: `route_recovery:${truncate(String(assignment.reason ?? 'provider_failure'), 120)}`, source: 'assignment', at: Number(assignment.recoveringAt) || null }
+  }
+  // Failure truth: the host-recorded turn end wins, then the native lifecycle
+  // fact. A recovered failure (a later turn started) is no longer a failure.
+  if (end !== null && ERROR_TURN_KINDS.includes(end.kind) && end.recoveredAt === undefined) {
+    const covered = hasSeen && Number.isFinite(Number(end.at)) && seenAt >= Number(end.at)
+    return { status: STATUS.FAILED, reason: `turn_end:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null, _seen: covered }
+  }
+  if ((end === null || end.recoveredAt !== undefined) && nativeEnd !== null && ERROR_TURN_KINDS.includes(nativeEnd.reason)) {
+    // Native-only failure: the host may have missed the event (restart). There
+    // is no board ack that could have covered it, so it stays unread/visible.
+    return { status: STATUS.FAILED, reason: `native_turn_end:${nativeEnd.reason}`, source: 'session_projection', at: null, _seen: false }
+  }
+  if (end !== null && Number.isFinite(Number(end.at))) {
+    if (INTERRUPTED_TURN_KINDS.includes(end.kind)) {
+      return { status: STATUS.IDLE, reason: `turn_ended:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null }
+    }
+    if (hasSeen && seenAt >= Number(end.at)) {
+      return { status: STATUS.FINISHED_READ, reason: `ack_after_turn:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null }
+    }
+    return { status: STATUS.FINISHED_UNREAD, reason: `turn_end:${end.kind}_not_acknowledged`, source: 'host_turn_end', at: Number(end.at) || null }
+  }
+  if (live?.completionUnread === true) {
+    // The native runtime also tracks unread completions. An explicit board ack
+    // that is newer than the session's last activity covers it; otherwise the
+    // pill would be impossible to clear.
+    if (hasSeen && Number.isFinite(updatedAt) && seenAt >= updatedAt) {
+      return { status: STATUS.FINISHED_READ, reason: 'ack_after_native_activity', source: 'host_status', at: seenAt }
+    }
+    return { status: STATUS.FINISHED_UNREAD, reason: 'native_completion_unread', source: 'host_status', at: null }
+  }
+  if (nativeEnd !== null) {
+    // A turn that completed before the board observed it is history, not "new".
+    return { status: STATUS.FINISHED_READ, reason: `native_history:${nativeEnd.reason}`, source: 'session_projection', at: null }
+  }
+  if (row?.agentAvailable === false) {
+    return { status: STATUS.UNAVAILABLE, reason: 'agent_not_available', source: 'session_row', at: null }
+  }
+  if (row === undefined) {
+    return { status: STATUS.UNKNOWN, reason: 'no_row_for_session', source: 'none', at: null }
+  }
+  return { status: STATUS.IDLE, reason: 'no_activity', source: 'session_row', at: null }
 }
 
-/** The action the user is expected to take right now, if any. */
-function expectedActionOf(live) {
+/** Backward-compatible status-only view of {@link classifyStatusDetailed}. */
+function classifyStatus(input) {
+  return classifyStatusDetailed(input).status
+}
+
+/** `projectionValues.mobilePushLifecycle.lastTurnEnd` = { turn, reason } when present. */
+function nativeTurnEndOf(row) {
+  const end = row?.projectionValues?.mobilePushLifecycle?.lastTurnEnd
+  if (end === null || typeof end !== 'object') return null
+  const reason = typeof end.reason === 'string' ? end.reason : (typeof end.reason?.kind === 'string' ? end.reason.kind : null)
+  return reason === null ? null : { turn: Number(end.turn) || null, reason }
+}
+
+/**
+ * The action the user is expected to take right now, if any. Sources, in
+ * order: the unified status `pendingInteraction`, then the session's own
+ * projection (an active user question, a plan awaiting review).
+ */
+function expectedActionOf(live, row) {
   const pending = live?.pendingInteraction
-  if (pending === null || pending === undefined) return null
-  const kind = typeof pending === 'string' ? pending : pending.kind
-  if (typeof kind !== 'string' || kind === '') return null
-  return PENDING_ACTION[kind] ?? 'unknown'
+  if (pending !== null && pending !== undefined) {
+    const kind = typeof pending === 'string' ? pending : pending.kind
+    if (typeof kind === 'string' && kind !== '') return PENDING_ACTION[kind] ?? 'unknown'
+  }
+  const values = row?.projectionValues
+  if (Array.isArray(values?.userQuestions?.active) && values.userQuestions.active.length > 0) return 'question'
+  if (values?.plan?.pending === true) return 'plan-review'
+  return null
+}
+
+/** Short human text of what is missing (first active question), if known. */
+function waitingDetailOf(row) {
+  const question = row?.projectionValues?.userQuestions?.active?.[0]
+  const candidates = [question?.question, question?.questions?.[0]?.question, question?.title, question?.header]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim() !== '') return truncate(candidate.trim(), 160)
+  }
+  return null
 }
 
 function modelOf(row, assignment) {
@@ -328,6 +470,8 @@ function modelOf(row, assignment) {
     assignment?.model,
     row?.model,
     row?.modelSelection,
+    row?.projectionValues?.modelSelection?.lastUsed,
+    row?.projectionValues?.modelSelection?.next,
     row?.header?.model,
     row?.llm,
   ]
@@ -347,32 +491,116 @@ function modelOf(row, assignment) {
   return { provider: '—', model: '—', reasoningEffort: null, source: 'unknown' }
 }
 
-function previewOf(hostState, sessionId, assignment) {
+/**
+ * The final answer excerpt. Only an answer that closed a turn is "final":
+ *   1. host-captured last assistant message when the session is not running
+ *      and a turn end was recorded at/after it;
+ *   2. the native turn outline `response` of the latest answered turn;
+ *   3. a board checkpoint text.
+ * A mid-turn assistant segment (between tool calls) is never presented as the
+ * final answer; it is exposed separately as `interim` only for activity.
+ */
+function previewOf(hostState, sessionId, assignment, row, running = false) {
   const preview = hostState?.previews?.[sessionId]
-  if (preview !== undefined && typeof preview.text === 'string' && preview.text !== '') {
-    return { text: truncate(preview.text, 600), at: Number(preview.at) || null }
-  }
-  const checkpointText = assignment?.checkpoint?.lastText
-  if (typeof checkpointText === 'string' && checkpointText !== '') {
-    return { text: truncate(checkpointText, 600), at: Number(assignment?.checkpoint?.at) || null }
-  }
-  return { text: '', at: null }
-}
-
-function projectKeyOf(row, workspaces) {
-  const sessionId = String(row?.id ?? '')
-  for (const workspace of workspaces?.items ?? []) {
-    if (Array.isArray(workspace.sessionIds) && workspace.sessionIds.includes(sessionId)) {
-      return { id: `ws:${workspace.id}`, title: workspace.title ?? workspace.path ?? 'Project' }
+  const end = hostState?.turnEnd?.[sessionId]
+  const hostText = preview !== undefined && typeof preview.text === 'string' ? preview.text.trim() : ''
+  if (hostText !== '' && !running && end !== undefined && Number(end.at) >= Number(preview.at)) {
+    // The captured segment is only a FINAL answer when the turn that closed it
+    // actually completed. An error/aborted/unknown turn ends with a partial
+    // segment, and an intermediate segment must never be labelled final.
+    const kind = typeof end.kind === 'string' ? end.kind : 'unknown'
+    const completed = !ERROR_TURN_KINDS.includes(kind) && !INTERRUPTED_TURN_KINDS.includes(kind) && kind !== 'unknown'
+    return {
+      text: truncate(hostText, 600),
+      at: Number(preview.at) || null,
+      final: completed,
+      partial: !completed,
+      turnEndKind: kind,
+      source: 'host',
     }
   }
-  const cwd = typeof row?.cwd === 'string' && row.cwd !== '' ? row.cwd : ''
-  if (cwd !== '') {
-    const parts = cwd.split(/[\\/]/).filter(Boolean)
-    const name = parts.at(-1) ?? cwd
-    return { id: `dir:${cwd}`, title: name }
+  const outline = row?.projectionValues?.turnOutline
+  if (Array.isArray(outline)) {
+    for (let index = outline.length - 1; index >= 0; index -= 1) {
+      const entry = outline[index]
+      const isOpenTurn = running && index === outline.length - 1
+      if (!isOpenTurn && typeof entry?.response === 'string' && entry.response.trim() !== '') {
+        return { text: truncate(entry.response.trim(), 600), at: null, final: true, partial: false, source: 'outline', turn: Number(entry.turn) || null }
+      }
+    }
   }
-  return { id: 'unassigned', title: 'Unassigned' }
+  const checkpointText = assignment?.checkpoint?.lastText
+  if (!running && typeof checkpointText === 'string' && checkpointText !== '') {
+    return { text: truncate(checkpointText, 600), at: Number(assignment?.checkpoint?.at) || null, final: true, partial: false, source: 'checkpoint' }
+  }
+  return { text: '', at: null, final: false, partial: false, source: null }
+}
+
+/** Last non-empty line of an answer, without markdown decoration. */
+function lastUsefulLine(text) {
+  if (typeof text !== 'string') return ''
+  const lines = text.split(/\r?\n/).map(line => line.replace(/^[\s>#*\-|`]+/, '').replace(/[`*|]+$/g, '').trim())
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index] !== '' && !/^-{3,}$/.test(lines[index])) return truncate(lines[index], 220)
+  }
+  return ''
+}
+
+/** Normalize a filesystem path for comparison (case-insensitive drive, `/`). */
+function normalizePath(value) {
+  if (typeof value !== 'string' || value.trim() === '') return ''
+  let path = value.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+  if (/^[a-zA-Z]:/.test(path)) path = path.toLowerCase()
+  return path
+}
+
+/** Workspace index: session membership and normalized directory. */
+function indexWorkspaces(workspaces) {
+  const bySession = new Map()
+  const byPath = []
+  for (const workspace of Array.isArray(workspaces?.items) ? workspaces.items : []) {
+    if (workspace === null || typeof workspace !== 'object') continue
+    const id = workspace.workspaceId ?? workspace.id
+    if (typeof id !== 'string' || id === '') continue
+    const ref = { id: `ws:${id}`, workspaceId: id, title: workspace.title || workspace.path || id, path: workspace.path ?? null, source: 'workspace' }
+    for (const sessionId of Array.isArray(workspace.sessionIds) ? workspace.sessionIds : []) {
+      if (!bySession.has(String(sessionId))) bySession.set(String(sessionId), ref)
+    }
+    const path = normalizePath(workspace.path)
+    if (path !== '') byPath.push({ path, ref })
+  }
+  byPath.sort((a, b) => b.path.length - a.path.length)
+  return { bySession, byPath }
+}
+
+const UNASSIGNED_PROJECT = Object.freeze({ id: 'unassigned', title: 'Non attribué', path: null, source: 'none' })
+
+/**
+ * Resolve a session's project with reliable keys only:
+ *   1. DSH workspace membership (workspace.sessionIds);
+ *   2. normalized working directory equal to (or inside) a workspace path;
+ *   3. otherwise "unassigned". Titles are never used.
+ * Sub-agents inherit their parent's project in buildProjection.
+ */
+function resolveProject(row, index) {
+  const sessionId = String(row?.id ?? '')
+  const member = index.bySession.get(sessionId)
+  if (member !== undefined) return member
+  const cwd = normalizePath(row?.cwd ?? row?.projectionValues?.workingDirectory)
+  if (cwd !== '') {
+    for (const entry of index.byPath) {
+      if (cwd === entry.path || cwd.startsWith(`${entry.path}/`)) return { ...entry.ref, source: 'cwd' }
+    }
+  }
+  return UNASSIGNED_PROJECT
+}
+
+function titleOf(row, catalogEntry, nodeId) {
+  const label = row?.projectionValues?.subagent?.label ?? catalogEntry?.title
+  if (typeof label === 'string' && label.trim() !== '') return label.trim()
+  if (typeof row?.displayTitle === 'string' && row.displayTitle !== '') return row.displayTitle.replace(/^#+\s*/, '')
+  if (typeof row?.title === 'string' && row.title !== '') return row.title.replace(/^#+\s*/, '')
+  return nodeId.slice(-12)
 }
 
 /**
@@ -420,6 +648,21 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
     }
   }
 
+  const workspaceIndex = indexWorkspaces(workspaces)
+  // Team member names declared by a parent (role labels for its children).
+  const roleOf = new Map()
+  const catalogEntryOf = new Map()
+  for (const parentId of Object.keys(normalized.projectionsBySession)) {
+    for (const entry of catalogChildrenOf(normalized.projectionsBySession, parentId)) catalogEntryOf.set(entry.id, entry)
+  }
+  for (const id of normalized.ids) {
+    const members = normalized.byId[id]?.projectionValues?.agentTeam?.members
+    if (!Array.isArray(members)) continue
+    for (const member of members) {
+      if (member?.role === 'teammate' && typeof member.id === 'string' && typeof member.name === 'string') roleOf.set(member.id, member.name)
+    }
+  }
+
   const out = []
   for (const node of nodes.values()) {
     const row = node.row
@@ -427,33 +670,57 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
     const turnEnd = hostState.turnEnd?.[node.id] ?? null
     const ack = hostState.acks?.[node.id] ?? null
     const assignment = assignmentsBySession.get(node.id) ?? null
-    const status = classifyStatus({ row, live, turnEnd, ack })
+    const detail = classifyStatusDetailed({ row, live, turnEnd, ack, assignment })
+    const status = detail.status
     const parentId = row !== undefined ? parentIdOf(row) : null
-    const project = row !== undefined ? projectKeyOf(row, workspaces) : { id: 'unassigned', title: 'Unassigned' }
+    const project = row !== undefined ? resolveProject(row, workspaceIndex) : UNASSIGNED_PROJECT
     const resolvedParent = parentId ?? (catalogParentOf.get(node.id) ?? null)
-    const preview = previewOf(hostState, node.id, assignment)
+    const ownRunning = row?.running === true || live?.running === true
+    const preview = previewOf(hostState, node.id, assignment, row, ownRunning)
+    const stats = row?.projectionValues?.sessionStats
+    // Explicit acknowledgement covers a failure only when a cursor exists and
+    // it is at/after the recorded failure. A native-only failure has no such
+    // cursor: it stays visible instead of silently leaving the home view.
+    const seen = status === STATUS.FAILED ? detail._seen === true : status !== STATUS.FINISHED_UNREAD
     out.push({
       id: node.id,
       parentId: resolvedParent,
       projectId: project.id,
       projectTitle: project.title,
-      title: typeof row?.displayTitle === 'string' && row.displayTitle !== ''
-        ? row.displayTitle
-        : (typeof row?.title === 'string' && row.title !== '' ? row.title : node.id.slice(-12)),
+      projectSource: project.source,
+      title: titleOf(row, catalogEntryOf.get(node.id), node.id),
+      role: roleOf.get(node.id) ?? null,
       cwd: typeof row?.cwd === 'string' ? row.cwd : null,
       origin: typeof row?.origin === 'string' ? row.origin : (resolvedParent !== null ? 'subagent' : 'main'),
       status,
-      expectedAction: expectedActionOf(live),
+      statusReason: detail.reason,
+      statusSource: detail.source,
+      statusAt: detail.at,
+      seen,
+      expectedAction: expectedActionOf(live, row),
+      waitingDetail: waitingDetailOf(row),
       model: modelOf(row, assignment),
       preview,
+      activity: stats !== undefined && stats !== null
+        ? { turns: Number(stats.turns) || 0, steps: Number(stats.steps) || 0, toolMs: Number(stats.toolMs) || 0, llmMs: Number(stats.llmMs) || 0 }
+        : null,
+      error: typeof turnEnd?.error === 'string' ? turnEnd.error : null,
+      goal: typeof row?.projectionValues?.goal?.goal?.objective === 'string' ? truncate(row.projectionValues.goal.goal.objective, 240) : null,
       unread: status === STATUS.FINISHED_UNREAD,
       waiting: status === STATUS.WAITING_USER,
+      recovering: status === STATUS.RECOVERING,
       failed: status === STATUS.FAILED,
+      unavailable: status === STATUS.UNAVAILABLE,
       archived: archived.has(node.id),
       blank: row?.blank === true,
+      // Native fact: the user currently has this session open in the main view.
+      // The panel uses it to acknowledge reading done outside the board.
+      viewing: Number(row?.retainedBy?.mainView) > 0,
+      agentAvailable: typeof row?.agentAvailable === 'boolean' ? row.agentAvailable : null,
       updatedAt: Number(row?.updatedAt) || null,
       assignmentId: assignment?.id ?? null,
       taskId: assignment?.taskId ?? null,
+      assignmentStatus: assignment?.status ?? null,
       previousSessionId: assignment?.previousSessionId ?? null,
       routeHistory: Array.isArray(assignment?.routeHistory) ? assignment.routeHistory : [],
       children: [],
@@ -461,15 +728,35 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
     })
   }
 
-  // Link children (two passes so forward references settle).
+  // Link children. A malformed parent chain (self-parent or cycle) is broken at
+  // the node that closes the loop: it becomes a root flagged `parentCycle`.
   const byId = new Map(out.map(node => [node.id, node]))
   for (const node of out) {
-    if (node.parentId !== null && byId.has(node.parentId) && node.parentId !== node.id) {
-      byId.get(node.parentId).children.push(node.id)
+    if (node.parentId === null) continue
+    if (!byId.has(node.parentId)) { node.orphan = true; continue }
+    const seen = new Set([node.id])
+    let cursor = byId.get(node.parentId)
+    let cycle = false
+    while (cursor !== undefined) {
+      if (seen.has(cursor.id)) { cycle = true; break }
+      seen.add(cursor.id)
+      cursor = cursor.parentId !== null && !cursor.parentCycle ? byId.get(cursor.parentId) : undefined
     }
+    if (cycle) { node.parentCycle = true; continue }
   }
+  for (const node of out) {
+    if (node.parentId !== null && !node.orphan && !node.parentCycle) byId.get(node.parentId).children.push(node.id)
+  }
+  const isRoot = node => node.parentId === null || node.orphan === true || node.parentCycle === true
+  // Descendants live in their root's project: one tree is never split.
+  const inherit = (node, project) => {
+    node.projectId = project.projectId
+    node.projectTitle = project.projectTitle
+    for (const childId of node.children) inherit(byId.get(childId), project)
+  }
+  for (const node of out) if (isRoot(node)) inherit(node, { projectId: node.projectId, projectTitle: node.projectTitle })
 
-  const roots = out.filter(node => node.parentId === null || !byId.has(node.parentId))
+  const roots = out.filter(isRoot)
   return { nodes: out, byId, roots, projects: groupProjects(out), counts: summarize(out) }
 }
 
@@ -487,11 +774,13 @@ function summarize(nodes) {
     total: nodes.length,
     running: 0,
     waiting_user: 0,
+    recovering: 0,
     finished_unread: 0,
     finished_read: 0,
     failed: 0,
     idle: 0,
     unknown: 0,
+    unavailable: 0,
   }
   for (const node of nodes) {
     if (counts[node.status] !== undefined) counts[node.status] += 1
@@ -546,6 +835,376 @@ function compactRows(projection) {
     const project = String(a.projectTitle).localeCompare(String(b.projectTitle))
     return project !== 0 ? project : compareNodes(a, b)
   })
+}
+
+
+// ---- src/board/view.js ----
+/**
+ * Board view model (pure): which agents the board shows, in which order, and
+ * how trees are cut. Input is the projection from supervisor/projection.js;
+ * output is a deterministic, memo-friendly structure for the React layer.
+ *
+ * Display policy (default "attention" view):
+ *   - agents really running, plus every ancestor needed to reach them;
+ *   - agents waiting for a user action (never hidden because they are old);
+ *   - finished-and-not-consulted results; unseen failures;
+ *   - everything else (idle, read, archived) is history: hidden by default,
+ *     reachable through the "recent" filter, the search, or the History drawer.
+ * Age is used only to scope the optional "recent" filter, never to set a status.
+ *
+ * @module dsh-agent-board/board/view
+ */
+
+
+const VIEW_FILTERS = Object.freeze(['attention', 'recent', 'all'])
+const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000
+const DEFAULT_CHILD_LIMIT = 4
+const DEFAULT_TREE_LIMIT = 8
+
+/** Does this node by itself demand to be on the home view? */
+function isAttention(node) {
+  if (node === undefined || node === null) return false
+  if (node.status === STATUS.WAITING_USER) return true
+  if (node.status === STATUS.RUNNING) return true
+  if (node.status === STATUS.RECOVERING) return true
+  if (node.status === STATUS.FINISHED_UNREAD) return true
+  if (node.status === STATUS.FAILED && node.seen !== true) return true
+  return false
+}
+
+/** Attention tier used for sorting: lower first. */
+function attentionRank(node) {
+  switch (node?.status) {
+    case STATUS.WAITING_USER: return 0
+    case STATUS.RUNNING: return 1
+    case STATUS.FINISHED_UNREAD: return 2
+    case STATUS.RECOVERING: return 2.5
+    case STATUS.FAILED: return node.seen === true ? 5 : 3
+    default: return 4 + (STATUS_RANK[node?.status] ?? 9) / 10
+  }
+}
+
+/** Stable comparator: attention tier, then most recent activity, then title, then id. */
+function sortAttention(a, b) {
+  const tier = attentionRank(a) - attentionRank(b)
+  if (tier !== 0) return tier
+  const at = (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0)
+  if (at !== 0) return at
+  const title = String(a.title).localeCompare(String(b.title))
+  return title !== 0 ? title : String(a.id).localeCompare(String(b.id))
+}
+
+/**
+ * Subtree aggregate for every node: does the subtree contain attention, the
+ * best tier inside it, and its descendant count. Iterative post-order, cycle-safe.
+ */
+function aggregateSubtrees(projection) {
+  const agg = new Map()
+  const visit = (node, guard) => {
+    if (agg.has(node.id)) return agg.get(node.id)
+    if (guard.has(node.id)) return { attention: false, bestTier: 9, descendants: 0, running: false, waiting: 0, unread: 0 }
+    guard.add(node.id)
+    let attention = isAttention(node)
+    let bestTier = attentionRank(node)
+    let descendants = 0
+    let running = node.status === STATUS.RUNNING
+    let waiting = node.status === STATUS.WAITING_USER ? 1 : 0
+    let unread = node.status === STATUS.FINISHED_UNREAD ? 1 : 0
+    let latest = Number(node.updatedAt) || 0
+    for (const childId of node.children) {
+      const child = projection.byId.get(childId)
+      if (child === undefined) continue
+      const sub = visit(child, guard)
+      attention = attention || sub.attention
+      bestTier = Math.min(bestTier, sub.bestTier)
+      descendants += 1 + sub.descendants
+      running = running || sub.running
+      waiting += sub.waiting
+      unread += sub.unread
+      latest = Math.max(latest, sub.latest)
+    }
+    const value = { attention, bestTier, descendants, running, waiting, unread, latest }
+    agg.set(node.id, value)
+    return value
+  }
+  for (const node of projection.nodes) visit(node, new Set())
+  return agg
+}
+
+function matchesQuery(node, query) {
+  if (query === '') return true
+  const haystack = [node.title, node.role, node.projectTitle, node.id, node.taskId, node.model?.model, node.model?.provider, node.goal]
+    .filter(value => typeof value === 'string')
+    .join(' ')
+    .toLowerCase()
+  return query.split(/\s+/).filter(Boolean).every(term => haystack.includes(term))
+}
+
+/** Is this node itself included by the active filter? */
+function includedByFilter(node, filter, now, query = '') {
+  if (query !== '') return matchesQuery(node, query)
+  if (filter === 'all') return node.blank !== true
+  if (isAttention(node)) return true
+  if (filter === 'recent') {
+    if (node.archived === true || node.blank === true) return false
+    return Number.isFinite(Number(node.updatedAt)) && now - Number(node.updatedAt) <= RECENT_WINDOW_MS
+  }
+  return false
+}
+
+/**
+ * Build the visible forest.
+ *
+ * @param {object} projection buildProjection() output
+ * @param {object} options
+ * @param {'attention'|'recent'|'all'} options.filter
+ * @param {string} options.query       free-text search (overrides filter)
+ * @param {string|null} options.project only this project id, or null for all
+ * @param {Set<string>} options.expanded node ids whose hidden children are revealed
+ * @param {Set<string>} options.collapsed node ids whose branch is folded
+ * @param {number} options.now
+ * @param {number} [options.childLimit]
+ * @returns {{ projects: Array, counts: object, visibleCount: number }}
+ */
+function buildBoardView(projection, options = {}) {
+  const filter = VIEW_FILTERS.includes(options.filter) ? options.filter : 'attention'
+  const query = typeof options.query === 'string' ? options.query.trim().toLowerCase() : ''
+  const now = Number(options.now) || Date.now()
+  const expanded = options.expanded ?? new Set()
+  const collapsed = options.collapsed ?? new Set()
+  const childLimit = Number(options.childLimit) || DEFAULT_CHILD_LIMIT
+  const agg = options.aggregates ?? aggregateSubtrees(projection)
+
+  // A node is kept when it, or anything under it, is included (ancestors of an
+  // included node are therefore always kept).
+  const keepMemo = new Map()
+  const keeps = node => {
+    if (keepMemo.has(node.id)) return keepMemo.get(node.id)
+    keepMemo.set(node.id, false) // cycle guard
+    let keep = includedByFilter(node, filter, now, query)
+    for (const childId of node.children) {
+      const child = projection.byId.get(childId)
+      if (child !== undefined && keeps(child)) keep = true
+    }
+    keepMemo.set(node.id, keep)
+    return keep
+  }
+
+  let visibleCount = 0
+  const shape = (node, depth, guard) => {
+    guard.add(node.id)
+    visibleCount += 1
+    const allChildren = node.children
+      .map(id => projection.byId.get(id))
+      .filter(child => child !== undefined && !guard.has(child.id))
+      .sort(sortAttention)
+    const isExpanded = expanded.has(node.id)
+    const isCollapsed = collapsed.has(node.id)
+    const wanted = isExpanded ? allChildren : allChildren.filter(keeps)
+    let shown = isCollapsed ? [] : wanted
+    let overflow = 0
+    if (!isExpanded && !isCollapsed && shown.length > childLimit) {
+      // Attention children are never cut; the limit only trims calm ones.
+      const urgent = shown.filter(child => agg.get(child.id)?.attention)
+      const calm = shown.filter(child => !agg.get(child.id)?.attention)
+      const room = Math.max(0, childLimit - urgent.length)
+      shown = [...urgent, ...calm.slice(0, room)].sort(sortAttention)
+      overflow = wanted.length - shown.length
+    }
+    const hiddenChildren = allChildren.length - shown.length
+    return {
+      node,
+      depth,
+      aggregate: agg.get(node.id),
+      groupActive: agg.get(node.id)?.running === true && node.status !== STATUS.RUNNING,
+      totalChildren: allChildren.length,
+      hiddenChildren,
+      overflow,
+      collapsed: isCollapsed,
+      expanded: isExpanded,
+      children: shown.map(child => shape(child, depth + 1, guard)),
+    }
+  }
+
+  const groups = new Map()
+  for (const root of projection.roots) {
+    if (options.project && root.projectId !== options.project) continue
+    if (!keeps(root)) continue
+    if (!groups.has(root.projectId)) groups.set(root.projectId, { id: root.projectId, title: root.projectTitle, roots: [] })
+    groups.get(root.projectId).roots.push(root)
+  }
+
+  const projects = []
+  for (const group of groups.values()) {
+    const roots = group.roots.sort((a, b) => {
+      const ta = agg.get(a.id)?.bestTier ?? 9
+      const tb = agg.get(b.id)?.bestTier ?? 9
+      if (ta !== tb) return ta - tb
+      return sortAttention(a, b)
+    })
+    const before = visibleCount
+    const trees = roots.map(root => shape(root, 0, new Set()))
+    const summary = { running: 0, waiting: 0, unread: 0 }
+    for (const root of roots) {
+      const sub = agg.get(root.id)
+      if (sub?.running) summary.running += 1
+      summary.waiting += sub?.waiting ?? 0
+      summary.unread += sub?.unread ?? 0
+    }
+    projects.push({
+      id: group.id,
+      title: group.title,
+      unassigned: group.id === 'unassigned',
+      trees,
+      visibleAgents: visibleCount - before,
+      bestTier: Math.min(...roots.map(root => agg.get(root.id)?.bestTier ?? 9)),
+      summary,
+    })
+  }
+  projects.sort((a, b) => {
+    if (a.unassigned !== b.unassigned) return a.unassigned ? 1 : -1
+    if (a.bestTier !== b.bestTier) return a.bestTier - b.bestTier
+    return String(a.title).localeCompare(String(b.title))
+  })
+
+  return { projects, visibleCount, filter, query }
+}
+
+/** Global counters, independent from what is displayed. */
+function boardCounts(projection) {
+  const counts = { total: 0, running: 0, waiting: 0, unread: 0, failed: 0, history: 0, roots: projection.roots.length }
+  for (const node of projection.nodes) {
+    counts.total += 1
+    if (node.status === STATUS.RUNNING) counts.running += 1
+    else if (node.status === STATUS.WAITING_USER) counts.waiting += 1
+    else if (node.status === STATUS.FINISHED_UNREAD) counts.unread += 1
+    else if (node.status === STATUS.FAILED && node.seen !== true) counts.failed += 1
+    else counts.history += 1
+  }
+  return counts
+}
+
+/** Projects available for the project filter (all, not only visible ones). */
+function projectOptions(projection) {
+  const map = new Map()
+  for (const root of projection.roots) {
+    const entry = map.get(root.projectId) ?? { id: root.projectId, title: root.projectTitle, agents: 0 }
+    map.set(root.projectId, entry)
+  }
+  for (const node of projection.nodes) {
+    const entry = map.get(node.projectId)
+    if (entry !== undefined) entry.agents += 1
+  }
+  return [...map.values()].sort((a, b) => {
+    if ((a.id === 'unassigned') !== (b.id === 'unassigned')) return a.id === 'unassigned' ? 1 : -1
+    return a.title.localeCompare(b.title)
+  })
+}
+
+/**
+ * History list: every non-attention agent, most recent first, searched and
+ * paginated. Only top-level sessions are listed by default; sub-agents appear
+ * under their parent's entry count (and through the search).
+ */
+function historyPage(projection, { query = '', project = null, offset = 0, limit = 30, includeSubagents = false } = {}) {
+  const q = String(query).trim().toLowerCase()
+  const items = projection.nodes.filter(node => {
+    if (node.blank === true) return false
+    if (isAttention(node)) return false
+    if (project && node.projectId !== project) return false
+    if (!includeSubagents && q === '' && node.parentId !== null && !node.orphan && !node.parentCycle) return false
+    return matchesQuery(node, q)
+  })
+  items.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0) || String(a.id).localeCompare(String(b.id)))
+  const start = Math.max(0, Number(offset) || 0)
+  return { total: items.length, offset: start, items: items.slice(start, start + limit), hasMore: start + limit < items.length }
+}
+
+/** Ancestor ids of a node, root first (cycle-safe). */
+function ancestorChain(projection, id) {
+  const chain = []
+  const guard = new Set([id])
+  let current = projection.byId.get(id)
+  while (current?.parentId && !current.orphan && !current.parentCycle && !guard.has(current.parentId)) {
+    guard.add(current.parentId)
+    const parent = projection.byId.get(current.parentId)
+    if (parent === undefined) break
+    chain.unshift(parent.id)
+    current = parent
+  }
+  return chain
+}
+
+
+// ---- src/board/interaction.js ----
+/**
+ * Pointer/keyboard arbitration for agent cards (pure, timer-injected).
+ *
+ *   single click  -> after `delay` ms without a second click: onSelect(id)
+ *   double click  -> cancels the pending single action, onOpen(id) exactly once
+ *   Enter         -> onOpen(id)        Space -> onSelect(id)
+ *
+ * A second `open` for the same id inside `openGuardMs` is dropped, so a
+ * dblclick event racing a keyboard Enter or a duplicated dblclick never opens
+ * the session twice.
+ *
+ * @module dsh-agent-board/board/interaction
+ */
+
+const CLICK_DELAY_MS = 250
+const OPEN_GUARD_MS = 800
+
+function createClickArbiter({
+  onSelect,
+  onOpen,
+  delay = CLICK_DELAY_MS,
+  openGuardMs = OPEN_GUARD_MS,
+  setTimer = (fn, ms) => setTimeout(fn, ms),
+  clearTimer = handle => clearTimeout(handle),
+  now = () => Date.now(),
+} = {}) {
+  let pending = null
+  let lastOpen = { id: null, at: -Infinity }
+
+  const cancel = () => {
+    if (pending !== null) {
+      clearTimer(pending.handle)
+      pending = null
+    }
+  }
+
+  const open = id => {
+    cancel()
+    const at = now()
+    if (lastOpen.id === id && at - lastOpen.at < openGuardMs) return false
+    lastOpen = { id, at }
+    onOpen?.(id)
+    return true
+  }
+
+  return {
+    click(id, detail = 1) {
+      // detail >= 2 is the second click of a double click: wait for dblclick.
+      if (detail >= 2) { cancel(); return }
+      cancel()
+      const handle = setTimer(() => {
+        pending = null
+        onSelect?.(id)
+      }, delay)
+      pending = { id, handle }
+    },
+    doubleClick(id) {
+      return open(id)
+    },
+    key(id, key) {
+      if (key === 'Enter') { open(id); return true }
+      if (key === ' ' || key === 'Spacebar') { cancel(); onSelect?.(id); return true }
+      return false
+    },
+    open,
+    cancel,
+    get pendingId() { return pending?.id ?? null },
+  }
 }
 
 
@@ -615,11 +1274,25 @@ function createBoardStore(ctx, options = {}) {
     }
   }
 
-  function bump() {
-    dirty = true
+  // Native sources can notify many times per second while agents stream.
+  // Notifications are coalesced: at most one projection rebuild per window.
+  const notifyWindowMs = Number.isFinite(options.notifyWindowMs) ? options.notifyWindowMs : 200
+  let notifyTimer = null
+  let stats = { notifications: 0, rebuilds: 0 }
+
+  function flush() {
+    notifyTimer = null
     for (const listener of listeners) {
       try { listener() } catch { /* listener errors must not break the store */ }
     }
+  }
+
+  function bump() {
+    dirty = true
+    stats.notifications += 1
+    if (notifyWindowMs <= 0) { flush(); return }
+    if (notifyTimer !== null) return
+    notifyTimer = setTimeout(flush, notifyWindowMs)
   }
 
   function bind() {
@@ -650,8 +1323,10 @@ function createBoardStore(ctx, options = {}) {
       try { return service('workspaces')?.list?.getSnapshot?.() ?? {} } catch { return {} }
     })()
     const projection = buildProjection({ list, statusMap, hostState: host, workspaces, now: Date.now() })
+    stats.rebuilds += 1
     return {
       projection,
+      aggregates: aggregateSubtrees(projection),
       host,
       hostError,
       phase: typeof list?.phase === 'string' ? list.phase : 'ready',
@@ -690,22 +1365,34 @@ function createBoardStore(ctx, options = {}) {
     }
   }
 
+  // One parser for every SSE frame shape: the host emits named `state` frames,
+  // other implementations may emit unnamed `message` frames. Both paths must
+  // apply exactly the same validation so a malformed frame never breaks the store.
+  function applyStreamFrame(event) {
+    try {
+      const parsed = JSON.parse(event?.data)
+      if (parsed !== null && typeof parsed === 'object') {
+        host = parsed
+        hostError = null
+        bump()
+      }
+    } catch { /* keep the previous state */ }
+  }
+
   function connectStream() {
     if (stream !== null || destroyed) return
     if (typeof EventSourceImpl !== 'function') return
     try {
-      stream = new EventSourceImpl(`${apiBase}/events`)
-      stream.onmessage = event => {
-        try {
-          const parsed = JSON.parse(event.data)
-          if (parsed !== null && typeof parsed === 'object') {
-            host = parsed
-            hostError = null
-            bump()
-          }
-        } catch { /* keep the previous state */ }
-      }
-      stream.onerror = () => { /* the browser reconnects automatically */ }
+      const source = new EventSourceImpl(`${apiBase}/events`)
+      stream = source
+      // The host broadcasts `event: state`; `onmessage` only receives unnamed
+      // `message` frames, so the named event needs its own listener. Test
+      // doubles and minimal EventSource implementations may not implement
+      // addEventListener: fall back to onmessage only in that case.
+      if (typeof source.addEventListener === 'function') source.addEventListener('state', applyStreamFrame)
+      // Protocol compatibility: hosts that emit unnamed frames still reach us.
+      source.onmessage = applyStreamFrame
+      source.onerror = () => { /* the browser reconnects automatically */ }
     } catch {
       stream = null
     }
@@ -733,14 +1420,18 @@ function createBoardStore(ctx, options = {}) {
     refreshHost,
     connectStream,
     getHost: () => host,
-    ack: sessionId => post('/ack', { sessionId }),
+    ack: (sessionId, options = {}) => post('/ack', { sessionId, ...(typeof options.source === 'string' ? { source: options.source } : {}) }),
+    unack: sessionId => post('/ack', { sessionId, seen: false }),
+    resume: () => post('/resume', {}),
     setMode: mode => post('/mode', { mode }),
     stop: () => post('/stop', {}),
     tick: () => post('/tick', {}),
     decide: (proposalId, approve) => post(`/proposals/${encodeURIComponent(proposalId)}/decide`, { approve }),
     dispatch: taskId => post('/dispatch', { taskId }),
+    getStats: () => ({ ...stats }),
     destroy() {
       destroyed = true
+      if (notifyTimer !== null) { clearTimeout(notifyTimer); notifyTimer = null }
       for (const unsubscribe of unsubscribers.splice(0)) {
         try { unsubscribe() } catch { /* ignore */ }
       }
@@ -764,217 +1455,485 @@ function createBoardStore(ctx, options = {}) {
 
 
 
-// ---- src/client/app.js ----
+// ---- src/client/ui/strings.js ----
 /**
- * Agent Board panel (React, plain createElement — no build-time JSX).
+ * Panel strings (fr/en) and locale resolution. Concatenated into the browser
+ * artifact by scripts/build-client.mjs: every name here is global to the bundle.
  *
- * The panel is registered through the official slots: one `main` occupant keyed
- * `dsh-agent-board` and one `sidebar.panellist` row. It renders a card per
- * agent with real native statuses, a filiation tree per project, collapsible
- * subtrees, click-to-preview and double-click-to-open (plus an explicit
- * "Open session" button for touch/mobile), and the orchestrator controls.
- *
- * This file is concatenated into the browser artifact by scripts/build-client.mjs.
- *
- * @module dsh-agent-board/client/app
+ * @module dsh-agent-board/client/ui/strings
  */
-
-const DAB_PANEL_ID = 'dsh-agent-board'
-const DAB_STYLE_ID = 'dsh-agent-board-style'
-const DAB_COMPACT_KEY = 'dsh-agent-board:compact'
 
 const DAB_STRINGS = {
   fr: {
     title: 'Agent Board',
-    subtitle: 'Sessions, sous-agents et travail délégué',
-    mode: 'Orchestration',
+    mode: 'Orchestrateur',
     off: 'Arrêt',
     supervised: 'Supervisé',
     autonomous: 'Autonome',
     stop: 'Arrêter les exécutions',
+    stopNone: 'Aucune exécution du board en cours',
+    orchestratorDown: 'API orchestrateur injoignable : contrôle indisponible',
     compact: 'Cartes compactes',
+    treeView: 'Arbre',
     refresh: 'Rafraîchir',
+    search: 'Rechercher un agent, un projet, une tâche…',
+    allProjects: 'Tous les projets',
+    filterAttention: 'À traiter',
+    filterRecent: 'Récents 24 h',
+    filterAll: 'Tout',
+    history: 'Historique',
     running: 'en cours',
     waiting: 'en attente',
     unread: 'non lus',
     failed: 'en erreur',
-    idle: 'inactifs',
-    consult: 'terminé, consulté',
-    unknown: 'inconnu / déconnecté',
-    waitingApproval: 'En attente de votre approbation',
-    waitingQuestion: 'En attente de votre réponse',
-    waitingPlan: 'En attente de votre revue de plan',
-    open: 'Ouvrir la session',
-    openHint: 'Double-clic ou bouton pour ouvrir',
-    preview: 'Aperçu',
-    noPreview: 'Aucun segment de réponse visible pour le moment.',
-    collapse: 'Replier',
-    expand: 'Déplier',
-    empty: 'Aucune session ni sous-agent à afficher.',
-    proposals: 'Propositions en attente',
+    shown: 'affichés',
+    of: 'sur',
+    statusRunning: 'En cours',
+    statusWaiting: 'Attend votre action',
+    statusRecovering: 'Récupération en cours',
+    statusUnavailable: 'Agent indisponible',
+    statusUnread: 'Terminé — non consulté',
+    statusRead: 'Terminé',
+    statusFailed: 'Échec',
+    statusIdle: 'Inactif',
+    statusUnknown: 'Inconnu / déconnecté',
+    groupActive: 'sous-agents actifs',
+    waitingApproval: 'Attend votre approbation',
+    waitingQuestion: 'Attend votre réponse',
+    waitingPlan: 'Attend votre revue du plan',
+    waitingUnknown: 'Attend une intervention',
+    open: 'Ouvrir',
+    openSession: 'Ouvrir la session',
+    openParent: 'Ouvrir le parent',
+    openFailed: 'Impossible d\u2019ouvrir cette session via le routeur DSH',
+    finalAnswer: 'Dernière ligne de la réponse finale',
+    noFinal: 'Pas encore de réponse finale.',
+    activity: 'Activité',
+    previousSession: 'Session précédente',
+    routeHistory: 'Changements de route',
+    statusReason: 'Raison du statut',
+    recovery: 'Reprise',
+    resume: 'Reprendre',
+    stoppedNotice: 'Arrêté par l’opérateur — aucune nouvelle délégation',
+    secondaryInstance: 'Instance secondaire (lecture seule) : un autre hôte possède l’état.',
+    turns: 'tours',
+    steps: 'étapes',
+    seeMore: 'Voir plus',
+    seeLess: 'Réduire',
+    close: 'Fermer',
+    collapse: 'Replier la branche',
+    expand: 'Déplier la branche',
+    showHidden: 'afficher',
+    hidden: 'masqués',
+    children: 'sous-agents',
+    subagent: 'sous-agent',
+    parent: 'Parent',
+    project: 'Projet',
+    model: 'Modèle',
+    task: 'Tâche',
+    directory: 'Répertoire',
+    session: 'Session',
+    goal: 'Objectif',
+    orphan: 'parent inconnu',
+    cycle: 'parenté invalide (cycle)',
+    unassigned: 'Non attribué',
+    emptyAttention: 'Rien à traiter : aucun agent en cours, en attente ou fraîchement terminé.',
+    emptyHint: 'L\u2019historique reste accessible via « Historique » ou la recherche.',
+    emptySearch: 'Aucun agent ne correspond.',
+    moreTrees: 'Afficher {n} arbre(s) de plus',
+    historyTitle: 'Historique des sessions',
+    historyHint: 'Sessions inactives, consultées ou archivées. Rien n\u2019est supprimé ni archivé par le board.',
+    loadMore: 'Charger plus',
+    archived: 'archivée',
+    noModel: 'modèle inconnu',
+    proposals: 'Proposition en attente',
     approve: 'Approuver',
     reject: 'Refuser',
-    executions: 'Exécutions',
-    noExecution: 'Aucune proposition ni exécution en cours.',
+    executions: 'Exécutions du board',
+    restore: 'Reprise après redémarrage',
+    resumed: 'interrompue — reprise contrôlée requise',
+    offNotice: 'Observation seule',
+    supervisedNotice: 'Les propositions attendent votre accord',
+    autonomousNotice: 'Exécute dans le mandat configuré',
+    orchestratorState: 'État orchestrateur et adaptateurs',
     syncOk: 'Task Board synchronisé',
     syncError: 'Task Board injoignable',
     adapters: 'Adaptateurs',
-    restore: 'Reprise après redémarrage',
-    resumed: 'interrompue — reprise contrôlée requise',
-    offNotice: 'Observation seule : aucun nouvel ordre autonome.',
-    supervisedNotice: 'Supervisé : les propositions attendent votre accord.',
-    autonomousNotice: 'Autonome : exécution dans le mandat configuré.',
-    subagent: 'sous-agent',
-    modelUnknown: 'modèle inconnu',
+    notLive: 'non validé live',
+    keyboardHint: 'Entrée : ouvrir · Espace : aperçu · double-clic : ouvrir',
+    projects: 'Projets',
+    ago: 'il y a',
   },
   en: {
     title: 'Agent Board',
-    subtitle: 'Sessions, sub-agents and delegated work',
-    mode: 'Orchestration',
+    mode: 'Orchestrator',
     off: 'Off',
     supervised: 'Supervised',
     autonomous: 'Autonomous',
     stop: 'Stop executions',
+    stopNone: 'No board execution in flight',
+    orchestratorDown: 'Orchestrator API unreachable: control unavailable',
     compact: 'Compact cards',
+    treeView: 'Tree',
     refresh: 'Refresh',
+    search: 'Search an agent, project, task…',
+    allProjects: 'All projects',
+    filterAttention: 'Needs attention',
+    filterRecent: 'Recent 24 h',
+    filterAll: 'All',
+    history: 'History',
     running: 'running',
     waiting: 'waiting',
     unread: 'unread',
     failed: 'failed',
-    idle: 'idle',
-    consult: 'finished, consulted',
-    unknown: 'unknown / disconnected',
+    shown: 'shown',
+    of: 'of',
+    statusRunning: 'Running',
+    statusWaiting: 'Needs your action',
+    statusRecovering: 'Recovering',
+    statusUnavailable: 'Agent unavailable',
+    statusUnread: 'Finished — not viewed',
+    statusRead: 'Finished',
+    statusFailed: 'Failed',
+    statusIdle: 'Idle',
+    statusUnknown: 'Unknown / disconnected',
+    groupActive: 'active sub-agents',
     waitingApproval: 'Waiting for your approval',
     waitingQuestion: 'Waiting for your answer',
     waitingPlan: 'Waiting for your plan review',
-    open: 'Open session',
-    openHint: 'Double-click or button to open',
-    preview: 'Preview',
-    noPreview: 'No visible answer segment yet.',
-    collapse: 'Collapse',
-    expand: 'Expand',
-    empty: 'No session or sub-agent to display.',
-    proposals: 'Pending proposals',
+    waitingUnknown: 'Waiting for an intervention',
+    open: 'Open',
+    openSession: 'Open session',
+    openParent: 'Open parent',
+    openFailed: 'This session cannot be opened through the DSH router',
+    finalAnswer: 'Last line of the final answer',
+    noFinal: 'No final answer yet.',
+    activity: 'Activity',
+    previousSession: 'Previous session',
+    routeHistory: 'Route changes',
+    statusReason: 'Status reason',
+    recovery: 'Recovery',
+    resume: 'Resume',
+    stoppedNotice: 'Stopped by the operator — no new delegation',
+    secondaryInstance: 'Secondary instance (read-only): another host owns the state.',
+    turns: 'turns',
+    steps: 'steps',
+    seeMore: 'See more',
+    seeLess: 'Less',
+    close: 'Close',
+    collapse: 'Collapse branch',
+    expand: 'Expand branch',
+    showHidden: 'show',
+    hidden: 'hidden',
+    children: 'sub-agents',
+    subagent: 'sub-agent',
+    parent: 'Parent',
+    project: 'Project',
+    model: 'Model',
+    task: 'Task',
+    directory: 'Directory',
+    session: 'Session',
+    goal: 'Goal',
+    orphan: 'unknown parent',
+    cycle: 'invalid parentage (cycle)',
+    unassigned: 'Unassigned',
+    emptyAttention: 'Nothing to handle: no agent running, waiting or freshly finished.',
+    emptyHint: 'History stays available through “History” or the search.',
+    emptySearch: 'No agent matches.',
+    moreTrees: 'Show {n} more tree(s)',
+    historyTitle: 'Session history',
+    historyHint: 'Idle, viewed or archived sessions. The board never deletes or archives anything.',
+    loadMore: 'Load more',
+    archived: 'archived',
+    noModel: 'unknown model',
+    proposals: 'Pending proposal',
     approve: 'Approve',
     reject: 'Reject',
-    executions: 'Executions',
-    noExecution: 'No proposal or execution in flight.',
+    executions: 'Board executions',
+    restore: 'Restart reconciliation',
+    resumed: 'interrupted — controlled resume required',
+    offNotice: 'Observation only',
+    supervisedNotice: 'Proposals wait for your approval',
+    autonomousNotice: 'Runs inside the configured mandate',
+    orchestratorState: 'Orchestrator and adapters status',
     syncOk: 'Task Board synced',
     syncError: 'Task Board unreachable',
     adapters: 'Adapters',
-    restore: 'Restart reconciliation',
-    resumed: 'interrupted — controlled resume required',
-    offNotice: 'Observation only: no new autonomous order.',
-    supervisedNotice: 'Supervised: proposals wait for your approval.',
-    autonomousNotice: 'Autonomous: runs inside the configured mandate.',
-    subagent: 'sub-agent',
-    modelUnknown: 'unknown model',
+    notLive: 'not validated live',
+    keyboardHint: 'Enter: open · Space: preview · double-click: open',
+    projects: 'Projects',
+    ago: 'ago',
   },
 }
 
-function dabLocale() {
+let DAB_LANG = 'en'
+
+function dabResolveLocale(ctx) {
   try {
-    const snap = globalThis.__dabLocale?.()
-    if (typeof snap === 'string' && snap !== '') return snap.toLowerCase().startsWith('fr') ? 'fr' : 'en'
-  } catch { /* ignore */ }
+    const snapshot = ctx?.get?.('locale')?.getLocale?.()
+    const active = snapshot?.active
+    const id = typeof active === 'string' ? active : active?.id
+    // 'auto' / 'system' (or anything not a language tag) defers to the document.
+    if (typeof id === 'string' && /^(fr|en|zh)/i.test(id)) return id.toLowerCase().startsWith('fr') ? 'fr' : 'en'
+  } catch { /* fall through */ }
   try {
-    const lang = String(globalThis.document?.documentElement?.lang ?? navigator?.language ?? 'en')
+    const lang = String(globalThis.document?.documentElement?.lang || globalThis.navigator?.language || 'en')
     return lang.toLowerCase().startsWith('fr') ? 'fr' : 'en'
   } catch {
     return 'en'
   }
 }
 
-let DAB_LANG = 'en'
-const dabT = key => (DAB_STRINGS[DAB_LANG] ?? DAB_STRINGS.en)[key] ?? (DAB_STRINGS.en[key] ?? key)
-
-const DAB_STATUS_KEY = {
-  running: 'running',
-  waiting_user: 'waiting',
-  finished_unread: 'unread',
-  finished_read: 'consult',
-  failed: 'failed',
-  idle: 'idle',
-  unknown: 'unknown',
+function dabT(key, vars) {
+  const raw = (DAB_STRINGS[DAB_LANG] ?? DAB_STRINGS.en)[key] ?? DAB_STRINGS.en[key] ?? key
+  if (vars === undefined) return raw
+  return raw.replace(/\{(\w+)\}/g, (_, name) => String(vars[name] ?? ''))
 }
+
+const DAB_STATUS_TEXT = {
+  running: 'statusRunning',
+  waiting_user: 'statusWaiting',
+  recovering: 'statusRecovering',
+  finished_unread: 'statusUnread',
+  finished_read: 'statusRead',
+  failed: 'statusFailed',
+  idle: 'statusIdle',
+  unknown: 'statusUnknown',
+  unavailable: 'statusUnavailable',
+}
+
+function dabStatusLabel(status) {
+  return dabT(DAB_STATUS_TEXT[status] ?? 'statusUnknown')
+}
+
+function dabWaitingLabel(action) {
+  if (action === 'approval') return dabT('waitingApproval')
+  if (action === 'question') return dabT('waitingQuestion')
+  if (action === 'plan-review') return dabT('waitingPlan')
+  return dabT('waitingUnknown')
+}
+
+function dabFormatAge(at, now = Date.now()) {
+  if (!Number.isFinite(Number(at)) || Number(at) <= 0) return ''
+  const seconds = Math.max(0, Math.round((now - Number(at)) / 1000))
+  if (seconds < 60) return `${seconds} s`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes} min`
+  const hours = Math.round(minutes / 60)
+  if (hours < 48) return `${hours} h`
+  return `${Math.round(hours / 24)} j`
+}
+
+function dabModelText(model) {
+  if (model === null || model === undefined || (model.model === '—' && model.provider === '—')) return null
+  const name = typeof model.model === 'string' && model.model !== '—' ? model.model : '?'
+  return name
+}
+
+function dabModelTitle(model) {
+  if (model === null || model === undefined || model.source === 'unknown') return dabT('noModel')
+  const effort = typeof model.reasoningEffort === 'string' && model.reasoningEffort !== '' ? ` · ${model.reasoningEffort}` : ''
+  return `${model.provider}/${model.model}${effort}`
+}
+
+
+// ---- src/client/ui/styles.js ----
+/**
+ * Panel CSS. Only DSH theme alias tokens (--dsw-alias-*) are used, so light,
+ * dark and custom themes apply unchanged. Layout switches on the panel width
+ * (container queries), not the window width, because the panel can be narrow
+ * inside a wide window.
+ *
+ * @module dsh-agent-board/client/ui/styles
+ */
+
+const DAB_STYLE_ID = 'dsh-agent-board-style'
 
 const DAB_CSS = `
-.dab-root {
-  display: flex; flex-direction: column; min-height: 0; height: 100%;
-  background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary);
-  font-size: 13px; line-height: 1.45; overflow: hidden;
-}
-.dab-header { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 14px 18px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
-.dab-header-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.dab-title { font-size: 15px; font-weight: 650; margin: 0; }
-.dab-subtitle { color: var(--dsw-alias-label-secondary); font-size: 12px; }
-.dab-grow { flex: 1; min-width: 0; }
-.dab-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; background: color-mix(in srgb, currentColor 8%, transparent); color: var(--dsw-alias-label-secondary); white-space: nowrap; }
-.dab-chip[data-tone="running"] { color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); }
-.dab-chip[data-tone="waiting"] { color: var(--dsw-alias-state-warn-primary); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 14%, transparent); }
-.dab-chip[data-tone="unread"] { color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, transparent); }
-.dab-chip[data-tone="failed"] { color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, transparent); }
-.dab-btn { display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); padding: 4px 10px; font-size: 12px; font-weight: 550; cursor: pointer; }
-.dab-btn:hover { border-color: var(--dsw-alias-border-l2); }
-.dab-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+.dab-root { container-type: inline-size; container-name: dab; position: relative; display: flex; flex-direction: column; min-height: 0; height: 100%;
+  background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 1.4; overflow: hidden; }
+.dab-root *, .dab-root *::before, .dab-root *::after { box-sizing: border-box; }
+.dab-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- toolbar */
+.dab-toolbar { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px 16px 9px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.dab-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.dab-title { font-size: 15px; font-weight: 650; margin: 0 4px 0 0; white-space: nowrap; }
+.dab-grow { flex: 1 1 0; min-width: 0; }
+.dab-counter { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
+.dab-counter b { color: var(--dsw-alias-label-primary); font-weight: 650; font-variant-numeric: tabular-nums; }
+.dab-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.dab-dot[data-tone="running"] { background: var(--dsw-alias-brand-primary); }
+.dab-dot[data-tone="waiting"] { background: var(--dsw-alias-state-warn-primary); }
+.dab-dot[data-tone="unread"] { background: var(--dsw-alias-state-success-primary); }
+.dab-dot[data-tone="failed"] { background: var(--dsw-alias-state-error-primary); }
+.dab-muted { color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.dab-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 28px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); padding: 3px 10px; font: inherit; font-size: 12px; font-weight: 550; cursor: pointer; white-space: nowrap; }
+.dab-btn:hover:not([disabled]) { border-color: var(--dsw-alias-border-l2); }
+.dab-btn:focus-visible, .dab-input:focus-visible, .dab-select:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
 .dab-btn[aria-pressed="true"] { border-color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, var(--dsw-alias-bg-layer-1)); }
-.dab-btn[disabled] { opacity: .5; cursor: default; }
-.dab-btn[data-danger="true"] { border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 55%, var(--dsw-alias-border-l1)); color: var(--dsw-alias-state-error-primary); }
-.dab-seg { display: inline-flex; gap: 4px; padding: 2px; border-radius: 10px; background: var(--dsw-alias-bg-layer-2); }
-.dab-notice { padding: 6px 18px; font-size: 12px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); }
-.dab-scroll { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px 40px; }
-.dab-project { margin-bottom: 18px; }
-.dab-project-head { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 12px; font-weight: 700; letter-spacing: .02em; color: var(--dsw-alias-label-secondary); text-transform: none; }
-.dab-project-count { font-weight: 600; font-size: 11px; opacity: .8; }
-.dab-row { display: flex; align-items: stretch; gap: 0; }
-.dab-indent { flex: none; width: 18px; position: relative; }
-.dab-indent::before { content: ""; position: absolute; left: 8px; top: -6px; bottom: -6px; width: 1px; background: var(--dsw-alias-border-l1); }
-.dab-card {
-  flex: 1; min-width: 0; margin: 0 0 8px; border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 10px; background: var(--dsw-alias-bg-layer-1); padding: 9px 12px 9px 10px;
-  transition: border-color .12s ease, background .12s ease;
-}
+.dab-btn[disabled] { opacity: .5; cursor: not-allowed; }
+.dab-btn[data-danger="true"] { color: var(--dsw-alias-state-error-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, var(--dsw-alias-border-l1)); }
+.dab-btn[data-variant="ghost"] { border-color: transparent; background: transparent; }
+.dab-seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: 10px; background: var(--dsw-alias-bg-layer-2); }
+.dab-seg .dab-btn { border-color: transparent; background: transparent; min-height: 26px; }
+.dab-seg .dab-btn[aria-pressed="true"] { background: var(--dsw-alias-bg-layer-1); border-color: var(--dsw-alias-border-l2); }
+.dab-input, .dab-select { min-height: 28px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; font-size: 12px; padding: 3px 9px; min-width: 0; }
+.dab-input { flex: 1 1 200px; max-width: 340px; }
+.dab-select { max-width: 200px; }
+.dab-label { font-size: 11px; font-weight: 650; color: var(--dsw-alias-label-secondary); letter-spacing: .02em; }
+.dab-notice { font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dab-alert { font-size: 12px; color: var(--dsw-alias-state-error-primary); }
+
+/* ---------- layout */
+.dab-main { flex: 1; min-height: 0; display: flex; }
+.dab-scroll { flex: 1; min-width: 0; overflow: auto; padding: 12px 16px 40px; scroll-behavior: auto; }
+.dab-project { margin: 0 0 14px; }
+.dab-project-head { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; padding: 4px 2px; margin: 0 0 8px; color: var(--dsw-alias-label-primary);
+  font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; text-align: left; border-radius: 6px; }
+.dab-project-head:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); }
+.dab-project-head .dab-caret { color: var(--dsw-alias-label-secondary); width: 12px; flex: none; }
+.dab-project-count { font-weight: 550; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dab-forest { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+.dab-tile { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: 10px; border-radius: 12px; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); }
+.dab-more { margin-top: 8px; }
+
+/* ---------- tree (horizontal family tree: parent left, children right) */
+.dab-branch { display: flex; align-items: flex-start; list-style: none; margin: 0; padding: 0; }
+.dab-kids { list-style: none; margin: 0; padding: 0 0 0 22px; display: flex; flex-direction: column; gap: 8px; position: relative; }
+.dab-kids::before { content: ""; position: absolute; left: 0; top: 24px; width: 11px; height: 1px; background: var(--dsw-alias-border-l2); }
+.dab-kids > .dab-branch { position: relative; padding-left: 11px; }
+.dab-kids > .dab-branch::before { content: ""; position: absolute; left: 0; top: 0; bottom: -8px; width: 1px; background: var(--dsw-alias-border-l2); }
+.dab-kids > .dab-branch:first-child::before { top: 24px; }
+.dab-kids > .dab-branch:last-child::before { bottom: auto; height: 24px; }
+.dab-kids > .dab-branch:first-child:last-child::before { display: none; }
+.dab-kids > .dab-branch::after { content: ""; position: absolute; left: 0; top: 24px; width: 11px; height: 1px; background: var(--dsw-alias-border-l2); }
+.dab-kids > .dab-branch:first-child:last-child::after { left: -11px; width: 22px; }
+.dab-kids:has(> .dab-branch:only-child)::before { display: none; }
+
+/* ---------- card */
+.dab-card { position: relative; flex: none; width: 210px; min-height: 50px; display: flex; flex-direction: column; gap: 3px; padding: 8px 10px 8px 10px;
+  border-radius: 10px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); cursor: pointer; user-select: none;
+  transition: border-color .12s ease, box-shadow .12s ease; outline: none; }
+.dab-card[data-root="true"] { width: 250px; }
 .dab-card:hover { border-color: var(--dsw-alias-border-l2); }
-.dab-card[data-selected="true"] { border-color: var(--dsw-alias-brand-primary); }
-.dab-card-head { display: flex; align-items: center; gap: 8px; }
-.dab-open { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; border: 0; background: none; padding: 0; text-align: left; color: inherit; font: inherit; cursor: pointer; border-radius: 6px; }
-.dab-open:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 3px; }
-.dab-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dab-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--dsw-alias-label-secondary); }
-.dab-model { font-variant-numeric: tabular-nums; }
-.dab-chevron { flex: none; border: 0; background: none; color: var(--dsw-alias-label-secondary); cursor: pointer; padding: 2px 4px; border-radius: 6px; font-size: 12px; }
-.dab-chevron:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); }
-.dab-ring { flex: none; width: 16px; height: 16px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; position: relative; }
-.dab-ring[data-status="running"]::before { content: ""; width: 14px; height: 14px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 28%, transparent); border-top-color: var(--dsw-alias-brand-primary); animation: dab-spin 1s linear infinite; box-sizing: border-box; }
-.dab-ring[data-status="waiting_user"]::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--dsw-alias-state-warn-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-warn-primary) 22%, transparent); animation: dab-pulse 1.6s ease-in-out infinite; }
-.dab-ring[data-status="finished_unread"]::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--dsw-alias-state-success-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-success-primary) 20%, transparent); }
-.dab-ring[data-status="finished_read"]::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--dsw-alias-state-idle-primary); }
-.dab-ring[data-status="failed"]::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--dsw-alias-state-error-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-error-primary) 20%, transparent); }
-.dab-ring[data-status="idle"]::before { content: ""; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--dsw-alias-state-idle-primary); }
-.dab-ring[data-status="unknown"]::before { content: ""; width: 8px; height: 8px; border-radius: 50%; border: 1.5px dashed var(--dsw-alias-label-secondary); }
-.dab-detail { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--dsw-alias-border-l1); display: flex; flex-direction: column; gap: 6px; }
-.dab-label { font-size: 11px; font-weight: 700; color: var(--dsw-alias-label-secondary); text-transform: uppercase; letter-spacing: .04em; }
-.dab-preview { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; color: var(--dsw-alias-label-primary); max-height: 168px; overflow: auto; background: var(--dsw-alias-bg-layer-2); border-radius: 8px; padding: 8px 10px; }
-.dab-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.dab-waiting { color: var(--dsw-alias-state-warn-primary); font-weight: 600; }
-.dab-error { color: var(--dsw-alias-state-error-primary); }
-.dab-empty { padding: 28px 8px; text-align: center; color: var(--dsw-alias-label-secondary); }
-.dab-panel { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; background: var(--dsw-alias-bg-layer-1); }
-.dab-panel-title { font-size: 12px; font-weight: 700; color: var(--dsw-alias-label-secondary); margin: 0 0 8px; }
-.dab-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.dab-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.dab-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
-.dab-status-line { padding: 2px 18px 6px; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.dab-card:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+.dab-card[data-selected="true"] { border-color: var(--dsw-alias-brand-primary); box-shadow: 0 0 0 1px var(--dsw-alias-brand-primary); }
+.dab-card[data-status="waiting_user"] { border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 60%, var(--dsw-alias-border-l1)); }
+.dab-card[data-status="failed"][data-seen="false"] { border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, var(--dsw-alias-border-l1)); }
+.dab-card[data-calm="true"] { opacity: .78; }
+.dab-card-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.dab-name { flex: 1; min-width: 0; font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-card[data-root="true"] .dab-name { font-size: 13px; }
+.dab-meta { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11px; color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; }
+.dab-meta > span { overflow: hidden; text-overflow: ellipsis; }
+.dab-meta .dab-sep::before { content: "·"; }
+.dab-role { font-weight: 600; color: var(--dsw-alias-label-secondary); }
+.dab-wait { font-size: 11px; font-weight: 600; color: var(--dsw-alias-state-warn-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-err { font-size: 11px; color: var(--dsw-alias-state-error-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-card-foot { display: flex; align-items: center; gap: 6px; margin-top: 1px; min-height: 0; }
+.dab-pill { display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 999px; background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary); font: inherit; font-size: 11px; font-weight: 600; padding: 0 7px; min-height: 20px; cursor: pointer; }
+.dab-pill:hover { border-color: var(--dsw-alias-border-l2); color: var(--dsw-alias-label-primary); }
+.dab-pill:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); }
+.dab-pill[data-tone="running"] { color: var(--dsw-alias-brand-primary); }
+.dab-icon-btn { flex: none; width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; line-height: 1; cursor: pointer; padding: 0; }
+.dab-icon-btn:hover { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l2); }
+.dab-icon-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); opacity: 1; }
+.dab-projects { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr)); gap: 6px 22px; align-items: start; }
+.dab-quick { opacity: 0; }
+.dab-card:hover .dab-quick, .dab-card:focus-within .dab-quick, .dab-card[data-selected="true"] .dab-quick { opacity: 1; }
+@media (hover: none) { .dab-quick { opacity: 1; } }
+
+/* ---------- status mark */
+.dab-mark { flex: none; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; }
+.dab-mark::before { content: ""; display: block; border-radius: 50%; }
+.dab-mark[data-status="running"]::before { width: 13px; height: 13px; border: 2px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 25%, transparent); border-top-color: var(--dsw-alias-brand-primary); animation: dab-spin .9s linear infinite; }
+.dab-mark[data-status="waiting_user"]::before { width: 10px; height: 10px; background: var(--dsw-alias-state-warn-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-warn-primary) 22%, transparent); }
+.dab-mark[data-status="finished_unread"]::before { width: 10px; height: 10px; background: var(--dsw-alias-state-success-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-success-primary) 20%, transparent); }
+.dab-mark[data-status="failed"]::before { width: 9px; height: 9px; border-radius: 2px; transform: rotate(45deg); background: var(--dsw-alias-state-error-primary); }
+.dab-mark[data-status="failed"][data-seen="true"]::before { background: transparent; border: 1.5px solid var(--dsw-alias-state-error-primary); }
+.dab-mark[data-status="finished_read"]::before { width: 8px; height: 8px; background: var(--dsw-alias-state-idle-primary, var(--dsw-alias-label-secondary)); opacity: .7; }
+.dab-mark[data-status="idle"]::before { width: 8px; height: 8px; border: 1.5px solid var(--dsw-alias-state-idle-primary, var(--dsw-alias-label-secondary)); }
+.dab-mark[data-status="unknown"]::before { width: 8px; height: 8px; border: 1.5px dashed var(--dsw-alias-label-secondary); }
+.dab-group-ring { display: inline-block; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--dsw-alias-brand-primary); margin-right: 2px; }
 @keyframes dab-spin { to { transform: rotate(360deg); } }
-@keyframes dab-pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
 @media (prefers-reduced-motion: reduce) {
-  .dab-root * { animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
-  .dab-ring[data-status="running"]::before { animation: none; border-top-color: var(--dsw-alias-brand-primary); }
+  .dab-mark[data-status="running"]::before { animation: none; border-color: var(--dsw-alias-brand-primary); border-right-color: transparent; }
+  .dab-card, .dab-scroll { transition: none; scroll-behavior: auto; }
 }
-@media (max-width: 767px) {
-  .dab-header { padding: 10px 12px 8px; }
-  .dab-scroll { padding: 10px 12px 32px; }
-  .dab-name { white-space: normal; }
+
+/* ---------- compact grid */
+.dab-compact-group { margin: 0 0 10px; }
+.dab-compact-parent { font-size: 11px; color: var(--dsw-alias-label-secondary); margin: 0 0 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-compact-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 6px; }
+.dab-compact-grid .dab-card { width: auto; min-height: 0; padding: 6px 8px; }
+.dab-compact-grid .dab-card[data-depth]:not([data-depth="0"]) { border-left-width: 3px; }
+
+/* ---------- inspector */
+.dab-inspector { flex: none; width: 340px; max-width: 42%; border-left: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); overflow: auto; padding: 12px 14px 24px;
+  display: flex; flex-direction: column; gap: 10px; }
+.dab-insp-head { display: flex; align-items: flex-start; gap: 8px; }
+.dab-insp-title { font-size: 14px; font-weight: 650; margin: 0; word-break: break-word; flex: 1; min-width: 0; }
+.dab-insp-status { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
+.dab-answer { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px; padding: 8px 10px; max-height: 320px; overflow: auto; }
+.dab-answer[data-empty="true"] { color: var(--dsw-alias-label-secondary); font-style: italic; }
+.dab-dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; font-size: 12px; }
+.dab-dl dt { color: var(--dsw-alias-label-secondary); }
+.dab-dl dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.dab-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+.dab-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.dab-linkish { border: 0; background: none; padding: 0; color: var(--dsw-alias-brand-primary); font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
+.dab-linkish:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); }
+
+/* ---------- drawer (history) */
+.dab-drawer { position: absolute; inset: 0 0 0 auto; width: min(460px, 100%); background: var(--dsw-alias-bg-base); border-left: 1px solid var(--dsw-alias-border-l2);
+  box-shadow: -8px 0 24px color-mix(in srgb, black 14%, transparent); display: flex; flex-direction: column; z-index: 3; }
+.dab-drawer-head { padding: 12px 14px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1); display: flex; flex-direction: column; gap: 8px; }
+.dab-drawer-head .dab-input { flex: none; max-width: none; width: 100%; }
+.dab-drawer-list { flex: 1; overflow: auto; list-style: none; margin: 0; padding: 6px 8px 20px; }
+.dab-hist { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+.dab-hist:hover { background: var(--dsw-alias-bg-layer-1); }
+.dab-hist:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); }
+.dab-hist[data-selected="true"] { border-color: var(--dsw-alias-brand-primary); }
+.dab-hist-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.dab-hist-title { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- misc panels */
+.dab-panel { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; padding: 8px 12px; margin: 0 0 12px; background: var(--dsw-alias-bg-layer-1); }
+.dab-panel > summary { cursor: pointer; font-size: 12px; font-weight: 650; color: var(--dsw-alias-label-secondary); }
+.dab-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.dab-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.dab-tag { display: inline-flex; align-items: center; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); white-space: nowrap; }
+.dab-empty { padding: 40px 12px; text-align: center; color: var(--dsw-alias-label-secondary); display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.dab-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 0 0 2px; scrollbar-width: thin; }
+
+/* ---------- narrow panel (phone, small window) */
+@container dab (max-width: 720px) {
+  .dab-toolbar { padding: 8px 10px; gap: 6px; }
+  .dab-scroll { padding: 8px 10px 32px; }
+  .dab-input { max-width: none; flex-basis: 100%; }
+  .dab-inspector { position: absolute; left: 0; right: 0; bottom: 0; width: auto; max-width: none; max-height: 62%; border-left: 0; border-top: 1px solid var(--dsw-alias-border-l2);
+    border-radius: 14px 14px 0 0; box-shadow: 0 -8px 24px color-mix(in srgb, black 16%, transparent); z-index: 2; }
+  .dab-tile { padding: 8px; width: 100%; }
+  .dab-forest { display: block; }
+  .dab-forest > .dab-tile + .dab-tile { margin-top: 10px; }
+  /* vertical compact tree */
+  .dab-branch { flex-direction: column; align-items: stretch; }
+  .dab-card, .dab-card[data-root="true"] { width: 100%; }
+  .dab-kids { padding: 6px 0 0 14px; gap: 6px; }
+  .dab-kids::before { display: none; }
+  .dab-kids > .dab-branch { padding-left: 12px; }
+  .dab-kids > .dab-branch::before, .dab-kids > .dab-branch:first-child::before { top: -6px; bottom: -6px; height: auto; display: block; }
+  .dab-kids > .dab-branch:last-child::before { bottom: auto; height: 26px; }
+  .dab-kids > .dab-branch::after, .dab-kids > .dab-branch:first-child:last-child::after { left: 0; width: 12px; top: 20px; }
+  .dab-pill, .dab-btn { min-height: 32px; }
+  .dab-icon-btn { width: 32px; height: 32px; }
+  .dab-projects { display: block; }
+  .dab-quick { opacity: 1; }
 }
 `
 
@@ -982,7 +1941,8 @@ function dabInjectStyles() {
   try {
     const document = globalThis.document
     if (document === undefined || document === null) return () => {}
-    if (document.getElementById(DAB_STYLE_ID) !== null) return () => {}
+    const previous = document.getElementById(DAB_STYLE_ID)
+    if (previous !== null) previous.remove()
     const style = document.createElement('style')
     style.id = DAB_STYLE_ID
     style.textContent = DAB_CSS
@@ -995,429 +1955,780 @@ function dabInjectStyles() {
   }
 }
 
-function dabReadCompact() {
-  try {
-    return globalThis.localStorage?.getItem(DAB_COMPACT_KEY) === '1'
-  } catch {
-    return false
+
+// ---- src/client/ui/card.js ----
+/**
+ * AgentCard: one compact card per agent. Pointer and keyboard go through the
+ * shared click arbiter (single click = inspect, double click / Enter = open).
+ * The branch toggle and the quick "open" button stop propagation so they never
+ * trigger inspection or acknowledgement.
+ *
+ * @module dsh-agent-board/client/ui/card
+ */
+
+function dabCardSignature(props) {
+  const node = props.node
+  return [
+    node.id, node.status, node.seen, node.title, node.role, node.updatedAt, node.expectedAction, node.waitingDetail,
+    node.model?.model, node.model?.provider, node.taskId, node.error, node.orphan, node.parentCycle,
+    props.selected, props.root, props.hiddenChildren, props.totalChildren, props.collapsed, props.expanded, props.groupActive,
+    props.depth, props.compact, props.nowBucket,
+  ].join('|')
+}
+
+function DabAgentCardImpl(props) {
+  const { node, selected, root, arbiter, onToggleBranch, onRevealHidden, hiddenChildren, totalChildren, collapsed, expanded, groupActive, depth, compact } = props
+  const h = React.createElement
+  const model = dabModelText(node.model)
+  const age = dabFormatAge(node.updatedAt)
+  const statusText = dabStatusLabel(node.status)
+  const calm = !(node.status === 'running' || node.status === 'recovering' || node.status === 'waiting_user' || node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true))
+  const label = [node.title, statusText, node.role, groupActive ? dabT('groupActive') : null].filter(Boolean).join(' — ')
+
+  const stop = event => { event.stopPropagation() }
+  const children = []
+  children.push(h(
+    'div', { className: 'dab-card-top', key: 'top' },
+    h('span', { className: 'dab-mark', 'data-status': node.status, 'data-seen': node.seen === true ? 'true' : 'false', role: 'img', 'aria-label': statusText, title: statusText }),
+    h('span', { className: 'dab-name', title: node.title }, node.title),
+    h('button', {
+      type: 'button', className: 'dab-icon-btn dab-quick', title: dabT('openSession'), 'aria-label': `${dabT('openSession')} : ${node.title}`,
+      onClick: event => { stop(event); arbiter.open(node.id) },
+      onDoubleClick: stop, onKeyDown: stop,
+    }, '↗'),
+  ))
+  const meta = []
+  if (node.role) meta.push(h('span', { key: 'role', className: 'dab-role' }, node.role))
+  if (model !== null && (root || !node.role)) meta.push(h('span', { key: 'model', title: dabModelTitle(node.model) }, model))
+  if (node.taskId) meta.push(h('span', { key: 'task', className: 'dab-mono', title: `${dabT('task')} ${node.taskId}` }, node.taskId))
+  if (age !== '') meta.push(h('span', { key: 'age', title: node.updatedAt ? new Date(node.updatedAt).toLocaleString() : '' }, age))
+  if (node.orphan) meta.push(h('span', { key: 'orphan', title: dabT('orphan') }, `⚠ ${dabT('orphan')}`))
+  if (node.parentCycle) meta.push(h('span', { key: 'cycle', title: dabT('cycle') }, `⚠ ${dabT('cycle')}`))
+  const metaWithSeps = []
+  meta.forEach((item, index) => {
+    if (index > 0) metaWithSeps.push(h('span', { key: `sep-${index}`, className: 'dab-sep', 'aria-hidden': 'true' }))
+    metaWithSeps.push(item)
+  })
+  if (metaWithSeps.length > 0) children.push(h('div', { className: 'dab-meta', key: 'meta' }, metaWithSeps))
+  if (node.status === 'waiting_user') {
+    children.push(h('div', { className: 'dab-wait', key: 'wait', title: node.waitingDetail ?? '' }, node.waitingDetail ?? dabWaitingLabel(node.expectedAction)))
   }
-}
-
-function dabWriteCompact(value) {
-  try {
-    globalThis.localStorage?.setItem(DAB_COMPACT_KEY, value ? '1' : '0')
-  } catch { /* private mode */ }
-}
-
-function dabFormatAge(at) {
-  if (!Number.isFinite(Number(at))) return ''
-  const seconds = Math.max(0, Math.round((Date.now() - Number(at)) / 1000))
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `${minutes}min`
-  return `${Math.round(minutes / 60)}h`
-}
-
-function dabStatusLabel(status) {
-  return dabT(DAB_STATUS_KEY[status] ?? 'unknown')
-}
-
-function dabModelText(model) {
-  if (model === null || model === undefined) return dabT('modelUnknown')
-  const provider = typeof model.provider === 'string' && model.provider !== '' ? model.provider : '?'
-  const name = typeof model.model === 'string' && model.model !== '' ? model.model : '?'
-  const effort = typeof model.reasoningEffort === 'string' && model.reasoningEffort !== '' ? ` · ${model.reasoningEffort}` : ''
-  return `${provider}/${name}${effort}`
-}
-
-/** One agent card. */
-function DabCard({ node, depth, collapsed, hasChildren, onToggle, onToggleCollapse, onOpen, onAck, compact }) {
-  const [expanded, setExpanded] = React.useState(false)
-  const selected = expanded
-  const pendingLabel = node.expectedAction === 'approval'
-    ? dabT('waitingApproval')
-    : node.expectedAction === 'question'
-      ? dabT('waitingQuestion')
-      : node.expectedAction === 'plan-review'
-        ? dabT('waitingPlan')
-        : null
-
-  const expand = () => {
-    setExpanded(current => {
-      const next = !current
-      if (next === true && node.unread === true) onAck(node.id)
-      return next
-    })
+  if (node.status === 'failed' && node.seen !== true) {
+    children.push(h('div', { className: 'dab-err', key: 'err', title: node.error ?? '' }, node.error ?? dabStatusLabel('failed')))
   }
 
-  const open = () => onOpen(node)
-
-  const onKeyDown = event => {
-    if (event.key === 'Enter' && event.shiftKey) {
-      event.preventDefault()
-      open()
-      return
+  const foot = []
+  if (!compact && totalChildren > 0) {
+    if (hiddenChildren > 0 && !collapsed) {
+      foot.push(h('button', {
+        key: 'reveal', type: 'button', className: 'dab-pill', 'data-tone': groupActive ? 'running' : undefined,
+        'aria-label': `${dabT('expand')} : ${hiddenChildren} ${dabT('hidden')}`,
+        onClick: event => { stop(event); onRevealHidden(node.id) },
+        onDoubleClick: stop, onKeyDown: stop,
+      }, groupActive ? h('span', { className: 'dab-group-ring', 'aria-hidden': 'true' }) : null, `+${hiddenChildren} ${dabT('hidden')}`))
     }
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault()
-      expand()
-    }
+    foot.push(h('button', {
+      key: 'toggle', type: 'button', className: 'dab-pill', 'aria-expanded': !collapsed,
+      'aria-label': `${collapsed ? dabT('expand') : dabT('collapse')} (${totalChildren} ${dabT('children')})`,
+      title: collapsed ? dabT('expand') : dabT('collapse'),
+      onClick: event => { stop(event); onToggleBranch(node.id, collapsed, expanded) },
+      onDoubleClick: stop, onKeyDown: stop,
+    }, collapsed ? `▸ ${totalChildren}` : (expanded ? '▾ −' : `▾ ${totalChildren}`)))
+  } else if (groupActive) {
+    foot.push(h('span', { key: 'grp', className: 'dab-muted' }, h('span', { className: 'dab-group-ring', 'aria-hidden': 'true' }), dabT('groupActive')))
   }
+  if (foot.length > 0) children.push(h('div', { className: 'dab-card-foot', key: 'foot' }, foot))
 
-  return React.createElement(
-    'div',
-    { className: 'dab-row' },
-    depth > 0 ? React.createElement('span', { className: 'dab-indent', 'aria-hidden': 'true' }) : null,
-    React.createElement(
-      'div',
-      { className: 'dab-card', 'data-selected': selected ? 'true' : 'false', 'data-node-id': node.id },
-      React.createElement(
-        'div',
-        { className: 'dab-card-head' },
-        React.createElement('span', {
-          className: 'dab-ring',
-          'data-status': node.status,
-          'aria-label': dabStatusLabel(node.status),
-          role: 'img',
-        }),
-        React.createElement(
-          'button',
-          {
-            type: 'button',
-            className: 'dab-open',
-            'aria-expanded': expanded,
-            title: `${dabT('openHint')} — ${node.id}`,
-            onClick: expand,
-            onDoubleClick: open,
-            onKeyDown,
-          },
-          React.createElement(
-            'span',
-            { className: 'dab-name' },
-            node.archived ? '· ' : '',
-            node.title,
-            hasChildren ? React.createElement('span', { className: 'dab-chip', style: { marginLeft: '6px' } }, `${node.children.length}`) : null,
-          ),
-          React.createElement(
-            'span',
-            { className: 'dab-meta' },
-            React.createElement('span', { className: 'dab-chip', 'data-tone': node.status === 'running' ? 'running' : node.status === 'waiting_user' ? 'waiting' : node.status === 'finished_unread' ? 'unread' : node.status === 'failed' ? 'failed' : undefined }, dabStatusLabel(node.status)),
-            node.origin === 'subagent' ? React.createElement('span', { className: 'dab-chip' }, dabT('subagent')) : null,
-            node.assignmentId !== null ? React.createElement('span', { className: 'dab-chip dab-mono' }, node.taskId ?? '') : null,
-            React.createElement('span', { className: 'dab-chip dab-mono dab-model' }, dabModelText(node.model)),
-            node.updatedAt !== null ? React.createElement('span', { className: 'dab-chip' }, dabFormatAge(node.updatedAt)) : null,
-          ),
-        ),
-        hasChildren
-          ? React.createElement(
-            'button',
-            {
-              type: 'button',
-              className: 'dab-chevron',
-              'aria-expanded': !collapsed,
-              'aria-label': collapsed ? dabT('expand') : dabT('collapse'),
-              title: collapsed ? dabT('expand') : dabT('collapse'),
-              onClick: onToggleCollapse,
-            },
-            collapsed ? '▸' : '▾',
-          )
-          : null,
-      ),
-      expanded
-        ? React.createElement(
-          'div',
-          { className: 'dab-detail' },
-          pendingLabel !== null ? React.createElement('div', { className: 'dab-waiting' }, pendingLabel) : null,
-          node.status === 'failed' ? React.createElement('div', { className: 'dab-error' }, dabStatusLabel('failed')) : null,
-          React.createElement('div', { className: 'dab-label' }, dabT('preview')),
-          React.createElement('p', { className: 'dab-preview' }, node.preview?.text !== undefined && node.preview.text !== '' ? node.preview.text : dabT('noPreview')),
-          React.createElement(
-            'div',
-            { className: 'dab-actions' },
-            React.createElement(
-              'button',
-              { type: 'button', className: 'dab-btn', onClick: open, title: dabT('open') },
-              '↗ ',
-              dabT('open'),
-            ),
-            node.previousSessionId !== null ? React.createElement('span', { className: 'dab-chip dab-mono' }, `← ${node.previousSessionId.slice(-10)}`) : null,
-            (node.routeHistory ?? []).slice(-2).map((entry, index) => React.createElement(
-              'span',
-              { className: 'dab-chip dab-mono', key: `route-${index}`, title: entry.reason ?? '' },
-              `${entry.from ?? '?'} → ${entry.to ?? '?'}`,
-            )),
-          ),
-          React.createElement('div', { className: 'dab-meta dab-mono' }, node.cwd ?? ''),
-        )
+  return h('div', {
+    className: 'dab-card',
+    role: 'button',
+    tabIndex: 0,
+    'aria-label': label,
+    'aria-pressed': selected ? 'true' : 'false',
+    'data-node-id': node.id,
+    'data-status': node.status,
+    'data-seen': node.seen === true ? 'true' : 'false',
+    'data-root': root ? 'true' : 'false',
+    'data-selected': selected ? 'true' : 'false',
+    'data-calm': calm ? 'true' : 'false',
+    'data-depth': String(depth ?? 0),
+    title: dabT('keyboardHint'),
+    onClick: event => arbiter.click(node.id, event.detail),
+    onDoubleClick: event => { event.preventDefault(); arbiter.doubleClick(node.id) },
+    onKeyDown: event => {
+      if (event.target !== event.currentTarget) return
+      if (arbiter.key(node.id, event.key)) event.preventDefault()
+    },
+  }, children)
+}
+
+const DabAgentCard = React.memo(DabAgentCardImpl, (a, b) => dabCardSignature(a) === dabCardSignature(b) && a.arbiter === b.arbiter)
+
+
+// ---- src/client/ui/tree.js ----
+/**
+ * AgentTree / ProjectGroup / CompactGrid: render the pure board view
+ * (board/view.js) as family trees grouped by project, or as a compact grid
+ * still grouped by project and by root parent.
+ *
+ * @module dsh-agent-board/client/ui/tree
+ */
+
+function DabTreeBranch({ entry, ctx }) {
+  const h = React.createElement
+  const node = entry.node
+  return h(
+    'li', { className: 'dab-branch', role: 'treeitem', 'aria-expanded': entry.totalChildren > 0 ? !entry.collapsed : undefined, 'aria-level': entry.depth + 1 },
+    h(DabAgentCard, {
+      node,
+      depth: entry.depth,
+      root: entry.depth === 0,
+      selected: ctx.selectedId === node.id,
+      arbiter: ctx.arbiter,
+      hiddenChildren: entry.hiddenChildren,
+      totalChildren: entry.totalChildren,
+      collapsed: entry.collapsed,
+      expanded: entry.expanded,
+      groupActive: entry.groupActive,
+      onToggleBranch: ctx.onToggleBranch,
+      onRevealHidden: ctx.onRevealHidden,
+      nowBucket: ctx.nowBucket,
+    }),
+    entry.children.length > 0
+      ? h('ul', { className: 'dab-kids', role: 'group' }, entry.children.map(child => h(DabTreeBranch, { key: child.node.id, entry: child, ctx })))
+      : null,
+  )
+}
+
+function DabAgentTree({ entry, ctx }) {
+  const h = React.createElement
+  return h('div', { className: 'dab-tile' },
+    h('ul', { className: 'dab-branch-root', role: 'tree', 'aria-label': entry.node.title, style: { listStyle: 'none', margin: 0, padding: 0 } },
+      h(DabTreeBranch, { entry, ctx })))
+}
+
+function dabFlattenTree(entry, out = [], parentTitle = null) {
+  out.push({ entry, parentTitle })
+  for (const child of entry.children) dabFlattenTree(child, out, entry.node.title)
+  return out
+}
+
+/**
+ * The visible tree slice. `treeLimit` trims CALM trees only: a tree whose
+ * subtree contains an agent waiting for the user is never hidden because it is
+ * older than eight newer trees (the yellow card is the one thing that must
+ * always be reachable without expanding a list).
+ */
+function dabVisibleTrees(project, treeLimit) {
+  const head = project.trees.slice(0, treeLimit)
+  const tail = project.trees.slice(treeLimit)
+  const waiting = tail.filter(tree => (tree.aggregate?.bestTier ?? 9) === 0 || tree.node?.status === 'waiting_user')
+  return waiting.length === 0 ? head : [...waiting, ...head]
+}
+
+function DabCompactProject({ project, ctx, trees }) {
+  const h = React.createElement
+  return h('div', null, trees.map(tree => {
+    const flat = dabFlattenTree(tree)
+    return h('div', { className: 'dab-compact-group', key: tree.node.id },
+      tree.children.length > 0 || tree.hiddenChildren > 0
+        ? h('div', { className: 'dab-compact-parent' }, `${tree.node.title}${tree.hiddenChildren > 0 ? ` · +${tree.hiddenChildren} ${dabT('hidden')}` : ''}`)
         : null,
-    ),
+      h('div', { className: 'dab-compact-grid' }, flat.map(({ entry }) => h(DabAgentCard, {
+        key: entry.node.id,
+        node: entry.node,
+        depth: entry.depth,
+        root: false,
+        compact: true,
+        selected: ctx.selectedId === entry.node.id,
+        arbiter: ctx.arbiter,
+        hiddenChildren: 0,
+        totalChildren: 0,
+        collapsed: false,
+        expanded: false,
+        groupActive: entry.groupActive,
+        onToggleBranch: ctx.onToggleBranch,
+        onRevealHidden: ctx.onRevealHidden,
+        nowBucket: ctx.nowBucket,
+      }))))
+  }))
+}
+
+function DabProjectGroup({ project, ctx, folded, onFold, treeLimit, onMoreTrees, compact }) {
+  const h = React.createElement
+  const title = project.unassigned ? dabT('unassigned') : project.title
+  const trees = folded ? [] : dabVisibleTrees(project, treeLimit)
+  const hiddenTrees = Math.max(0, project.trees.length - trees.length)
+  const summary = []
+  if (project.summary.running > 0) summary.push(h('span', { key: 'r', className: 'dab-counter' }, h('span', { className: 'dab-dot', 'data-tone': 'running' }), project.summary.running))
+  if (project.summary.waiting > 0) summary.push(h('span', { key: 'w', className: 'dab-counter' }, h('span', { className: 'dab-dot', 'data-tone': 'waiting' }), project.summary.waiting))
+  if (project.summary.unread > 0) summary.push(h('span', { key: 'u', className: 'dab-counter' }, h('span', { className: 'dab-dot', 'data-tone': 'unread' }), project.summary.unread))
+  return h('section', { className: 'dab-project', 'data-project-id': project.id, 'aria-label': title },
+    h('button', { type: 'button', className: 'dab-project-head', 'aria-expanded': !folded, onClick: () => onFold(project.id) },
+      h('span', { className: 'dab-caret', 'aria-hidden': 'true' }, folded ? '▸' : '▾'),
+      h('span', null, title),
+      h('span', { className: 'dab-project-count' }, `${project.visibleAgents} agent${project.visibleAgents > 1 ? 's' : ''}`),
+      summary),
+    folded
+      ? null
+      : compact
+        ? h(DabCompactProject, { project, ctx, trees })
+        : h('div', { className: 'dab-forest' }, trees.map(tree => h(DabAgentTree, { key: tree.node.id, entry: tree, ctx }))),
+    !folded && hiddenTrees > 0
+      ? h('div', { className: 'dab-more' }, h('button', { type: 'button', className: 'dab-btn', onClick: () => onMoreTrees(project.id) }, dabT('moreTrees', { n: hiddenTrees })))
+      : null,
+  )
+}
+
+
+// ---- src/client/ui/preview.js ----
+/**
+ * AgentPreview: the inspection panel opened by a single click. It shows the
+ * last useful line of the agent's FINAL answer (never a tool call, a log line
+ * or reasoning), "See more" for the bounded full excerpt, then secondary facts.
+ *
+ * @module dsh-agent-board/client/ui/preview
+ */
+
+function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError }) {
+  const h = React.createElement
+  const [more, setMore] = React.useState(false)
+  React.useEffect(() => { setMore(false) }, [node?.id])
+  if (node === null || node === undefined) return null
+  const preview = node.preview ?? { text: '', final: false }
+  const hasFinal = preview.final === true && typeof preview.text === 'string' && preview.text !== ''
+  const line = hasFinal ? lastUsefulLine(preview.text) : ''
+  const facts = []
+  const fact = (key, label, value, mono) => {
+    if (value === null || value === undefined || value === '') return
+    facts.push(h('dt', { key: `${key}-t` }, label), h('dd', { key: `${key}-d`, className: mono ? 'dab-mono' : undefined }, value))
+  }
+  fact('project', dabT('project'), node.projectId === 'unassigned' ? dabT('unassigned') : node.projectTitle)
+  fact('model', dabT('model'), node.model?.source === 'unknown' ? null : dabModelTitle(node.model), true)
+  fact('task', dabT('task'), node.taskId, true)
+  fact('goal', dabT('goal'), node.goal)
+  if (parent !== null && parent !== undefined) {
+    facts.push(h('dt', { key: 'parent-t' }, dabT('parent')), h('dd', { key: 'parent-d' },
+      h('button', { type: 'button', className: 'dab-linkish', onClick: () => onSelect(parent.id) }, parent.title)))
+  } else if (node.orphan) {
+    fact('parent', dabT('parent'), `${dabT('orphan')} (${String(node.parentId).slice(-12)})`, true)
+  } else if (node.parentCycle) {
+    fact('parent', dabT('parent'), dabT('cycle'))
+  }
+  if (node.activity) fact('activity', dabT('activity'), `${node.activity.turns} ${dabT('turns')} · ${node.activity.steps} ${dabT('steps')}`)
+  fact('cwd', dabT('directory'), node.cwd, true)
+  fact('session', dabT('session'), node.id, true)
+  // A route switch must stay visible: never show only the LAST provider.
+  fact('previous', dabT('previousSession'), node.previousSessionId, true)
+  const routes = Array.isArray(node.routeHistory) ? node.routeHistory : []
+  if (routes.length > 0) {
+    fact('routes', dabT('routeHistory'), routes.map(entry => `${entry.from ?? '?'} → ${entry.to ?? '?'}${entry.reason ? ` (${entry.reason})` : ''}`).join(' · '))
+  }
+  fact('reason', dabT('statusReason'), node.statusReason, true)
+  if (node.status === 'recovering') {
+    facts.push(h('dt', { key: 'rec-t' }, dabT('recovery')), h('dd', { key: 'rec-d', className: 'dab-alert' }, node.statusReason ?? ''))
+  }
+
+  return h('aside', { className: 'dab-inspector', 'aria-label': `${dabT('finalAnswer')} — ${node.title}`, 'data-inspector-for': node.id },
+    h('div', { className: 'dab-insp-head' },
+      h('h2', { className: 'dab-insp-title' }, node.title),
+      h('button', { type: 'button', className: 'dab-btn', 'data-variant': 'ghost', 'aria-label': dabT('close'), onClick: onClose }, '✕')),
+    h('div', { className: 'dab-insp-status' },
+      h('span', { className: 'dab-mark', 'data-status': node.status, 'data-seen': node.seen === true ? 'true' : 'false', 'aria-hidden': 'true' }),
+      dabStatusLabel(node.status),
+      node.role ? h('span', { className: 'dab-tag' }, node.role) : null,
+      node.origin === 'subagent' ? h('span', { className: 'dab-tag' }, dabT('subagent')) : null),
+    node.status === 'waiting_user'
+      ? h('div', { className: 'dab-wait', style: { whiteSpace: 'normal' } }, node.waitingDetail ?? dabWaitingLabel(node.expectedAction))
+      : null,
+    node.status === 'failed' && node.error ? h('div', { className: 'dab-alert' }, node.error) : null,
+    h('div', { className: 'dab-label' }, dabT('finalAnswer')),
+    h('p', { className: 'dab-answer', 'data-empty': hasFinal ? 'false' : 'true', 'data-testid': 'dab-answer' },
+      hasFinal ? (more ? preview.text : line) : dabT('noFinal')),
+    hasFinal && preview.text.trim() !== line
+      ? h('button', { type: 'button', className: 'dab-linkish', 'aria-expanded': more, onClick: () => setMore(value => !value) }, more ? dabT('seeLess') : dabT('seeMore'))
+      : null,
+    !hasFinal && node.activity
+      ? h('div', { className: 'dab-muted' }, `${dabT('activity')} : ${node.activity.turns} ${dabT('turns')} · ${node.activity.steps} ${dabT('steps')}`)
+      : null,
+    h('div', { className: 'dab-actions' },
+      h('button', { type: 'button', className: 'dab-btn', 'aria-pressed': 'false', onClick: () => onOpen(node.id), 'data-testid': 'dab-open' }, `↗ ${dabT('openSession')}`),
+      parent ? h('button', { type: 'button', className: 'dab-btn', onClick: () => onOpen(parent.id) }, dabT('openParent')) : null),
+    openError ? h('div', { className: 'dab-alert', role: 'status' }, openError) : null,
+    h('dl', { className: 'dab-dl' }, facts),
+  )
+}
+
+
+// ---- src/client/ui/history.js ----
+/**
+ * HistoryDrawer: on-demand, searchable, paginated list of every calm session
+ * (idle, viewed, archived). It is computed only while open, from the in-memory
+ * projection — no extra fetch, nothing deleted or archived.
+ *
+ * @module dsh-agent-board/client/ui/history
+ */
+
+const DAB_HISTORY_PAGE = 30
+
+function DabHistoryDrawer({ projection, project, selectedId, arbiter, onClose }) {
+  const h = React.createElement
+  const [query, setQuery] = React.useState('')
+  const [limit, setLimit] = React.useState(DAB_HISTORY_PAGE)
+  const inputRef = React.useRef(null)
+  React.useEffect(() => { inputRef.current?.focus?.() }, [])
+  React.useEffect(() => { setLimit(DAB_HISTORY_PAGE) }, [query, project])
+  const page = React.useMemo(() => historyPage(projection, { query, project, offset: 0, limit }), [projection, query, project, limit])
+  const onKey = event => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }
+  return h('div', { className: 'dab-drawer', role: 'dialog', 'aria-modal': 'false', 'aria-label': dabT('historyTitle'), onKeyDown: onKey },
+    h('div', { className: 'dab-drawer-head' },
+      h('div', { className: 'dab-bar' },
+        h('strong', { style: { fontSize: '14px' } }, dabT('historyTitle')),
+        h('span', { className: 'dab-muted' }, `${page.total}`),
+        h('span', { className: 'dab-grow' }),
+        h('button', { type: 'button', className: 'dab-btn', 'data-variant': 'ghost', onClick: onClose, 'aria-label': dabT('close') }, '✕')),
+      h('input', { ref: inputRef, type: 'search', className: 'dab-input', style: { maxWidth: 'none' }, placeholder: dabT('search'), 'aria-label': dabT('search'), value: query, onChange: event => setQuery(event.target.value) }),
+      h('div', { className: 'dab-muted' }, dabT('historyHint'))),
+    h('ul', { className: 'dab-drawer-list' },
+      page.items.map(node => h('li', {
+        key: node.id, className: 'dab-hist', tabIndex: 0, role: 'button', 'data-node-id': node.id,
+        'data-selected': selectedId === node.id ? 'true' : 'false',
+        'aria-label': `${node.title} — ${dabStatusLabel(node.status)}`,
+        onClick: event => arbiter.click(node.id, event.detail),
+        onDoubleClick: () => arbiter.doubleClick(node.id),
+        onKeyDown: event => { if (event.target === event.currentTarget && arbiter.key(node.id, event.key)) event.preventDefault() },
+      },
+      h('span', { className: 'dab-mark', 'data-status': node.status, 'data-seen': node.seen === true ? 'true' : 'false', 'aria-hidden': 'true' }),
+      h('span', { className: 'dab-hist-main' },
+        h('span', { className: 'dab-hist-title', title: node.title }, node.title),
+        h('span', { className: 'dab-muted' }, [
+          node.projectId === 'unassigned' ? dabT('unassigned') : node.projectTitle,
+          node.children.length > 0 ? `${node.children.length} ${dabT('children')}` : null,
+          node.archived ? dabT('archived') : null,
+          dabFormatAge(node.updatedAt),
+        ].filter(Boolean).join(' · '))))),
+      page.hasMore
+        ? h('li', { style: { padding: '8px' } }, h('button', { type: 'button', className: 'dab-btn', onClick: () => setLimit(value => value + DAB_HISTORY_PAGE) }, `${dabT('loadMore')} (${page.total - page.items.length})`))
+        : null),
+  )
+}
+
+
+// ---- src/client/ui/toolbar.js ----
+/**
+ * Toolbar (counters, search, project filter, view filters, orchestrator
+ * controls) and the orchestrator side panels (proposals/executions, adapters).
+ * The orchestrator controls are the pre-existing ones; when the host API is
+ * unreachable they are disabled and say so instead of pretending to work.
+ *
+ * @module dsh-agent-board/client/ui/toolbar
+ */
+
+function DabToolbar(props) {
+  const h = React.createElement
+  const { counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh, ui, setUi, projects, onHistory, narrow } = props
+  const counter = (tone, value, label) => value > 0
+    ? h('span', { className: 'dab-counter', key: tone, title: `${value} ${label}` }, h('span', { className: 'dab-dot', 'data-tone': tone }), h('b', null, value), ` ${label}`)
+    : null
+  const modeNotice = mode === 'off' ? dabT('offNotice') : mode === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice')
+  const notice = secondary ? dabT('secondaryInstance') : stopped ? dabT('stoppedNotice') : modeNotice
+  return h('header', { className: 'dab-toolbar' },
+    h('div', { className: 'dab-bar' },
+      h('h1', { className: 'dab-title' }, dabT('title')),
+      counter('running', counts.running, dabT('running')),
+      counter('waiting', counts.waiting, dabT('waiting')),
+      counter('unread', counts.unread, dabT('unread')),
+      counter('failed', counts.failed, dabT('failed')),
+      h('span', { className: 'dab-muted', title: `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}` }, `${visibleCount}/${counts.total} ${dabT('shown')}`),
+      h('span', { className: 'dab-grow' }),
+      h('span', { className: 'dab-label' }, dabT('mode')),
+      h('div', { className: 'dab-seg', role: 'group', 'aria-label': dabT('mode'), title: hostDown ? dabT('orchestratorDown') : modeNotice },
+        ['off', 'supervised', 'autonomous'].map(value => h('button', {
+          key: value, type: 'button', className: 'dab-btn', 'aria-pressed': mode === value, disabled: busy || hostDown || secondary,
+          onClick: () => onMode(value),
+        }, dabT(value)))),
+      stopped && mode !== 'off' && !secondary
+        ? h('button', { type: 'button', className: 'dab-btn', 'data-tone': 'resume', disabled: busy || hostDown, onClick: onResume, title: dabT('stoppedNotice') }, `▶ ${dabT('resume')}`)
+        : null,
+      h('button', { type: 'button', className: 'dab-btn', 'data-danger': 'true', disabled: busy || hostDown || !canStop || secondary, onClick: onStop, title: hostDown ? dabT('orchestratorDown') : (canStop ? dabT('stop') : dabT('stopNone')) }, `■ ${dabT('stop')}`),
+      h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy, title: dabT('refresh'), 'aria-label': dabT('refresh') }, narrow ? '⟳' : `⟳ ${dabT('refresh')}`)),
+    h('div', { className: 'dab-bar' },
+      h('input', {
+        type: 'search', className: 'dab-input', placeholder: dabT('search'), 'aria-label': dabT('search'), value: ui.query,
+        onChange: event => setUi({ query: event.target.value }),
+        onKeyDown: event => { if (event.key === 'Escape') setUi({ query: '' }) },
+      }),
+      h('select', { className: 'dab-select', 'aria-label': dabT('projects'), value: ui.project ?? '', onChange: event => setUi({ project: event.target.value === '' ? null : event.target.value }) },
+        h('option', { value: '' }, dabT('allProjects')),
+        projects.map(project => h('option', { key: project.id, value: project.id }, `${project.id === 'unassigned' ? dabT('unassigned') : project.title} (${project.agents})`))),
+      h('div', { className: 'dab-seg', role: 'group', 'aria-label': 'Filtre' },
+        [['attention', 'filterAttention'], ['recent', 'filterRecent'], ['all', 'filterAll']].map(([value, key]) => h('button', {
+          key: value, type: 'button', className: 'dab-btn', 'aria-pressed': ui.filter === value, onClick: () => setUi({ filter: value }),
+        }, dabT(key)))),
+      h('div', { className: 'dab-seg', role: 'group', 'aria-label': 'Vue' },
+        h('button', { type: 'button', className: 'dab-btn', 'aria-pressed': !ui.compact, onClick: () => setUi({ compact: false }) }, dabT('treeView')),
+        h('button', { type: 'button', className: 'dab-btn', 'aria-pressed': ui.compact, onClick: () => setUi({ compact: true }) }, dabT('compact'))),
+      h('button', { type: 'button', className: 'dab-btn', onClick: onHistory, 'aria-haspopup': 'dialog' }, `🕘 ${dabT('history')}`),
+      h('span', { className: 'dab-grow' }),
+      h('span', { className: 'dab-notice' }, secondary || stopped ? h('span', { className: 'dab-alert' }, notice) : (hostDown ? h('span', { className: 'dab-alert' }, dabT('orchestratorDown')) : modeNotice))),
   )
 }
 
 function DabExecutionList({ host, onApprove, onReject }) {
+  const h = React.createElement
   const proposals = Array.isArray(host.proposals) ? host.proposals : []
   const assignments = Array.isArray(host.assignments) ? host.assignments : []
   const active = assignments.filter(assignment => assignment.status === 'running' || assignment.status === 'starting').slice(-6)
   const interrupted = assignments.filter(assignment => assignment.status === 'interrupted').slice(-4)
-  if (proposals.length === 0 && active.length === 0 && interrupted.length === 0) {
-    return React.createElement('div', { className: 'dab-panel' }, React.createElement('p', { className: 'dab-panel-title' }, dabT('executions')), React.createElement('div', { className: 'dab-subtitle' }, dabT('noExecution')))
-  }
-  return React.createElement(
-    'div',
-    { className: 'dab-panel' },
-    React.createElement('p', { className: 'dab-panel-title' }, dabT('executions')),
-    React.createElement(
-      'ul',
-      { className: 'dab-list' },
-      proposals.map(proposal => React.createElement(
-        'li',
-        { key: proposal.id },
-        React.createElement('span', { className: 'dab-chip', 'data-tone': 'waiting' }, dabT('proposals')),
-        React.createElement('span', { className: 'dab-grow' }, proposal.title),
-        React.createElement('span', { className: 'dab-chip dab-mono' }, proposal.taskId),
-        React.createElement('button', { type: 'button', className: 'dab-btn', onClick: () => onApprove(proposal.id) }, dabT('approve')),
-        React.createElement('button', { type: 'button', className: 'dab-btn', onClick: () => onReject(proposal.id) }, dabT('reject')),
-      )),
-      active.map(assignment => React.createElement(
-        'li',
-        { key: assignment.id },
-        React.createElement('span', { className: 'dab-chip', 'data-tone': 'running' }, assignment.status),
-        React.createElement('span', { className: 'dab-grow dab-mono' }, assignment.taskId),
-        React.createElement('span', { className: 'dab-chip dab-mono' }, assignment.model === null || assignment.model === undefined ? '?' : `${assignment.model.provider}/${assignment.model.model}`),
-        assignment.sessionId !== null ? React.createElement('span', { className: 'dab-chip dab-mono' }, assignment.sessionId.slice(-10)) : null,
-      )),
-      interrupted.map(assignment => React.createElement(
-        'li',
-        { key: `int-${assignment.id}` },
-        React.createElement('span', { className: 'dab-chip', 'data-tone': 'failed' }, dabT('restore')),
-        React.createElement('span', { className: 'dab-grow dab-mono' }, assignment.taskId),
-        React.createElement('span', { className: 'dab-error' }, dabT('resumed')),
-      )),
-    ),
+  if (proposals.length === 0 && active.length === 0 && interrupted.length === 0) return null
+  return h('div', { className: 'dab-panel' },
+    h('div', { className: 'dab-label' }, dabT('executions')),
+    h('ul', { className: 'dab-list' },
+      proposals.map(proposal => h('li', { key: proposal.id },
+        h('span', { className: 'dab-dot', 'data-tone': 'waiting' }),
+        h('span', { className: 'dab-grow' }, `${dabT('proposals')} — ${proposal.title}`),
+        h('span', { className: 'dab-tag dab-mono' }, proposal.taskId),
+        h('button', { type: 'button', className: 'dab-btn', onClick: () => onApprove(proposal.id) }, dabT('approve')),
+        h('button', { type: 'button', className: 'dab-btn', onClick: () => onReject(proposal.id) }, dabT('reject')))),
+      active.map(assignment => h('li', { key: assignment.id },
+        h('span', { className: 'dab-dot', 'data-tone': 'running' }),
+        h('span', { className: 'dab-grow dab-mono' }, assignment.taskId),
+        h('span', { className: 'dab-tag dab-mono' }, assignment.model ? `${assignment.model.provider}/${assignment.model.model}` : '?'))),
+      interrupted.map(assignment => h('li', { key: `int-${assignment.id}` },
+        h('span', { className: 'dab-dot', 'data-tone': 'failed' }),
+        h('span', { className: 'dab-grow dab-mono' }, assignment.taskId),
+        h('span', { className: 'dab-alert' }, dabT('resumed'))))),
   )
 }
 
-/** The main panel page. */
+function DabOrchestratorState({ host, hostError }) {
+  const h = React.createElement
+  const sync = host.sync
+  const adapters = host.adapters?.adapters ?? []
+  return h('details', { className: 'dab-panel' },
+    h('summary', null, dabT('orchestratorState')),
+    h('div', { className: 'dab-muted', style: { marginTop: '6px' } },
+      sync === null || sync === undefined
+        ? (hostError ? `${dabT('syncError')}: ${hostError}` : '…')
+        : sync.ok === true
+          ? `${dabT('syncOk')} · rev ${sync.ledgerRevision ?? '?'} · ${sync.tasksTotal ?? 0} · ${dabFormatAge(sync.at)}`
+          : `${dabT('syncError')} — ${sync.error ?? ''}`),
+    (host.reconcileNotes ?? []).length > 0
+      ? h('ul', { className: 'dab-list' }, host.reconcileNotes.map(note => h('li', { key: note.assignmentId },
+        h('span', { className: 'dab-tag' }, `${dabT('restore')} · ${note.status}`), h('span', { className: 'dab-mono' }, note.taskId))))
+      : null,
+    h('div', { className: 'dab-label', style: { marginTop: '8px' } }, `${dabT('adapters')} (${adapters.length})`),
+    h('ul', { className: 'dab-list' }, adapters.map(adapter => h('li', { key: adapter.id },
+      h('span', { className: 'dab-tag' }, adapter.kind ?? '?'),
+      h('span', { className: 'dab-grow' }, adapter.title ?? adapter.id),
+      h('span', { className: 'dab-tag' }, adapter.status ?? '?'),
+      adapter.validatedLive === true ? null : h('span', { className: 'dab-tag' }, dabT('notLive'))))),
+  )
+}
+
+
+// ---- src/client/app.js ----
+/**
+ * Agent Board panel entry (React via plain createElement, no JSX build).
+ *
+ * Composition:
+ *   AgentBoard (this file)       state, store subscription, routing
+ *   ├─ DabToolbar                ui/toolbar.js
+ *   ├─ DabProjectGroup           ui/tree.js  → DabAgentTree → DabAgentCard (ui/card.js)
+ *   ├─ DabAgentPreview           ui/preview.js
+ *   └─ DabHistoryDrawer          ui/history.js
+ * Pure logic lives in supervisor/projection.js (status, project, parentage),
+ * board/view.js (visibility, sorting, history) and board/interaction.js
+ * (click/double-click arbitration).
+ *
+ * This file is concatenated into the browser artifact by scripts/build-client.mjs.
+ *
+ * @module dsh-agent-board/client/app
+ */
+
+const DAB_PANEL_ID = 'dsh-agent-board'
+const DAB_UI_KEY = 'dsh-agent-board:ui:v2'
+
+/** UI state survives a panel remount (navigation to a session and back). */
+const DAB_MEMORY = { scrollTop: 0, selectedId: null }
+
+function dabDefaultUi() {
+  return { filter: 'attention', query: '', project: null, compact: false, folded: [], expanded: [], collapsed: [], treeLimit: {} }
+}
+
+function dabReadUi() {
+  const base = dabDefaultUi()
+  try {
+    const raw = globalThis.localStorage?.getItem(DAB_UI_KEY)
+    if (!raw) return base
+    const parsed = JSON.parse(raw)
+    return {
+      ...base,
+      filter: VIEW_FILTERS.includes(parsed.filter) ? parsed.filter : base.filter,
+      project: typeof parsed.project === 'string' ? parsed.project : null,
+      compact: parsed.compact === true,
+      folded: Array.isArray(parsed.folded) ? parsed.folded.slice(0, 200) : [],
+      expanded: Array.isArray(parsed.expanded) ? parsed.expanded.slice(0, 200) : [],
+      collapsed: Array.isArray(parsed.collapsed) ? parsed.collapsed.slice(0, 200) : [],
+    }
+  } catch {
+    return base
+  }
+}
+
+function dabWriteUi(ui) {
+  try {
+    const { query: _query, treeLimit: _limit, ...persisted } = ui
+    globalThis.localStorage?.setItem(DAB_UI_KEY, JSON.stringify(persisted))
+  } catch { /* private mode */ }
+}
+
 function dabMakePage(store, ctx) {
   return function AgentBoardPage() {
+    const h = React.createElement
+    DAB_LANG = dabResolveLocale(ctx)
     const snapshot = React.useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
-    const [collapsed, setCollapsed] = React.useState(() => new Set())
-    const [compact, setCompact] = React.useState(dabReadCompact)
+    const [ui, setUiState] = React.useState(dabReadUi)
+    const [selectedId, setSelectedId] = React.useState(DAB_MEMORY.selectedId)
+    const [historyOpen, setHistoryOpen] = React.useState(false)
     const [busy, setBusy] = React.useState(false)
     const [notice, setNotice] = React.useState('')
+    const [openError, setOpenError] = React.useState('')
+    const [narrow, setNarrow] = React.useState(false)
+    const [nowBucket, setNowBucket] = React.useState(() => Math.floor(Date.now() / 60000))
+    const rootRef = React.useRef(null)
+    const scrollRef = React.useRef(null)
 
     const host = snapshot.host ?? {}
-    const projection = snapshot.projection ?? { nodes: [], byId: new Map(), roots: [], projects: [], counts: {} }
-    const counts = projection.counts ?? {}
+    const projection = snapshot.projection
+    const aggregates = snapshot.aggregates
 
-    React.useEffect(() => {
-      store.start()
-      const timer = setInterval(() => { void store.refreshHost() }, 20000)
-      timer.unref?.()
-      return () => clearInterval(timer)
-    }, [])
-
-    const toggleCollapse = id => {
-      setCollapsed(current => {
-        const next = new Set(current)
-        if (next.has(id)) next.delete(id)
-        else next.add(id)
+    const setUi = React.useCallback(patch => {
+      setUiState(current => {
+        const next = { ...current, ...patch }
+        dabWriteUi(next)
         return next
       })
-    }
+    }, [])
 
-    const openNode = node => {
+    // Lifecycle: start the store; a coarse minute tick refreshes relative ages.
+    React.useEffect(() => {
+      store.start()
+      const tick = setInterval(() => setNowBucket(Math.floor(Date.now() / 60000)), 60000)
+      return () => clearInterval(tick)
+    }, [])
+
+    // Width-driven layout (the panel may be narrow inside a wide window).
+    React.useEffect(() => {
+      const element = rootRef.current
+      if (element === null || typeof ResizeObserver !== 'function') return undefined
+      const observer = new ResizeObserver(entries => {
+        const width = entries[0]?.contentRect?.width ?? element.clientWidth
+        setNarrow(width > 0 && width <= 720)
+      })
+      observer.observe(element)
+      return () => observer.disconnect()
+    }, [])
+
+    // Restore and remember the scroll position across remounts.
+    React.useEffect(() => {
+      const element = scrollRef.current
+      if (element !== null) element.scrollTop = DAB_MEMORY.scrollTop
+      return () => { if (element !== null) DAB_MEMORY.scrollTop = element.scrollTop }
+    }, [])
+    React.useEffect(() => { DAB_MEMORY.selectedId = selectedId }, [selectedId])
+
+    const expandedSet = React.useMemo(() => new Set(ui.expanded), [ui.expanded])
+    const collapsedSet = React.useMemo(() => new Set(ui.collapsed), [ui.collapsed])
+    const foldedSet = React.useMemo(() => new Set(ui.folded), [ui.folded])
+
+    const view = React.useMemo(() => buildBoardView(projection, {
+      filter: ui.filter, query: ui.query, project: ui.project, expanded: expandedSet, collapsed: collapsedSet, now: nowBucket * 60000 + 60000, aggregates,
+    }), [projection, aggregates, ui.filter, ui.query, ui.project, expandedSet, collapsedSet, nowBucket])
+    const counts = React.useMemo(() => boardCounts(projection), [projection])
+    const projectList = React.useMemo(() => projectOptions(projection), [projection])
+
+    // Phone / narrow panel: one project at a time.
+    const activeProjectId = narrow && ui.project === null ? (view.projects[0]?.id ?? null) : ui.project
+    const shownProjects = narrow && activeProjectId !== null ? view.projects.filter(project => project.id === activeProjectId) : view.projects
+
+    const selectedNode = selectedId !== null ? projection.byId.get(selectedId) ?? null : null
+    const parentNode = selectedNode && selectedNode.parentId && !selectedNode.orphan && !selectedNode.parentCycle
+      ? projection.byId.get(selectedNode.parentId) ?? null
+      : null
+
+    const nodeRef = React.useRef(projection)
+    nodeRef.current = projection
+
+    const acknowledge = React.useCallback(id => {
+      const node = nodeRef.current.byId.get(id)
+      if (node && (node.status === 'finished_unread' || node.status === 'recovering' || (node.status === 'failed' && node.seen !== true))) void store.ack(id, { source: 'board_click' })
+    }, [])
+
+    // Reading a session OUTSIDE the board (native main view) is still reading:
+    // The key includes the session activity timestamp: a LATER turn that
+    // completes while the same session is still open is acknowledged again, and
+    // leaving the view clears the entry.
+    const nativeAcked = React.useRef(new Map())
+    React.useEffect(() => {
+      const viewing = new Set()
+      for (const node of projection.nodes) {
+        if (node.viewing !== true) continue
+        viewing.add(node.id)
+        const activityKey = String(Number(node.updatedAt) || 0)
+        if (nativeAcked.current.get(node.id) === activityKey) continue
+        if (node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true)) {
+          nativeAcked.current.set(node.id, activityKey)
+          void store.ack(node.id, { source: 'native_view' })
+        }
+      }
+      for (const id of [...nativeAcked.current.keys()]) {
+        if (!viewing.has(id)) nativeAcked.current.delete(id)
+      }
+    }, [projection])
+
+    const openSession = React.useCallback(id => {
+      setOpenError('')
       try {
         const uiWorkspace = ctx.get?.('uiWorkspace')
-        if (typeof uiWorkspace?.openSession === 'function') {
-          uiWorkspace.openSession(node.id)
-          return
-        }
-        const layout = ctx.get?.('layout')
-        if (typeof layout?.selectPanel === 'function') layout.selectPanel('conversation')
+        if (typeof uiWorkspace?.openSession !== 'function') throw new Error('uiWorkspace.openSession unavailable')
+        const scroll = scrollRef.current
+        if (scroll !== null) DAB_MEMORY.scrollTop = scroll.scrollTop
+        DAB_MEMORY.selectedId = id
+        uiWorkspace.openSession(id)
+        acknowledge(id)
       } catch (error) {
-        setNotice(`open failed: ${String(error?.message ?? error)}`)
+        setSelectedId(id)
+        setOpenError(`${dabT('openFailed')} (${String(error?.message ?? error)})`)
       }
-    }
+    }, [acknowledge])
 
-    const ack = sessionId => { void store.ack(typeof sessionId === 'string' ? sessionId : sessionId?.id) }
+    const selectNode = React.useCallback(id => {
+      setOpenError('')
+      setSelectedId(id)
+      acknowledge(id)
+    }, [acknowledge])
+
+    const arbiter = React.useMemo(() => createClickArbiter({ onSelect: selectNode, onOpen: openSession }), [selectNode, openSession])
+    React.useEffect(() => () => arbiter.cancel(), [arbiter])
+
+    const onToggleBranch = React.useCallback((id, collapsed) => {
+      setUiState(current => {
+        const collapsedNext = new Set(current.collapsed)
+        const expandedNext = new Set(current.expanded)
+        if (collapsed) collapsedNext.delete(id)
+        else { collapsedNext.add(id); expandedNext.delete(id) }
+        const next = { ...current, collapsed: [...collapsedNext], expanded: [...expandedNext] }
+        dabWriteUi(next)
+        return next
+      })
+    }, [])
+    const onRevealHidden = React.useCallback(id => {
+      setUiState(current => {
+        const next = { ...current, expanded: [...new Set([...current.expanded, id])], collapsed: current.collapsed.filter(entry => entry !== id) }
+        dabWriteUi(next)
+        return next
+      })
+    }, [])
+    const onFold = React.useCallback(id => {
+      setUiState(current => {
+        const folded = new Set(current.folded)
+        if (folded.has(id)) folded.delete(id)
+        else folded.add(id)
+        const next = { ...current, folded: [...folded] }
+        dabWriteUi(next)
+        return next
+      })
+    }, [])
+    const onMoreTrees = React.useCallback(id => {
+      setUiState(current => ({ ...current, treeLimit: { ...current.treeLimit, [id]: (current.treeLimit[id] ?? DEFAULT_TREE_LIMIT) + DEFAULT_TREE_LIMIT } }))
+    }, [])
 
     const act = async (label, operation) => {
       if (busy) return
       setBusy(true)
       try {
         const result = await operation()
-        if (result?.ok !== true) setNotice(`${label}: ${result?.payload?.error ?? result?.error ?? result?.status ?? 'failed'}`)
-        else setNotice('')
+        setNotice(result?.ok === true ? '' : `${label}: ${result?.payload?.error ?? result?.error ?? result?.status ?? 'failed'}`)
       } finally {
         setBusy(false)
       }
     }
 
     const mode = typeof host.mode === 'string' ? host.mode : 'off'
-    const running = counts.running ?? 0
-    const waiting = counts.waiting_user ?? 0
-    const unread = counts.finished_unread ?? 0
+    const hostDown = snapshot.hostError !== null && snapshot.hostError !== undefined && host.sync === null
     const canStop = (host.assignments ?? []).some(assignment => assignment.status === 'running' || assignment.status === 'starting')
+    const ctxValue = { selectedId, arbiter, onToggleBranch, onRevealHidden, nowBucket }
 
-    const header = React.createElement(
-      'header',
-      { className: 'dab-header' },
-      React.createElement(
-        'div',
-        { className: 'dab-header-row' },
-        React.createElement('h1', { className: 'dab-title' }, dabT('title')),
-        React.createElement('span', { className: 'dab-subtitle' }, dabT('subtitle')),
-        React.createElement('span', { className: 'dab-grow' }),
-        running > 0 ? React.createElement('span', { className: 'dab-chip', 'data-tone': 'running' }, `${running} ${dabT('running')}`) : null,
-        waiting > 0 ? React.createElement('span', { className: 'dab-chip', 'data-tone': 'waiting' }, `${waiting} ${dabT('waiting')}`) : null,
-        unread > 0 ? React.createElement('span', { className: 'dab-chip', 'data-tone': 'unread' }, `${unread} ${dabT('unread')}`) : null,
-      ),
-      React.createElement(
-        'div',
-        { className: 'dab-header-row' },
-        React.createElement('span', { className: 'dab-label' }, dabT('mode')),
-        React.createElement(
-          'div',
-          { className: 'dab-seg', role: 'group', 'aria-label': dabT('mode') },
-          ['off', 'supervised', 'autonomous'].map(value => React.createElement(
-            'button',
-            {
-              key: value,
-              type: 'button',
-              className: 'dab-btn',
-              'aria-pressed': mode === value,
-              disabled: busy,
-              onClick: () => act('mode', () => store.setMode(value)),
-            },
-            dabT(value),
-          )),
-        ),
-        React.createElement(
-          'button',
-          {
-            type: 'button',
-            className: 'dab-btn',
-            'data-danger': 'true',
-            disabled: busy || !canStop,
-            onClick: () => act('stop', () => store.stop()),
-            title: dabT('stop'),
-          },
-          '■ ',
-          dabT('stop'),
-        ),
-        React.createElement('span', { className: 'dab-grow' }),
-        React.createElement(
-          'button',
-          {
-            type: 'button',
-            className: 'dab-btn',
-            'aria-pressed': compact,
-            onClick: () => { const next = !compact; setCompact(next); dabWriteCompact(next) },
-          },
-          dabT('compact'),
-        ),
-        React.createElement('button', { type: 'button', className: 'dab-btn', onClick: () => void store.refreshHost(), disabled: busy }, '⟳ ', dabT('refresh')),
-      ),
-    )
+    const empty = shownProjects.length === 0
+      ? h('div', { className: 'dab-empty' },
+        h('div', null, ui.query !== '' ? dabT('emptySearch') : dabT('emptyAttention')),
+        ui.query === '' ? h('div', { className: 'dab-muted' }, dabT('emptyHint')) : null,
+        ui.query === '' ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setHistoryOpen(true) }, `🕘 ${dabT('history')}`) : null)
+      : null
 
-    const noticeText = mode === 'off' ? dabT('offNotice') : mode === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice')
-    const sync = host.sync
+    const tabs = narrow && view.projects.length > 1 && ui.project === null
+      ? h('div', { className: 'dab-tabs', role: 'tablist', 'aria-label': dabT('projects') },
+        view.projects.map(project => h('button', {
+          key: project.id, type: 'button', role: 'tab', className: 'dab-btn', 'aria-selected': project.id === activeProjectId, 'aria-pressed': project.id === activeProjectId,
+          onClick: () => setUi({ project: project.id }),
+        }, `${project.unassigned ? dabT('unassigned') : project.title} · ${project.visibleAgents}`)))
+      : null
 
-    const body = React.createElement(
-      'div',
-      { className: 'dab-scroll' },
-      notice !== '' ? React.createElement('div', { className: 'dab-notice dab-error', role: 'status' }, notice) : null,
-      React.createElement('div', { className: 'dab-notice' }, noticeText),
-      React.createElement('div', { className: 'dab-status-line' },
-        sync === null || sync === undefined
-          ? (snapshot.hostError !== null ? `${dabT('syncError')}: ${snapshot.hostError}` : '...')
-          : sync.ok === true
-            ? `${dabT('syncOk')} · rev ${sync.ledgerRevision ?? '?'} · ${sync.tasksTotal ?? 0} tâches · ${dabFormatAge(sync.at)}`
-            : `${dabT('syncError')} — ${sync.error ?? ''}`),
-      React.createElement(DabExecutionList, {
-        host,
-        onApprove: id => act('approve', () => store.decide(id, true)),
-        onReject: id => act('reject', () => store.decide(id, false)),
+    return h('div', { className: 'dab-root', ref: rootRef, 'data-dsh-agent-board': '', 'data-narrow': narrow ? 'true' : 'false' },
+      h(DabToolbar, {
+        counts, visibleCount: view.visibleCount, mode, busy, hostDown, canStop, ui, setUi, projects: projectList, narrow,
+        stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
+        secondary: host.instance?.primary === false,
+        onMode: value => act('mode', () => store.setMode(value)),
+        onStop: () => act('stop', () => store.stop()),
+        onResume: () => act('resume', () => store.resume()),
+        onRefresh: () => { void store.refreshHost(); void act('refresh', () => store.refreshHost()) },
+        onHistory: () => setHistoryOpen(true),
       }),
-      (host.reconcileNotes ?? []).length > 0
-        ? React.createElement('div', { className: 'dab-panel' },
-          React.createElement('p', { className: 'dab-panel-title' }, dabT('restore')),
-          React.createElement('ul', { className: 'dab-list' }, (host.reconcileNotes ?? []).map(note => React.createElement('li', { key: note.assignmentId },
-            React.createElement('span', { className: 'dab-chip', 'data-tone': 'failed' }, note.status),
-            React.createElement('span', { className: 'dab-mono' }, note.taskId),
-          ))))
+      h('div', { className: 'dab-main' },
+        h('div', { className: 'dab-scroll', ref: scrollRef, onScroll: event => { DAB_MEMORY.scrollTop = event.currentTarget.scrollTop } },
+          notice !== '' ? h('div', { className: 'dab-alert', role: 'status', style: { marginBottom: '8px' } }, notice) : null,
+          h(DabExecutionList, { host, onApprove: id => act('approve', () => store.decide(id, true)), onReject: id => act('reject', () => store.decide(id, false)) }),
+          tabs,
+          empty,
+          h('div', { className: 'dab-projects' }, shownProjects.map(project => h(DabProjectGroup, {
+            key: project.id, project, ctx: ctxValue, compact: ui.compact,
+            // "Unassigned" starts folded (opt-in), every real project starts open.
+            folded: project.unassigned
+              ? !foldedSet.has(`open:${project.id}`) && ui.query === '' && ui.project !== project.id
+              : foldedSet.has(project.id),
+            onFold: id => onFold(project.unassigned ? `open:${id}` : id),
+            treeLimit: ui.treeLimit[project.id] ?? DEFAULT_TREE_LIMIT,
+            onMoreTrees,
+          }))),
+          h(DabOrchestratorState, { host, hostError: snapshot.hostError })),
+        selectedNode !== null
+          ? h(DabAgentPreview, { node: selectedNode, parent: parentNode, onOpen: openSession, onSelect: selectNode, onClose: () => setSelectedId(null), openError })
+          : null),
+      historyOpen
+        ? h(DabHistoryDrawer, { projection, project: ui.project, selectedId, arbiter, onClose: () => setHistoryOpen(false) })
         : null,
-      (projection.projects ?? []).length === 0
-        ? React.createElement('div', { className: 'dab-empty' }, dabT('empty'))
-        : projection.projects.map(project => {
-          const ownIds = new Set(project.nodes)
-          const projectNodes = project.nodes.map(id => projection.byId.get(id)).filter(Boolean)
-          const roots = projectNodes.filter(node => node.parentId === null || !ownIds.has(node.parentId))
-          const rows = compact
-            ? projectNodes.slice().sort((a, b) => String(a.title).localeCompare(String(b.title))).map(node => ({ node, depth: 0, collapsed: false, hasChildren: node.children.length > 0 }))
-            : flattenVisible(roots, projection.byId, collapsed)
-          return React.createElement(
-            'section',
-            { className: 'dab-project', key: project.id },
-            React.createElement(
-              'h2',
-              { className: 'dab-project-head' },
-              project.title,
-              React.createElement('span', { className: 'dab-project-count' }, `${projectNodes.length}`),
-            ),
-            rows.map(row => React.createElement(DabCard, {
-              key: row.node.id,
-              node: row.node,
-              depth: compact ? 0 : row.depth,
-              collapsed: collapsed.has(row.node.id),
-              hasChildren: row.hasChildren,
-              compact,
-              onToggleCollapse: () => toggleCollapse(row.node.id),
-              onOpen: openNode,
-              onAck: ack,
-            })),
-          )
-        }),
-      React.createElement(
-        'details',
-        { className: 'dab-panel' },
-        React.createElement('summary', { className: 'dab-panel-title' }, `${dabT('adapters')} (${(host.adapters?.adapters ?? []).length})`),
-        React.createElement('ul', { className: 'dab-list' },
-          (host.adapters?.adapters ?? []).map(adapter => React.createElement('li', { key: adapter.id },
-            React.createElement('span', { className: 'dab-chip' }, adapter.kind ?? '?'),
-            React.createElement('span', { className: 'dab-grow' }, adapter.title ?? adapter.id),
-            React.createElement('span', { className: 'dab-chip', 'data-tone': adapter.status === 'available' ? 'unread' : 'failed' }, adapter.status ?? '?'),
-            adapter.validatedLive === true ? null : React.createElement('span', { className: 'dab-chip', 'data-tone': 'waiting' }, 'non validé live'),
-          )),
-        ),
-      ),
     )
-
-    return React.createElement('div', { className: 'dab-root', 'data-dsh-agent-board': '' }, header, body)
   }
 }
 
 function dabMakeIcon(store) {
   return function AgentBoardIcon() {
+    const h = React.createElement
     const snapshot = React.useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
     const counts = snapshot.projection?.counts ?? {}
     const unread = counts.finished_unread ?? 0
     const waiting = counts.waiting_user ?? 0
-    return React.createElement(
-      'span',
-      { style: { display: 'inline-flex', alignItems: 'center', gap: '2px', position: 'relative' }, 'aria-hidden': 'true' },
-      React.createElement(
-        'svg',
-        { viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' },
-        React.createElement('rect', { x: 2.5, y: 3, width: 7, height: 5.4, rx: 1.4 }),
-        React.createElement('rect', { x: 14.5, y: 15.6, width: 7, height: 5.4, rx: 1.4 }),
-        React.createElement('rect', { x: 2.5, y: 15.6, width: 7, height: 5.4, rx: 1.4 }),
-        React.createElement('path', { d: 'M6 8.4v3.1a1.5 1.5 0 0 0 1.5 1.5h10.5a1.5 1.5 0 0 1 1.5 1.5v1.1' }),
-        React.createElement('path', { d: 'M3.2 15.6v-2.1A1.5 1.5 0 0 1 4.7 12h2.1' }),
-      ),
+    return h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '2px', position: 'relative' }, 'aria-hidden': 'true' },
+      h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' },
+        h('rect', { x: 2.5, y: 3, width: 7, height: 5.4, rx: 1.4 }),
+        h('rect', { x: 14.5, y: 15.6, width: 7, height: 5.4, rx: 1.4 }),
+        h('rect', { x: 2.5, y: 15.6, width: 7, height: 5.4, rx: 1.4 }),
+        h('path', { d: 'M6 8.4v3.1a1.5 1.5 0 0 0 1.5 1.5h10.5a1.5 1.5 0 0 1 1.5 1.5v1.1' }),
+        h('path', { d: 'M3.2 15.6v-2.1A1.5 1.5 0 0 1 4.7 12h2.1' })),
       unread + waiting > 0
-        ? React.createElement('span', {
+        ? h('span', {
           style: {
             position: 'absolute', top: '-6px', right: '-8px', minWidth: '13px', height: '13px', borderRadius: '999px',
             fontSize: '9px', fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -1425,23 +2736,18 @@ function dabMakeIcon(store) {
             color: 'var(--dsw-alias-bg-base)', padding: '0 3px',
           },
         }, String(unread + waiting))
-        : null,
-    )
+        : null)
   }
 }
 
 /** Client plugin entry: styles + store + slot registrations. */
 function apply(ctx) {
   const disposers = []
-  // Resolve the host locale first (the shell language, not navigator.language,
-  // decides the panel language), then fall back to the document/browser.
+  DAB_LANG = dabResolveLocale(ctx)
   try {
-    const snapshot = ctx.get?.('locale')?.getLocale?.()
-    const active = snapshot?.active
-    const id = typeof active === 'string' ? active : active?.id
-    if (typeof id === 'string' && id !== '') globalThis.__dabLocale = () => id
-  } catch { /* keep the document fallback */ }
-  DAB_LANG = dabLocale()
+    const locale = ctx.get?.('locale')
+    if (typeof locale?.subscribe === 'function') disposers.push(locale.subscribe(() => { DAB_LANG = dabResolveLocale(ctx) }))
+  } catch { /* keep the resolved language */ }
   try {
     disposers.push(dabInjectStyles())
   } catch { /* styling must never break activation */ }
