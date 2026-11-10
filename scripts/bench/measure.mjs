@@ -51,3 +51,50 @@ export function summarize(samples) {
     min: round(Math.min(...samples)),
   }
 }
+
+/**
+ * Deterministic replacement for the global timer pair, used to simulate the
+ * client store's 200 ms coalescing window without depending on machine load.
+ * Install, drive with `advanceTo(ms)`, then `restore()` in a `finally`.
+ */
+export function createFakeClock() {
+  const originalSetTimeout = globalThis.setTimeout
+  const originalClearTimeout = globalThis.clearTimeout
+  let now = 0
+  let nextId = 1
+  const timers = new Map()
+  globalThis.setTimeout = (callback, delayMs = 0) => {
+    const id = nextId
+    nextId += 1
+    timers.set(id, { at: now + Number(delayMs), callback })
+    return id
+  }
+  globalThis.clearTimeout = id => {
+    timers.delete(id)
+  }
+  return {
+    /** Run every due timer in time order up to `target`, then set the clock. */
+    advanceTo(target) {
+      for (;;) {
+        let dueId = null
+        let due = null
+        for (const [id, timer] of timers) {
+          if (timer.at > target) continue
+          if (due === null || timer.at < due.at) {
+            due = timer
+            dueId = id
+          }
+        }
+        if (due === null) break
+        timers.delete(dueId)
+        now = due.at
+        due.callback()
+      }
+      now = target
+    },
+    restore() {
+      globalThis.setTimeout = originalSetTimeout
+      globalThis.clearTimeout = originalClearTimeout
+    },
+  }
+}

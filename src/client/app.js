@@ -134,7 +134,7 @@ function dabMakePage(store, ctx) {
 
     const acknowledge = React.useCallback(id => {
       const node = nodeRef.current.byId.get(id)
-      if (node && (node.status === 'finished_unread' || node.status === 'recovering' || (node.status === 'failed' && node.seen !== true))) void store.ack(id, { source: 'board_click' })
+      if (node && (node.status === 'finished_unread' || node.status === 'recovering' || ((node.status === 'failed' || node.status === 'interrupted') && node.seen !== true))) void store.ack(id, { source: 'board_click' })
     }, [])
 
     // Reading a session OUTSIDE the board (native main view) is still reading.
@@ -149,7 +149,7 @@ function dabMakePage(store, ctx) {
         viewing.add(node.id)
         const activityKey = String(Number(node.updatedAt) || 0)
         if (nativeAcked.current.get(node.id) === activityKey) continue
-        if (node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true)) {
+        if (node.status === 'finished_unread' || ((node.status === 'failed' || node.status === 'interrupted') && node.seen !== true)) {
           nativeAcked.current.set(node.id, activityKey)
           void store.ack(node.id, { source: 'native_view' })
         }

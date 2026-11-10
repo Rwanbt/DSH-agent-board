@@ -414,3 +414,30 @@ that `/tick` uses the client. No live plugin was contacted.
    opt-in policy.
 10. **Idempotency storage.** Dedicated key store with a documented retention
     window, or reuse the ledger's existing `version` fencing?
+
+## Wiring status in the Agent Board host (GOAL 3)
+
+Implemented and unit/integration-tested against the simulation above:
+
+| Step | Host code | Test |
+|---|---|---|
+| negotiation | `ensureContract()` at boot / on `POST /policy` / `GET /contract?refresh=1` | `tests/taskboard-contract.test.js`, `tests/unified-backend.test.js` |
+| lease | `runContractAttempt()` (`executionBackend:'contract'`) | `tests/unified-backend.test.js` |
+| session + attach | `createSession()` then `attachSession()`; a worktree card without a prepared directory is refused | idem |
+| failover attempt | handoff releases the old lease and leases a new attempt with `previousExecutionId` | idem ("a 429 … records a SECOND attempt") |
+| settle | `settleContractExecution()` on a completed turn; `cancelled`/`failed` on the other terminal paths | idem ("… in_review (never done)", "Stop …") |
+| release | `releaseContractLease()` on every aborted attempt, Stop, watchdog and restart reconciliation | idem + `tests/resilience.test.js` |
+| state exposure | `GET /state.contract` + `GET /contract` (`writes`, `degraded`, `absent`, `simulated`, `reason`) | `tests/security.test.js` |
+
+Known gap to close with the Task Board owners (also in `docs/LIMITATIONS.md`):
+**no lease renewal**. A single model turn that outlives the contract lease TTL
+(120 s in the simulation) is not renewed by the board, because the extension has
+no `renew` route. The board's own assignment lease (`leaseTtlMs`, 10 min) is
+renewed by the watchdog, but that is a different fact. Proposal: add
+`POST /dsh-taskboard/executions/:leaseId/renew` (idempotent, returns
+`expiresAt`) and treat a renewal failure as an ownership loss, or accept the
+Task Board's own lease extension on `report`/activity.
+
+The board-observed settlement report is explicitly labelled as such and is
+disabled with `policy.contractBoardReport:false`. It never claims to replace a
+richer report submitted by the agent through `taskboard_execution_report`.

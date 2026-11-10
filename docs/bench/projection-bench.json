@@ -1,0 +1,249 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-10T10:41:42.360Z",
+  "environment": {
+    "node": "v26.13.0",
+    "platform": "Windows_NT 10.0.26100",
+    "arch": "x64",
+    "cpu": "13th Gen Intel(R) Core(TM) i7-13620H",
+    "logicalCpus": 16,
+    "totalMemGB": 15.7
+  },
+  "method": {
+    "synthetic": true,
+    "liveHostLoadTested": false,
+    "fixtures": "scripts/bench/fixtures.mjs (seeded mulberry32, deterministic)",
+    "iterations": 40,
+    "warmup": 5,
+    "percentile": "nearest-rank",
+    "gcAvailable": false,
+    "heap": "omitted (rerun with --expose-gc)",
+    "statePayload": "trimmed /state payload: per-agent acks/previews/turnEnd/assignments + bounded-empty collections",
+    "clientStore": "REAL createBoardStore + fake ctx, fake clock: 50 notifications over 1000 ms, 200 ms coalescing"
+  },
+  "artifacts": {
+    "json": "docs/bench/projection-bench.json",
+    "table": "docs/bench/projection-bench.txt"
+  },
+  "scenarios": [
+    {
+      "id": "live-5",
+      "kind": "live",
+      "agents": 5,
+      "nodes": 5,
+      "roots": 3,
+      "counts": {
+        "total": 5,
+        "running": 2,
+        "waiting_user": 1,
+        "recovering": 0,
+        "interrupted": 0,
+        "provider_unavailable": 0,
+        "finished_unread": 2,
+        "finished_read": 0,
+        "failed": 0,
+        "idle": 0,
+        "unknown": 0,
+        "unavailable": 0
+      },
+      "buildMs": {
+        "p50": 0.076,
+        "p95": 0.142,
+        "max": 0.152,
+        "min": 0.066
+      },
+      "aggregateMs": {
+        "p50": 0.005,
+        "p95": 0.008,
+        "max": 0.01,
+        "min": 0.004
+      },
+      "statePayloadBytes": 970,
+      "statePayloadKB": 0.9
+    },
+    {
+      "id": "live-20",
+      "kind": "live",
+      "agents": 20,
+      "nodes": 20,
+      "roots": 12,
+      "counts": {
+        "total": 20,
+        "running": 4,
+        "waiting_user": 2,
+        "recovering": 0,
+        "interrupted": 0,
+        "provider_unavailable": 0,
+        "finished_unread": 4,
+        "finished_read": 6,
+        "failed": 2,
+        "idle": 0,
+        "unknown": 0,
+        "unavailable": 2
+      },
+      "buildMs": {
+        "p50": 0.212,
+        "p95": 0.561,
+        "max": 0.955,
+        "min": 0.153
+      },
+      "aggregateMs": {
+        "p50": 0.024,
+        "p95": 0.067,
+        "max": 0.436,
+        "min": 0.021
+      },
+      "statePayloadBytes": 3410,
+      "statePayloadKB": 3.3
+    },
+    {
+      "id": "live-50",
+      "kind": "live",
+      "agents": 50,
+      "nodes": 50,
+      "roots": 30,
+      "counts": {
+        "total": 50,
+        "running": 10,
+        "waiting_user": 5,
+        "recovering": 0,
+        "interrupted": 0,
+        "provider_unavailable": 0,
+        "finished_unread": 10,
+        "finished_read": 15,
+        "failed": 5,
+        "idle": 0,
+        "unknown": 0,
+        "unavailable": 5
+      },
+      "buildMs": {
+        "p50": 0.263,
+        "p95": 0.514,
+        "max": 2.062,
+        "min": 0.152
+      },
+      "aggregateMs": {
+        "p50": 0.012,
+        "p95": 0.019,
+        "max": 0.224,
+        "min": 0.011
+      },
+      "statePayloadBytes": 8117,
+      "statePayloadKB": 7.9
+    },
+    {
+      "id": "live-150",
+      "kind": "live",
+      "agents": 150,
+      "nodes": 150,
+      "roots": 90,
+      "counts": {
+        "total": 150,
+        "running": 30,
+        "waiting_user": 15,
+        "recovering": 0,
+        "interrupted": 0,
+        "provider_unavailable": 0,
+        "finished_unread": 30,
+        "finished_read": 45,
+        "failed": 15,
+        "idle": 0,
+        "unknown": 0,
+        "unavailable": 15
+      },
+      "buildMs": {
+        "p50": 0.485,
+        "p95": 1.937,
+        "max": 8.752,
+        "min": 0.422
+      },
+      "aggregateMs": {
+        "p50": 0.036,
+        "p95": 0.054,
+        "max": 0.218,
+        "min": 0.031
+      },
+      "statePayloadBytes": 23812,
+      "statePayloadKB": 23.3
+    },
+    {
+      "id": "history-1000",
+      "kind": "history",
+      "agents": 1000,
+      "nodes": 1000,
+      "roots": 1000,
+      "counts": {
+        "total": 1000,
+        "running": 0,
+        "waiting_user": 0,
+        "recovering": 0,
+        "interrupted": 0,
+        "provider_unavailable": 0,
+        "finished_unread": 100,
+        "finished_read": 800,
+        "failed": 100,
+        "idle": 0,
+        "unknown": 0,
+        "unavailable": 0
+      },
+      "buildMs": {
+        "p50": 2.675,
+        "p95": 4.525,
+        "max": 13.287,
+        "min": 2.074
+      },
+      "aggregateMs": {
+        "p50": 0.222,
+        "p95": 1.227,
+        "max": 5.333,
+        "min": 0.137
+      },
+      "statePayloadBytes": 147857,
+      "statePayloadKB": 144.4
+    },
+    {
+      "id": "deep-chain-1000",
+      "kind": "deep-chain",
+      "agents": 1000,
+      "nodes": 1000,
+      "roots": 1,
+      "counts": {
+        "total": 1000,
+        "running": 143,
+        "waiting_user": 0,
+        "recovering": 0,
+        "interrupted": 0,
+        "provider_unavailable": 0,
+        "finished_unread": 0,
+        "finished_read": 857,
+        "failed": 0,
+        "idle": 0,
+        "unknown": 0,
+        "unavailable": 0
+      },
+      "buildMs": {
+        "p50": 2.464,
+        "p95": 3.822,
+        "max": 4.21,
+        "min": 1.774
+      },
+      "aggregateMs": {
+        "p50": 0.23,
+        "p95": 0.332,
+        "max": 0.936,
+        "min": 0.193
+      },
+      "statePayloadBytes": 34866,
+      "statePayloadKB": 34
+    }
+  ],
+  "clientStore": {
+    "scenario": "live-150",
+    "notifications": 50,
+    "rebuilds": 5,
+    "notifyWindowMs": 200,
+    "burstMs": 1000,
+    "listenerCount": 2,
+    "coalesced": true
+  }
+}

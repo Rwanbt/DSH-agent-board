@@ -27,8 +27,9 @@ export function isAttention(node) {
   if (node.status === STATUS.WAITING_USER) return true
   if (node.status === STATUS.RUNNING) return true
   if (node.status === STATUS.RECOVERING) return true
-  // A stopped/superseded launch is unfinished work: never hidden as history.
-  if (node.status === STATUS.INTERRUPTED) return true
+  // A stopped/superseded launch is unfinished work: hidden only once the user
+  // has read it (the status stays `interrupted`, the attention flag clears).
+  if (node.status === STATUS.INTERRUPTED) return node.seen !== true
   // The model's provider is inside an injected cooldown: the card is blocked
   // on something outside its own turn and needs a decision.
   if (node.status === STATUS.PROVIDER_UNAVAILABLE) return true

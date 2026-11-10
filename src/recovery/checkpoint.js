@@ -16,6 +16,41 @@
 import { newId, truncate } from '../contracts/model.js'
 
 /**
+ * Secret-shaped strings that must never reach the durable journal or a resumed
+ * session's prompt. A checkpoint captures agent-produced text (the last
+ * assistant segment, `git status` output, tool names/targets) which can contain
+ * a leaked key, a bearer header or a private-key block. Redaction is a guard,
+ * not a replacement for never printing secrets.
+ */
+const SECRET_PATTERNS = Object.freeze([
+  // Provider keys: OpenAI/Anthropic-style `sk-…`, GitHub tokens, Slack tokens,
+  // AWS access key ids, Google API keys.
+  /\bsk-[A-Za-z0-9_-]{16,}\b/g,
+  /\bghp_[A-Za-z0-9]{20,}\b/g,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /\bAIza[0-9A-Za-z_-]{35}\b/g,
+  // Authorization material copied out of a request or a log.
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/g,
+  // Private key blocks (multi-line safe: the marker line is enough).
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/g,
+])
+
+/** Replace secret-shaped substrings with `[redacted]`. Pure and idempotent. */
+export function redactSecrets(text, max = 4000) {
+  const value = typeof text === 'string' ? text : ''
+  let out = value
+  for (const pattern of SECRET_PATTERNS) out = out.replace(pattern, '[redacted]')
+  return truncate(out, max)
+}
+
+function redactList(list, max) {
+  if (!Array.isArray(list)) return []
+  return list.map(entry => redactSecrets(String(entry ?? ''), max))
+}
+
+/**
  * @param {object} input
  * @param {object} input.assignment
  * @param {string} input.sessionId
@@ -54,25 +89,30 @@ export function buildCheckpoint({
       workspaceId: typeof task.workspaceId === 'string' ? task.workspaceId : null,
     },
     sessionId,
-    lastText: truncate(lastText, 800),
+    // Agent-produced text is redacted on the way INTO the journal: a leaked key
+    // must not become durable state nor reappear in a resumed prompt.
+    lastText: redactSecrets(lastText, 800),
     git: git === null ? null : {
       head: git.head ?? null,
       branch: git.branch ?? null,
-      status: truncate(typeof git.status === 'string' ? git.status : '', 1200),
-      commits: Array.isArray(git.commits) ? git.commits.slice(0, 20) : [],
-      changedFiles: Array.isArray(git.changedFiles) ? git.changedFiles.slice(0, 200) : [],
+      status: redactSecrets(typeof git.status === 'string' ? git.status : '', 1200),
+      commits: redactList(Array.isArray(git.commits) ? git.commits.slice(0, 20) : [], 200),
+      changedFiles: redactList(Array.isArray(git.changedFiles) ? git.changedFiles.slice(0, 200) : [], 300),
     },
-    tests: Array.isArray(tests) ? tests.slice(0, 30) : [],
+    tests: Array.isArray(tests) ? tests.slice(0, 30).map(entry => ({
+      name: redactSecrets(String(entry?.name ?? ''), 200),
+      outcome: String(entry?.outcome ?? ''),
+    })) : [],
     actions: Array.isArray(actions)
       ? actions.slice(0, 30).map(action => ({
         kind: String(action.kind ?? 'unknown'),
-        target: String(action.target ?? ''),
+        target: redactSecrets(String(action.target ?? ''), 200),
         idempotent: action.idempotent === true,
         effect: action.effect === 'confirmed' ? 'confirmed' : 'unknown',
       }))
       : [],
-    stepsDone: stepsDone.slice(0, 50),
-    stepsRemaining: stepsRemaining.slice(0, 50),
+    stepsDone: redactList(stepsDone.slice(0, 50), 200),
+    stepsRemaining: redactList(stepsRemaining.slice(0, 50), 200),
     schemaVersion: 1,
   }
 }
