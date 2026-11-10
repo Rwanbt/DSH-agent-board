@@ -228,6 +228,28 @@ test('an acknowledged interrupted launch leaves the home view but keeps its stat
   assert.equal(view.projects.length, 0, 'nothing left to treat on the home view')
 })
 
+test('a native turn end the host missed wins over a stale completed host end', () => {
+  const stale = { s: { at: NOW - 90_000, kind: 'completed' } }
+  // A native failure is never hidden by the stale completion.
+  const failed = single(session('s', { projectionValues: { mobilePushLifecycle: { lastTurnEnd: { turn: 7, reason: 'error' } } } }), { hostState: { turnEnd: stale } })
+  assert.equal(failed.status, STATUS.FAILED)
+  assert.equal(failed.statusReason, 'native_turn_end:error')
+  assert.equal(failed.seen, false)
+  // Neither is a native non-completion (it is history, not a fresh result).
+  for (const reason of ['aborted', 'blocked']) {
+    const node = single(session('s', { projectionValues: { mobilePushLifecycle: { lastTurnEnd: { turn: 7, reason } } } }), { hostState: { turnEnd: stale } })
+    assert.equal(node.status, STATUS.IDLE, `native ${reason} must not inherit the stale completion`)
+    assert.match(node.statusReason, new RegExp(`native_turn_ended:${reason}`))
+    assert.equal(node.recentlyFinished, false)
+  }
+  // An explicit ack covers a native-only failure (there is no timestamp to compare).
+  const acked = single(session('s', { projectionValues: { mobilePushLifecycle: { lastTurnEnd: { turn: 7, reason: 'error' } } } }), {
+    hostState: { turnEnd: stale, acks: { s: { seenAt: NOW, lastTurnEnd: null } } },
+  })
+  assert.equal(acked.status, STATUS.FAILED)
+  assert.equal(acked.seen, true)
+})
+
 test('the new statuses are attention, counted apart from history, and ordered deterministically', () => {
   const byId = {
     interrupted: session('interrupted'),

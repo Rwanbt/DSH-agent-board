@@ -29,7 +29,7 @@ provenance is not allowed to be invented. Six different facts are kept apart
 
 | Priority | Signal | Status |
 |---|---|---|
-| 1 | host fact: the session left the runtime (`hostState.gone`), even with a stale turn end | `unknown` (`session_gone`) |
+| 1 | host fact: the session left the runtime (`hostState.gone`), even with a stale turn end — a live row updated at/after the tombstone wins | `unknown` (`session_gone`) |
 | 2 | no row, no native status and no assignment | `unknown` |
 | 3 | `sessionStatus.pendingInteraction` (approval / plan-review / question) | `waiting_user` |
 | 4 | `row.running` or `sessionStatus.running` | `running` |
@@ -38,13 +38,14 @@ provenance is not allowed to be invented. Six different facts are kept apart
 | 7 | no live session row (catalog-only, deleted) | `unknown` (`no_row_for_session`) |
 | 8 | recorded turn-end error whose provider is inside an injected health cooldown | `provider_unavailable` |
 | 9 | last durable `turn/end` reason kind ∈ {error, failed}, not acknowledged | `failed` |
-| 10 | native-only failure (`mobilePushLifecycle.lastTurnEnd`), no board ack possible | `failed` (visible, `seen:false`) |
+| 10 | native-only failure (`mobilePushLifecycle.lastTurnEnd`), no host turn end or a stale completed one | `failed` (visible until the persisted ack covers it) |
 | 11 | `agentAvailable:false` | `unavailable` |
-| 12 | turn ended, ack cursor at/after it | `finished_read` |
-| 13 | turn ended, ack cursor before it | `finished_unread` |
-| 14 | native `completionUnread` and the ack is older than the session activity | `finished_unread` |
-| 15 | native turn end observed after the fact | `finished_read` (history) |
-| 16 | no signal | `idle` |
+| 12 | turn ended **completed**, ack cursor at/after it | `finished_read` |
+| 13 | turn ended **completed**, ack cursor before it | `finished_unread` |
+| 14 | native `completionUnread` and the ack is older than the session activity (no activity timestamp: the ack decides) | `finished_unread` |
+| 15 | native turn end observed after the fact and **completed** | `finished_read` (history) |
+| 16 | any other turn-end kind (aborted, blocked, interrupted, recovered error, unknown, max-tokens) | `idle` with an explicit reason |
+| 17 | no signal | `idle` |
 
 `interrupted` and `provider_unavailable` never replace a real signal: the first
 only applies when no later turn proves the session moved on, the second needs an
@@ -53,6 +54,13 @@ failure the session has not passed. No injected health table means the status
 never appears (a failed turn stays `failed`). Both `failed` and `interrupted`
 cards are acknowledged by the persisted read cursor: the status never changes,
 only the attention flag (`seen`).
+
+Only a `completed` turn end is a result. The newest turn-end fact wins: a
+native failure or abort the host missed is not hidden by a stale completed host
+end (`failed` / `idle` with a native reason), and a recovered host error is
+history, never `finished_unread`. An archived session is history whatever its
+status (`isAttention` returns false), so an old unread result cannot occupy the
+home view for ever.
 
 There is deliberately no `waiting_agent` status. The candidate native sources
 were checked: `agent/status` only carries idle/running, `subagents` exposes
@@ -66,21 +74,30 @@ a signal.
 `recentlyFinished` (with `finishedAt`) is a VIEW flag, not a status: it is true
 only for a real turn end whose timestamp is inside a bounded window. Age never
 changes a status, and a native-only turn end (no timestamp) is never "recent".
+It is exposed on the card as `data-recent`; no CSS rule consumes it yet (the
+green mark is driven by the unread status, not by this flag), which is a known
+P2 gap rather than a hidden behaviour.
 
 `updatedAt` is displayed but never used to infer a status. A sub-agent whose row
 disappears is `unknown`, not “finished”; a deleted session keeps an explicit
-`session_gone` reason. `aborted` and `blocked` turns are `idle` with an explicit
-reason, never `finished`.
+`session_gone` reason. `aborted`, `blocked`, `interrupted`, `unknown` and
+`max-tokens` turns are `idle` with an explicit reason, never `finished`.
 
 The preview follows the same honesty rule: only a segment that closed a
 completed turn is `final`. A segment from an errored, aborted or unknown turn is
-`partial`; the panel then shows “no final answer yet” instead of a misleading
-final line.
+`partial`, an outline response is attributed to its own turn (the newest one when
+the closing fact carries no turn number), and a board checkpoint is only final
+when its assignment completed (`status: done`); the panel then shows “no final
+answer yet” instead of a misleading final line.
 
 ## Click semantics
 
-- single click / Enter / Space → expand the preview (and POST `/ack` if unread);
-- double click or Shift+Enter → `uiWorkspace.openSession(id)`;
+- single click → expand the preview (and POST `/ack` if unread);
+- double click → `uiWorkspace.openSession(id)`;
+- **keyboard**: `Enter` opens the session (the card's primary action, matching
+  the visible hint) and `Space` expands the preview; the interaction arbiter
+  cancels a pending single-click action when the double click arrives
+  (`src/board/interaction.js`).
 - explicit **Open session** button → same navigation (mobile/keyboard);
 - focus ring uses `--dsw-alias-brand-primary`; the running ring is disabled by
   `prefers-reduced-motion`.

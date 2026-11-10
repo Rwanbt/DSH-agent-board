@@ -260,6 +260,10 @@ test('contract backend: a 429 after launch switches route and records a SECOND a
     assert.equal(next.attempt, 1)
     assert.equal(next.switches, 1)
     assert.equal(next.backend, 'contract')
+    // Fencing tokens genuinely advance across attempts (a stale writer of the
+    // first attempt can never be mistaken for the second one).
+    assert.equal(first.fencingToken, 1)
+    assert.equal(next.fencingToken, 2)
 
     // The first execution is closed as cancelled, the second one links back to it.
     const task = host.board.task('t-contract-1')
@@ -278,6 +282,15 @@ test('contract backend: a 429 after launch switches route and records a SECOND a
     assert.ok(releaseAt >= 0, 'the first lease must be released on handoff')
     assert.ok(secondLeaseAt >= 0, 'the second attempt must be leased')
     assert.ok(releaseAt < secondLeaseAt, `release (${releaseAt}) must precede the second lease (${secondLeaseAt})`)
+
+    // A LATE event from the superseded session must not settle the new attempt:
+    // the old assignment is no longer the live owner of that session id.
+    host.emit(firstSession, turnEnd('completed'))
+    await new Promise(resolve => setTimeout(resolve, 80))
+    const afterLate = (await host.state()).assignments
+    assert.equal(afterLate.find(entry => entry.sessionId === second.sessionId).status, 'running')
+    assert.equal(afterLate.find(entry => entry.sessionId === firstSession).status, 'superseded')
+    assert.equal(host.board.task('t-contract-1').executions[1].outcome, 'running')
 
     // A completed turn on the fallback route records the PRIMARY RETURN decision.
     host.emit(second.sessionId, turnEnd('completed'))

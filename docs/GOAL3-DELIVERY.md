@@ -26,7 +26,7 @@
 | §11 Budgets and limits | concurrency, tasks/hour, requests/hour, retries, switches, cooldown enforced; token/cost reported unavailable | `src/routing/budget.js`, `docs/FAILOVER.md` |
 | §12 Security | audit + executable controls: prompt-injection delimiting, permission clamp, trust gate, secret redaction, no HTML sink, no credential reads | `docs/SECURITY-AUDIT.md`, `tests/security.test.js` |
 | §13.5 E2E on a real isolated host | disposable `DSH_HOME`, fake OpenAI-compatible provider, simulated Task Board extension: task → session → real model turn → lease/attach/settle → `in_review`, then 429 → release → second execution on the backup route | `docs/e2e/GOAL3-E2E.md`, `scripts/e2e/run-e2e.mjs` |
-| §15 Independent review | two fresh reviewers (backend orchestration/routing/contract; supervision/UI), findings + non-regression tests | `docs/REVIEW-GOAL3-BACKEND.md`, `docs/REVIEW-GOAL3-SUPERVISION.md` |
+| §15 Independent review | two fresh reviewers (backend orchestration/routing/contract; supervision/UI), 18 + 13 findings with reproductions and non-regression tests; every P0/P1 fixed and re-verified | `docs/REVIEW-GOAL3-BACKEND.md`, `docs/REVIEW-GOAL3-SUPERVISION.md` |
 | §17 Deliverables | code, commits, architecture, orchestrator/adapter/contract/failover docs, recovery procedure, tests, E2E report, benchmarks, security audit, review reports, compatibility, install/rollback, residual limits | this file + linked docs |
 
 ## 2. Architecture after GOAL 3
@@ -53,6 +53,12 @@ Full detail: `docs/ARCHITECTURE.md`, `docs/CONTRACTS.md`, `docs/FAILOVER.md`,
 
 ## 3. Test inventory (evidence classes)
 
+**Final count: 315 tests, 315 pass, 0 fail, 0 todo** (`node --test tests/`), stable
+over three consecutive runs. The suite grew from the 152-test GOAL 2 baseline:
++ contract negotiation/execution, + unified backend host integration, + routing
+policy/budget/fencing, + supervision statuses/identity/model, + security, +
+performance, + the two reviewers' non-regression files.
+
 | Class | What it proves | Command |
 |---|---|---|
 | Unit (pure) | routing decisions, budget windows, fencing, projection statuses, view grouping | `node --test tests/` |
@@ -60,6 +66,24 @@ Full detail: `docs/ARCHITECTURE.md`, `docs/CONTRACTS.md`, `docs/FAILOVER.md`,
 | Host integration | the real HTTP API + real host code against fakes (`ctx`, fetch) | `node --test tests/host-*.test.js tests/unified-backend.test.js tests/security.test.js` |
 | Live isolated host | real DSH process, real plugin, real HTTP, real model request to a fake provider; simulated Task Board extension | `node scripts/e2e/run-e2e.mjs` |
 | Benchmarks | projection at 5/20/50/150 agents and 1 000 sessions (synthetic fixtures) | `node scripts/bench/projection-bench.mjs` |
+
+### E2E result (real isolated DSH host, 2026-11-10)
+
+**PASS — 15/15 assertions, 2 scenarios, exit 0** (`docs/e2e/GOAL3-E2E.md`,
+raw evidence `docs/e2e/GOAL3-E2E-2026-11-10.json`).
+
+| Scenario | Observed |
+|---|---|
+| **a — contract happy path** | contract negotiated `writes:true`; `POST /tick` launched a real session on the contract backend; the model turn completed against the fake OpenAI-compatible provider (HTTP 200, 6 stream chunks); the REAL board then called `lease → attach → settle`; the simulated ledger task ended `in_review` **with a report** and never `done`; the audit records `contract_settled`; SSE delivered named `state` frames. |
+| **b — failover** | a scripted `429` was classified `rate_limit`, routed `switch` to the backup provider; the board **released** attempt 1 (`exec-2` → `cancelled`), leased a **second canonical execution** (`exec-3`) carrying `previousExecutionId:"exec-2"`, ran the backup session to completion and settled it to `in_review`; audit `route_decision, contract_released, handoff, turn_done, contract_settled`. |
+| **direct extension semantics** | the extension was also driven directly: 202 lease, idempotent replay, 409 `lease_conflict`, attach, report, settle → `in_review` (a `done` outcome is refused). |
+| **UX preserved** | the panel rendered in the isolated instance with **0 console errors**, project group expanded, cards + status pills + provider/model chip visible: `docs/e2e/screenshots/goal3-ux-{1366x768-light,1366x768-dark,1366x768-dark-card-preview,390x844-light,390x844-dark}.png`. No sub-agent branch existed in that instance (documented, not faked). |
+
+Live: DSH CLI/profile/plugin load/web host/token auth/board API, DSH sessions and
+agent loop, the real HTTP client code. Simulated: the model provider and the
+Task Board extension. **Not proved by this run:** the real Task Board extension,
+a real provider outage, model quality (the fake model is tool-less), 500/401/
+timeout/partial-stream routing (scriptable in the harness, only 429 driven).
 
 **Not tested / not claimed:** a real Task Board implementing the proposed
 extension; a real provider outage (429/5xx) on a real provider; Linux; a
@@ -93,8 +117,29 @@ goal3/supervision-orchestration
 
 ## 6. Verdict
 
-See the final section of `README.md` / the session report: **PARTIAL** — every
-independently testable P0 item is implemented and tested (including a live
-isolated-host E2E with a fake provider), but the Task Board execution contract
-is a **simulated** extension and no live provider outage was provoked, so the
-"real integration" part of §6.3/§13.4 cannot be claimed.
+**PARTIAL** — deliberately not `READY`, and not `BLOCKED`.
+
+Why `PARTIAL` and not `READY`:
+
+- The Task Board execution contract (§6.3) is **proposed and simulated**. The
+  real `dsh-taskboard` 0.11.0 does not implement `/contract`, so on a real
+  installation the unified path is refused with `contract_unavailable` and the
+  two legacy backends remain. The live proof (isolated DSH + fake provider) is
+  real for the DSH half and simulated for the Task Board half — that distinction
+  is stated everywhere it matters.
+- No **real** provider outage (429/5xx/quota) was provoked; the classifier is
+  tested on the documented shapes and against a scripted fake provider.
+- Residual limits stay open: no contract lease renewal, no external-effect
+  reconciliation, no crash-injection mid-handoff, synthetic-only performance,
+  Windows-only, one external engine really integrated.
+
+Why not `BLOCKED`: every P0 item that can be verified inside this repository is
+implemented, tested and reviewed. The supervision cockpit, OFF/SUPERVISED/
+AUTONOMOUS gates, budgets, fencing, layered routing, the unified backend (against
+the simulated contract) and the isolated-host E2E all pass; the two independent
+reviews found **no P0** and every P1 they reported was fixed and guarded by a
+non-regression test.
+
+The single blocking dependency for `READY` is a Task Board release implementing
+`docs/TASKBOARD-CONTRACT.md`, after which `scripts/e2e/run-e2e.mjs` can be re-run
+against the real plugin with no code change on the Agent Board side.
