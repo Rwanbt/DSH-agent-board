@@ -46,7 +46,6 @@ import { createServer as createNetServer, connect } from 'node:net'
 import { dirname, join, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
-import { request as httpRequest } from 'node:http'
 
 import { startFakeLlm } from './fake-llm-server.mjs'
 import { startFakeTaskBoard } from './fake-taskboard-server.mjs'
@@ -276,36 +275,42 @@ function redact(text) {
 }
 
 /** Collect `/events` SSE for `durationMs`; returns the raw frames. */
-function collectSse(durationMs) {
-  return new Promise(resolvePromise => {
-    const frames = []
-    let buffer = ''
-    let bytes = 0
-    let error = null
-    const req = httpRequest(`${origin}${BOARD_API}/events`, { headers: { cookie: cookie ?? '' } }, res => {
-      if (res.statusCode !== 200) { error = `HTTP ${res.statusCode}`; res.resume(); return }
-      res.setEncoding('utf8')
-      res.on('data', chunk => {
-        bytes += chunk.length
-        buffer += chunk
-        let index = buffer.indexOf('\n\n')
-        while (index >= 0) {
-          frames.push(buffer.slice(0, index))
-          buffer = buffer.slice(index + 2)
-          index = buffer.indexOf('\n\n')
-        }
-      })
-      res.on('error', cause => { error = String(cause?.message ?? cause) })
+async function collectSse(durationMs) {
+  const frames = []
+  let buffer = ''
+  let bytes = 0
+  let error = null
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), Math.max(800, durationMs * timeoutScale))
+  try {
+    const response = await fetch(`${origin}${BOARD_API}/events`, {
+      headers: { cookie: cookie ?? '', accept: 'text/event-stream' },
+      signal: controller.signal,
     })
-    req.on('error', cause => { error = String(cause?.message ?? cause) })
-    req.setTimeout(30_000)
-    const timer = setTimeout(() => { try { req.destroy() } catch { /* closed */ } }, Math.max(500, durationMs * timeoutScale))
-    setTimeout(() => {
-      clearTimeout(timer)
-      try { req.destroy() } catch { /* closed */ }
-      resolvePromise({ frames, bytes, error })
-    }, Math.max(800, durationMs * timeoutScale + 300))
-  })
+    if (!response.ok || response.body === null) {
+      error = `HTTP ${response.status}`
+      return { frames, bytes, error }
+    }
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      bytes += value.byteLength
+      buffer += decoder.decode(value, { stream: true })
+      let index = buffer.indexOf('\n\n')
+      while (index >= 0) {
+        frames.push(buffer.slice(0, index))
+        buffer = buffer.slice(index + 2)
+        index = buffer.indexOf('\n\n')
+      }
+    }
+  } catch (cause) {
+    error = cause?.name === 'AbortError' ? null : String(cause?.message ?? cause)
+  } finally {
+    clearTimeout(timer)
+  }
+  return { frames, bytes, error }
 }
 
 function parseSseFrames(frames) {
@@ -605,6 +610,7 @@ async function scenarioModelTurn() {
   scenario.observed.sse = {
     frames: sse.frames.length,
     named: parseSseFrames(sse.frames).filter(frame => frame.event !== null).length,
+    error: sse.error ?? null,
     sample: redact(sse.frames.slice(0, 2).join('\n\n')).slice(0, 1200),
   }
   scenario.observed.primaryRequests = fakePrimary.requests.slice(primaryStart).map(requestSummary)
@@ -676,6 +682,10 @@ async function scenarioContractFailover() {
   const taskAssignments = (state.assignments ?? []).filter(entry => entry.taskId === taskId)
   const routeEvents = (state.routeEvents ?? []).filter(entry => entry.taskId === taskId)
   const audit = (state.audit ?? []).filter(entry => JSON.stringify(entry).includes(taskId))
+  const relevantAudit = (state.audit ?? []).filter(entry => taskAssignments.some(assignment => (
+    (assignment.id !== undefined && entry.assignmentId === assignment.id) ||
+    (assignment.leaseId !== undefined && assignment.leaseId !== null && entry.leaseId === assignment.leaseId)
+  )))
   const executions = settled.executions ?? []
   const first = executions[0] ?? null
   const second = executions[1] ?? null
@@ -706,7 +716,7 @@ async function scenarioContractFailover() {
   assert('b4. a SECOND canonical execution carries previousExecutionId', second !== undefined && second.previousExecutionId === first?.id, JSON.stringify({ executions: executions.map(entry => ({ id: entry.id, previousExecutionId: entry.previousExecutionId ?? null, outcome: entry.outcome, route: entry.route?.provider ?? null })) }))
   assert('b5. the second session ran on the backup route and completed', scenario.observed.backupTurnEnd?.kind === 'completed' && backupSaw200, JSON.stringify({ backupTurnEnd: scenario.observed.backupTurnEnd, backup200: backupSaw200 }))
   assert('b6. the card ended in_review with the second execution report, never done', settled.status === 'in_review' && second?.outcome === 'succeeded' && second?.report?.summary?.length > 0, JSON.stringify({ status: settled.status, second: second === null ? null : { outcome: second.outcome, hasReport: second.report !== undefined } }))
-  assert('b7. audit recorded release/handoff/settle', audit.some(entry => entry.type === 'contract_released') && audit.some(entry => entry.type === 'handoff') && audit.some(entry => entry.type === 'contract_settled'), JSON.stringify(audit.map(entry => entry.type)))
+  assert('b7. audit recorded release/handoff/settle', relevantAudit.some(entry => entry.type === 'contract_released') && relevantAudit.some(entry => entry.type === 'handoff') && relevantAudit.some(entry => entry.type === 'contract_settled'), JSON.stringify(relevantAudit.map(entry => entry.type)))
 
   await httpJson('POST', `${BOARD_API}/mode`, { mode: 'off' }, { expected: 200 })
   scenario.endedAt = timestamp()
@@ -929,6 +939,13 @@ function markdownOf() {
       lines.push('```')
     }
   }
+  lines.push('')
+  lines.push('## What this PASS does NOT prove')
+  lines.push('')
+  lines.push('- **Not the real Task Board extension.** The lease/attach/report/settle protocol was spoken by the real product against `scripts/e2e/fake-taskboard-server.mjs`; the real 0.10/0.11 Task Board does not implement `/dsh-taskboard/contract`.')
+  lines.push('- **Not a real provider outage.** The 429 is scripted by the fake provider; it proves the classification/failover code path, not behaviour against a live vendor incident (quota, network partitions, partial streams).')
+  lines.push('- **Not model quality.** The provider is deterministic and tool-less; it proves transport, turn loop and orchestration, not reasoning, tool use, or prompt quality.')
+  lines.push('- **Not the desktop profile.** The run uses a disposable `DSH_HOME`; the operator\'s real profile, credentials and sessions were never read or written.')
   lines.push('')
   lines.push('## Limits / gaps (honest)')
   lines.push('')

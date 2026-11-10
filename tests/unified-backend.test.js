@@ -270,6 +270,14 @@ test('contract backend: a 429 after launch switches route and records a SECOND a
     const leases = host.board.state().leases
     assert.equal(leases.length, 2)
     assert.equal(leases[1].previousExecutionId, leases[0].executionId ?? task.executions[0].id)
+    // The handoff must RELEASE before it LEASES the next attempt: a fire-and-forget
+    // release races a slow Task Board into `lease_conflict`.
+    const writes = host.board.calls.filter(entry => entry.method === 'POST').map(entry => entry.path)
+    const releaseAt = writes.indexOf(`/dsh-taskboard/executions/${leases[0].id}/release`)
+    const secondLeaseAt = writes.indexOf('/dsh-taskboard/tasks/t-contract-1/executions/lease', 1)
+    assert.ok(releaseAt >= 0, 'the first lease must be released on handoff')
+    assert.ok(secondLeaseAt >= 0, 'the second attempt must be leased')
+    assert.ok(releaseAt < secondLeaseAt, `release (${releaseAt}) must precede the second lease (${secondLeaseAt})`)
 
     // A completed turn on the fallback route records the PRIMARY RETURN decision.
     host.emit(second.sessionId, turnEnd('completed'))
