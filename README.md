@@ -7,11 +7,30 @@ OFF / SUPERVISED / AUTONOMOUS modes, and a task-level failover/recovery path.
 
 > **Status: PARTIAL (honest).** The panel runs live in DSH 0.2.2-rc.1, a real
 > Task Board task was launched, implemented and moved to `in_review` by a real
-> DSH session, and the UI interactions were exercised in a browser. The
-> provider-switch and process-restart gates are covered by automated
-> integration tests, **not** by a live provider outage or a real host reboot.
-> See [docs/TEST-REPORT.md](docs/TEST-REPORT.md) and
+> DSH session, and the UI interactions were exercised in a browser. The GOAL 2
+> pass fixed the runtime P0s (live SSE, truthful states, durable acknowledgement,
+> one authorization gate, single-writer state, real Task Board 0.10.2 contract,
+> bounded retries) and added 152 automated tests; its behaviour was also exercised
+> against a real isolated DSH instance (plugin activation, Task Board HTTP
+> contract, real session launch, restart/resume gate, lock takeover, SSE, bounded
+> retry). What remains **NOT TESTED** is a successful model turn on that isolated
+> instance (a fresh `DSH_HOME` has no credentials — none were copied), a live
+> provider outage, live forges/webhooks, and load/Linux.
+> See [docs/TEST-REPORT.md](docs/TEST-REPORT.md),
+> [docs/GOAL2-AUDIT-MATRIX.md](docs/GOAL2-AUDIT-MATRIX.md) and
 > [docs/LIMITATIONS.md](docs/LIMITATIONS.md) before trusting a claim.
+
+## Branches
+
+| Branch | Role |
+|---|---|
+| `main` | MVP baseline (`ec955fb`): panel, orchestration, simulated failover. |
+| `dev` | Integration branch: GOAL 1 UX + GOAL 2 runtime audit/corrections, 152 tests. This is the branch to build and try. |
+| `fix/agent-board-runtime-e2e` | Feature history of the GOAL 2 corrections and review rounds (merged into `dev`). |
+
+The remote contains `dev` only; `main` can be published separately when the
+baseline must be visible. Nothing is pushed to a forge on the plugin's behalf:
+the board itself never pushes, merges or opens PRs.
 
 ## What it does
 
@@ -20,10 +39,12 @@ OFF / SUPERVISED / AUTONOMOUS modes, and a task-level failover/recovery path.
   DSH workspace, collapsible sub-trees, compact mode, responsive down to a
   phone viewport, DSH theme tokens (light/dark).
 - **Exact statuses** — `running` (animated ring), `waiting_user` (yellow, from
-  `uiSession.sessionStatus.pendingInteraction`), `finished_unread` (green),
-  `finished_read` (grey), `failed` (red, from the durable `turn/end` reason),
+  `uiSession.sessionStatus.pendingInteraction`), `recovering` (route switch in
+  progress), `finished_unread` (green, until an explicit acknowledgement),
+  `finished_read` (grey), `failed` (red, from the durable `turn/end` reason or
+  the native lifecycle), `unavailable` (the runtime says the agent is gone),
   `idle`, `unknown` (never faked as “finished”). Elapsed time never infers a
-  status.
+  status, and each card exposes the reason/source of its status.
 - **Click = preview, double-click = open** — a single click expands the last
   useful assistant segment, the expected action, the model/provider and the
   assigned task; a double-click (or the explicit “Open session” button, for
@@ -44,6 +65,14 @@ OFF / SUPERVISED / AUTONOMOUS modes, and a task-level failover/recovery path.
   explicit chain, and checkpoint → handoff into a compatible session when the
   in-flight request cannot be repaired. Policy refusals and CI/code failures
   are never treated as provider outages.
+
+## Requirements
+
+- DSH `0.2.2-rc.1` (the only release this build was exercised on), Web GUI.
+- Node.js `>=22` for the build/test scripts (`node --test`, no bundler, no
+  runtime dependency).
+- A DSH profile where the plugin can be added (the plugin never edits the DSH
+  source tree).
 
 ## Install
 
@@ -68,8 +97,9 @@ Uninstall:
 plugin_manager remove_bundle  target=dsh-agent-board
 ```
 
-State lives in `$DSH_HOME/agent-board/` (`state.json`, `audit.jsonl`); remove
-that directory to forget read cursors, previews and assignments.
+State lives in `$DSH_HOME/agent-board/` (`state.json`, `audit.jsonl`,
+`instance.lock`); remove that directory only when no DSH host is running to
+forget read cursors, previews and assignments.
 
 ## Use
 
@@ -80,9 +110,11 @@ that directory to forget read cursors, previews and assignments.
   board lists proposals with Approve/Reject; in AUTONOMOUS it launches ready
   tasks up to `maxConcurrent`.
 - **Stop executions** — separate from OFF: it cancels the live agents of the
-  in-flight assignments.
-- **Read cursors** — expanding an unread card posts an ack; the state is
-  persisted host-side, so the card stays grey after a refresh.
+  in-flight assignments and blocks new delegation (tick, dispatch, approval,
+  failover) until **Resume**; switching mode does not lift a Stop.
+- **Read cursors** — expanding an unread card (or reading the session in the
+  native main view) posts an ack; the state is persisted host-side, so the card
+  stays grey after a refresh.
 
 ## Configuration
 
@@ -93,14 +125,34 @@ through the panel API and is persisted in `state.json`:
 POST /dsh-agent-board/api/v2/policy
 { "policy": { "maxConcurrent": 2, "maxSwitches": 2,
               "allowedWorkspaces": [], "allowedProviders": [],
+              "allowedPermissions": ["read-only","workspace-write"],
+              "executionBackend": "board",
               "allowCloudFallback": false,
               "routeChain": [{"provider":"opencode-go","model":"deepseek-v4.1-flash"}],
-              "autonomyBudget": {"maxTasksPerHour": 6} } }
+              "autonomyBudget": {"maxTasksPerHour": 6},
+              "retryCooldownMs": 300000, "maxAttemptsPerRevision": 4 } }
 ```
 
-`allowedWorkspaces: []` means “every workspace visible to the board”. The
-Task Board is read-only from the board’s perspective; the launched session does
-the claiming and the `in_review` transition, and `done` stays human-only.
+`allowedWorkspaces: []` means “every workspace visible to the board”.
+`executionBackend: "board"` creates the session itself (model-level failover
+possible); `"taskboard"` delegates to the Task Board executor
+(`POST /dsh-taskboard/tasks/:id/run`: execution record, permission, worktree)
+and explicitly gives up model failover. The Task Board ledger is read-only from
+the board's perspective; the launched session does the claiming and the
+`in_review` transition, and `done` stays human-only (the Task Board tool refuses
+it at code level).
+
+## Safety invariants
+
+- `done` is never set by the board or a launched agent.
+- The Task Board ledger is never written by the board; only the official
+  `taskboard_*` tools act on it, from the launched session.
+- One host owns `$DSH_HOME/agent-board` at a time (`instance.lock`); a secondary
+  host serves reads and refuses mutations (409 `not_primary`).
+- A card cannot widen its own permission beyond the policy mandate; a worktree
+  card is skipped (board backend) or delegated (taskboard backend) — never run
+  unisolated in the shared workspace.
+- The plugin never pushes, merges or opens a PR.
 
 ## HTTP API (same-origin, authenticated by the DSH browser session)
 
@@ -134,7 +186,10 @@ node --check src/client.js && node --check src/host/index.js
 - [Architecture](docs/ARCHITECTURE.md)
 - [Contracts & adapters](docs/CONTRACTS.md)
 - [Provenance & compatibility](docs/PROVENANCE.md)
-- [Test report (PASS/PARTIAL/FAIL)](docs/TEST-REPORT.md)
+- [Test report (PASS/PARTIAL/FAIL, GOAL 2 §10–§14)](docs/TEST-REPORT.md)
+- [GOAL 2 audit matrix (implemented/partial/absent/not-testable)](docs/GOAL2-AUDIT-MATRIX.md)
+- [GOAL 2 delivery, rollback and isolated-profile trial](docs/GOAL2-DELIVERY.md)
+- [Isolated-instance E2E evidence (redacted)](docs/e2e/isolated-instance-evidence.md)
 - [Known limitations & backlog](docs/LIMITATIONS.md)
 
 ## License
