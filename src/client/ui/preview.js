@@ -20,16 +20,20 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
     facts.push(h('dt', { key: `${key}-t` }, label), h('dd', { key: `${key}-d`, className: mono ? 'dab-mono' : undefined }, value))
   }
   fact('project', dabT('project'), node.projectId === 'unassigned' ? dabT('unassigned') : node.projectTitle)
+  fact('provider', dabT('provider'), node.model?.provider, true)
   fact('model', dabT('model'), node.model?.source === 'unknown' ? null : dabModelTitle(node.model), true)
+  fact('modelSource', dabT('modelSource'), node.model?.source === 'unknown' ? null : (node.model.source === 'assignment' ? dabT('modelAssignment') : dabT('modelNative')))
   fact('task', dabT('task'), node.taskId, true)
   fact('goal', dabT('goal'), node.goal)
   if (parent !== null && parent !== undefined) {
     facts.push(h('dt', { key: 'parent-t' }, dabT('parent')), h('dd', { key: 'parent-d' },
       h('button', { type: 'button', className: 'dab-linkish', onClick: () => onSelect(parent.id) }, parent.title)))
-  } else if (node.orphan) {
+  if (node.orphan) {
     fact('parent', dabT('parent'), `${dabT('orphan')} (${String(node.parentId).slice(-12)})`, true)
   } else if (node.parentCycle) {
     fact('parent', dabT('parent'), dabT('cycle'))
+  } else if (node.parentContested) {
+    fact('parent', dabT('parent'), `${dabT('contest')} (${(node.parentCandidates ?? []).join(', ')})`, true)
   }
   if (node.activity) fact('activity', dabT('activity'), `${node.activity.turns} ${dabT('turns')} · ${node.activity.steps} ${dabT('steps')}`)
   fact('cwd', dabT('directory'), node.cwd, true)
@@ -44,6 +48,12 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
   if (node.status === 'recovering') {
     facts.push(h('dt', { key: 'rec-t' }, dabT('recovery')), h('dd', { key: 'rec-d', className: 'dab-alert' }, node.statusReason ?? ''))
   }
+  if (node.status === 'interrupted') {
+    facts.push(h('dt', { key: 'int-t' }, dabT('statusInterrupted')), h('dd', { key: 'int-d', className: 'dab-wait' }, node.statusReason ?? ''))
+  }
+  if (node.status === 'provider_unavailable') {
+    facts.push(h('dt', { key: 'pu-t' }, dabT('statusProviderUnavailable')), h('dd', { key: 'pu-d', className: 'dab-alert' }, node.statusReason ?? ''))
+  }
 
   return h('aside', { className: 'dab-inspector', 'aria-label': `${dabT('finalAnswer')} — ${node.title}`, 'data-inspector-for': node.id },
     h('div', { className: 'dab-insp-head' },
@@ -52,6 +62,13 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
     h('div', { className: 'dab-insp-status' },
       h('span', { className: 'dab-mark', 'data-status': node.status, 'data-seen': node.seen === true ? 'true' : 'false', 'aria-hidden': 'true' }),
       dabStatusLabel(node.status),
+      // Compact provider/model chip, same tokens as the card. Unknown stays
+      // explicit instead of borrowing the deployment default model.
+      h('span', {
+        className: 'dab-chip',
+        'data-source': typeof node.model?.source === 'string' ? node.model.source : 'unknown',
+        title: dabModelTitle(node.model),
+      }, dabModelChipText(node.model) ?? dabT('noModel')),
       node.role ? h('span', { className: 'dab-tag' }, node.role) : null,
       node.origin === 'subagent' ? h('span', { className: 'dab-tag' }, dabT('subagent')) : null),
     node.status === 'waiting_user'

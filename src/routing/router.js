@@ -157,3 +157,47 @@ export function shouldReturnToPrimary({ policy, currentRoute, atSafeBoundary }) 
   if (routeKey(primary) === routeKey(currentRoute)) return false
   return atSafeBoundary === true
 }
+
+/**
+ * Decide whether the failover chain may come back to the PRIMARY route.
+ *
+ * The primary is `policy.routeChain[0]` — the route an operator asked for
+ * first. Coming back is only honest at a safe boundary: a finished attempt
+ * (or a fresh attempt that never started, e.g. after a restart). It is never
+ * allowed while a stream is in flight, because a partial stream cannot be
+ * replayed and the new route must finish the turn instead.
+ *
+ * The call is pure and mirrors `planRoute()`: the host calls it when a turn
+ * ends, before the next turn starts, and applies `route` for the next turn.
+ *
+ * Refusal reasons, in check order:
+ *   `no_current_route`  — nothing is routed yet (no failover to undo);
+ *   `no_primary_route`  — the chain has no primary (empty/absent chain);
+ *   `already_primary`   — the current route IS the primary;
+ *   `not_at_safe_boundary` — the host did not confirm a finished attempt;
+ *   `provider_not_allowed` / `cloud_fallback_forbidden_for_local_model`;
+ *   `primary_in_cooldown` — provider health still marks the primary cooling.
+ *
+ * @param {object} input
+ * @param {object} [input.policy]          resolved policy (see resolveRoutePolicy)
+ * @param {object} [input.currentRoute]    route of the last attempt
+ * @param {boolean} [input.atSafeBoundary] true only after a finished attempt
+ * @param {object} [input.health]          provider health table
+ * @param {number} [input.now]             clock for the cooldown check
+ * @returns {{action:'return'|'keep', route:object|null, reason:string}}
+ */
+export function planPrimaryReturn({ policy, currentRoute, atSafeBoundary, health, now = Date.now() } = {}) {
+  const keep = reason => ({ action: 'keep', route: currentRoute ?? null, reason })
+  if (currentRoute === undefined || currentRoute === null) return keep('no_current_route')
+  const primary = policy?.routeChain?.[0]
+  if (primary === undefined || primary === null) return keep('no_primary_route')
+  if (routeKey(primary) === routeKey(currentRoute)) return keep('already_primary')
+  if (atSafeBoundary !== true) return keep('not_at_safe_boundary')
+  // Keep the historical predicate as the single safe-boundary authority: a
+  // change there must not silently widen what this planner allows.
+  if (!shouldReturnToPrimary({ policy, currentRoute, atSafeBoundary })) return keep('primary_return_refused')
+  const allowed = isRouteAllowed(primary, policy, currentRoute)
+  if (!allowed.ok) return keep(allowed.reason)
+  if (cooldownActive(health, primary.provider, now)) return keep('primary_in_cooldown')
+  return { action: 'return', route: primary, reason: 'primary_available' }
+}

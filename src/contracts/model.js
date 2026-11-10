@@ -15,17 +15,27 @@ export const SCHEMA_VERSION = 1
 /**
  * Native-ish agent statuses. Never derived from elapsed time alone.
  *
- * Five different facts are kept apart on purpose:
+ * Six different facts are kept apart on purpose:
  *   - session state      -> `unavailable` (the runtime says the agent is gone)
  *   - turn state         -> `running` / `finished_*` / `failed`
  *   - agent state        -> `waiting_user` / `recovering`
+ *   - assignment state   -> `interrupted` (lease/assignment facts: the launch
+ *                           was stopped, superseded, or its agent vanished)
+ *   - provider state     -> `provider_unavailable` (only from an injected
+ *                           provider-health table inside its cooldown)
  *   - task state         -> the Task Board ledger (never mirrored as a status)
  *   - user read state    -> `finished_unread` vs `finished_read` (persisted ack)
+ *
+ * There is deliberately NO `waiting_agent` status: DSH exposes no trustworthy
+ * per-session signal for "this agent is waiting for another agent" (see
+ * `supervisor/projection.js` for the investigated sources).
  */
 export const STATUS = Object.freeze({
   RUNNING: 'running',
   WAITING_USER: 'waiting_user',
   RECOVERING: 'recovering',
+  INTERRUPTED: 'interrupted',
+  PROVIDER_UNAVAILABLE: 'provider_unavailable',
   FINISHED_UNREAD: 'finished_unread',
   FINISHED_READ: 'finished_read',
   FAILED: 'failed',
@@ -39,9 +49,11 @@ export const STATUS_VALUES = Object.freeze(Object.values(STATUS))
 /** Statuses that mean "the user still has something to look at". */
 export const ATTENTION_STATUSES = Object.freeze([
   STATUS.WAITING_USER,
+  STATUS.INTERRUPTED,
   STATUS.FAILED,
   STATUS.FINISHED_UNREAD,
   STATUS.RECOVERING,
+  STATUS.PROVIDER_UNAVAILABLE,
 ])
 
 /** Ranking used for stable ordering (lower = shown first). */
@@ -49,6 +61,8 @@ export const STATUS_RANK = Object.freeze({
   [STATUS.WAITING_USER]: 0,
   [STATUS.RUNNING]: 1,
   [STATUS.RECOVERING]: 2,
+  [STATUS.INTERRUPTED]: 2.2,
+  [STATUS.PROVIDER_UNAVAILABLE]: 2.4,
   [STATUS.FINISHED_UNREAD]: 3,
   [STATUS.FAILED]: 4,
   [STATUS.IDLE]: 5,
@@ -92,16 +106,29 @@ export const DEFAULT_POLICY = Object.freeze({
   // 'board' = the board creates the session (model-level failover possible, but
   // the Task Board gets no execution record). 'taskboard' = the Task Board's own
   // executor creates the session/execution/worktree (no model-level failover).
+  // 'contract' = the unified backend: the Task Board leases the canonical
+  // execution, the board creates the session (so it can fail over) and attaches
+  // it to that execution. It requires the negotiated execution contract.
   executionBackend: 'board',
   allowCloudFallback: false,
   autoResumeOnRestart: false,
   serializeSameWorkspace: false,
   routeChain: [],
+  // Per-project route overrides, keyed by DSH workspace id. Only the documented
+  // route keys are kept; the pure resolver (`routing/policy.js`) applies the
+  // most-restrictive-wins layering. Unknown keys are dropped, never trusted.
+  projectPolicies: {},
   autonomyBudget: { maxTasksPerHour: 6 },
+  // Bounded request budget for the sliding hour. Only metrics the board can
+  // substantiate are enforced; token/cost stay explicitly unavailable.
+  requestsPerHour: 120,
+  // The board may attach a settlement report composed from OBSERVED facts when
+  // the agent did not submit one. Set to false to never write a report.
+  contractBoardReport: true,
 })
 
 const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
-const EXECUTION_BACKENDS = Object.freeze(['board', 'taskboard'])
+const EXECUTION_BACKENDS = Object.freeze(['board', 'taskboard', 'contract'])
 
 export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
   const mode = isMode(input.mode) ? input.mode : fallback.mode
@@ -127,9 +154,14 @@ export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     autoResumeOnRestart: input.autoResumeOnRestart === true,
     serializeSameWorkspace: input.serializeSameWorkspace === true,
     routeChain: normalizeRouteChain(input.routeChain ?? fallback.routeChain),
+    projectPolicies: normalizeProjectPolicies(input.projectPolicies ?? fallback.projectPolicies),
     autonomyBudget: {
       maxTasksPerHour: clampInt(input.autonomyBudget?.maxTasksPerHour, 0, 100, fallback.autonomyBudget.maxTasksPerHour),
     },
+    requestsPerHour: clampInt(input.requestsPerHour, 1, 10_000, fallback.requestsPerHour ?? 120),
+    contractBoardReport: input.contractBoardReport === undefined
+      ? fallback.contractBoardReport !== false
+      : input.contractBoardReport === true,
   }
 }
 
@@ -249,6 +281,34 @@ export function normalizeRouteChain(chain) {
 function uniqueStrings(value) {
   if (!Array.isArray(value)) return []
   return [...new Set(value.filter(entry => typeof entry === 'string' && entry !== ''))]
+}
+
+/**
+ * Sanitize the per-project route overrides. A project layer carries a subset of
+ * the documented route keys; anything else is dropped so a hand-edited policy
+ * file cannot smuggle an unrelated limit into the resolver.
+ */
+export function normalizeProjectPolicies(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {}
+  const out = {}
+  let kept = 0
+  for (const [workspaceId, layer] of Object.entries(value)) {
+    if (kept >= 20) break
+    if (typeof workspaceId !== 'string' || workspaceId === '') continue
+    if (layer === null || typeof layer !== 'object' || Array.isArray(layer)) continue
+    const entry = {}
+    if (Array.isArray(layer.allowedProviders)) entry.allowedProviders = uniqueStrings(layer.allowedProviders)
+    if (Array.isArray(layer.deniedProviders)) entry.deniedProviders = uniqueStrings(layer.deniedProviders)
+    if (typeof layer.allowCloudFallback === 'boolean') entry.allowCloudFallback = layer.allowCloudFallback
+    if (layer.locality === 'local' || layer.localOnly === true) entry.locality = 'local'
+    for (const key of ['maxRetries', 'maxSwitches', 'cooldownMs']) {
+      if (Number.isFinite(Number(layer[key]))) entry[key] = Math.trunc(Number(layer[key]))
+    }
+    if (Array.isArray(layer.routeChain)) entry.routeChain = normalizeRouteChain(layer.routeChain)
+    out[workspaceId] = entry
+    kept += 1
+  }
+  return out
 }
 
 function clampInt(value, min, max, fallback) {

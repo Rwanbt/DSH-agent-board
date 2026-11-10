@@ -61,6 +61,67 @@ export function fenceAccepts(assignment, fencingToken) {
   return Number(assignment?.fencingToken) === Number(fencingToken)
 }
 
+/**
+ * The next monotonic fencing token for an assignment (1 for a new record).
+ * The host stores it on the new lease and passes it to the writer; every
+ * later takeover must move it forward.
+ *
+ * @param {object} [assignment]
+ * @returns {number}
+ */
+export function nextFencingToken(assignment) {
+  const current = Number(assignment?.fencingToken)
+  return (Number.isFinite(current) && current > 0 ? Math.trunc(current) : 0) + 1
+}
+
+const TERMINAL_ASSIGNMENT_STATUSES = Object.freeze([
+  LEASE_STATUS.DONE,
+  LEASE_STATUS.FAILED,
+  LEASE_STATUS.STOPPED,
+  LEASE_STATUS.INTERRUPTED,
+  LEASE_STATUS.SUPERSEDED,
+])
+
+/**
+ * Enforce fencing on a write: a writer may act on an assignment only when it
+ * presents the CURRENT token of a LIVE lease.
+ *
+ * Refusals (in check order):
+ *   `unknown_assignment`    — no assignment record;
+ *   `invalid_fencing_token` — the presented/recorded token is not a number;
+ *   `stale_fencing_token`   — another owner has already taken over;
+ *   `lease_released`        — the assignment ended, or has no lease;
+ *   `lease_expired`         — the TTL elapsed (the watchdog may take over);
+ *   `wrong_owner`           — optional `owner` does not match the lease owner.
+ *
+ * @param {object} input
+ * @param {object} input.assignment
+ * @param {number} input.token
+ * @param {number} [input.now]
+ * @param {string} [input.owner]  expected lease owner, when known
+ * @returns {{ok:boolean, reason:string}}
+ */
+export function checkFencing({ assignment, token, now = Date.now(), owner } = {}) {
+  if (assignment === null || typeof assignment !== 'object' || Array.isArray(assignment)) {
+    return { ok: false, reason: 'unknown_assignment' }
+  }
+  const presented = Number(token)
+  if (!Number.isFinite(presented)) return { ok: false, reason: 'invalid_fencing_token' }
+  const current = Number(assignment.fencingToken)
+  if (!Number.isFinite(current)) return { ok: false, reason: 'invalid_fencing_token' }
+  if (Math.trunc(current) !== Math.trunc(presented)) return { ok: false, reason: 'stale_fencing_token' }
+  if (TERMINAL_ASSIGNMENT_STATUSES.includes(assignment.status)) return { ok: false, reason: 'lease_released' }
+  const lease = assignment.lease
+  if (lease === null || typeof lease !== 'object') return { ok: false, reason: 'lease_released' }
+  if (!leaseValid(lease, now)) return { ok: false, reason: 'lease_expired' }
+  // Owner is optional so the existing three-field call stays valid; when the
+  // host knows which session/owner is writing, a mismatch is refused.
+  if (owner !== undefined && owner !== null && lease.owner !== String(owner)) {
+    return { ok: false, reason: 'wrong_owner' }
+  }
+  return { ok: true, reason: 'ok' }
+}
+
 export function assignmentKey({ taskId, revision, attempt = 0 }) {
   return idempotencyKey({ workItem: `taskboard:${taskId}`, revision: revision ?? 0, attempt })
 }
@@ -88,7 +149,10 @@ export function ensureAssignment(assignments, draft) {
     sessionId: draft.sessionId ?? null,
     previousSessionId: draft.previousSessionId ?? null,
     model: draft.model ?? null,
-    backend: draft.backend === 'taskboard' ? 'taskboard' : 'board',
+    // Three execution owners: the board (plain session), the Task Board executor
+    // (`taskboard`) and the negotiated `contract` backend (Task Board execution,
+    // board-created session). An unknown value falls back to `board`.
+    backend: draft.backend === 'taskboard' ? 'taskboard' : (draft.backend === 'contract' ? 'contract' : 'board'),
     executionId: typeof draft.executionId === 'string' ? draft.executionId : null,
     routeHistory: Array.isArray(draft.routeHistory) ? draft.routeHistory : [],
     switches: Number(draft.switches) || 0,

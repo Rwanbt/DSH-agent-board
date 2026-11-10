@@ -15,7 +15,7 @@
  * @module dsh-agent-board/client/core
  */
 
-import { buildProjection } from '../supervisor/projection.js'
+import { buildProjection, modelHistoryOf, resolveNodeModel, trackModelChange } from '../supervisor/projection.js'
 import { aggregateSubtrees } from '../board/view.js'
 
 export function emptyHostState() {
@@ -30,12 +30,32 @@ export function emptyHostState() {
     assignments: [],
     routeEvents: [],
     health: {},
+    gone: {},
     lastTick: null,
     sync: null,
     adapters: { adapters: [], executors: [] },
     audit: [],
     reconcileNotes: [],
   }
+}
+
+/** Every session id the projection can create a node for (rows + catalogs). */
+function knownSessionIds(list) {
+  const ids = new Set()
+  const byId = list?.byId !== null && typeof list?.byId === 'object' ? list.byId : {}
+  for (const id of Array.isArray(list?.ids) ? list.ids : Object.keys(byId)) ids.add(String(id))
+  const projections = list?.projectionsBySession
+  if (projections !== null && typeof projections === 'object') {
+    for (const projection of Object.values(projections)) {
+      const catalog = projection?.values?.subagentCatalog
+      if (!Array.isArray(catalog)) continue
+      for (const entry of catalog) {
+        const id = typeof entry?.sessionId === 'string' ? entry.sessionId : (typeof entry?.id === 'string' ? entry.id : null)
+        if (id !== null) ids.add(id)
+      }
+    }
+  }
+  return ids
 }
 
 /**
@@ -64,6 +84,12 @@ export function createBoardStore(ctx, options = {}) {
       return undefined
     }
   }
+
+  // Model identity is per SESSION id, never per model: a native `model/selection`
+  // change updates the chip and appends one entry to that card's visible route
+  // history. The memory lives here (not in the pure projection) and is bounded.
+  const modelMemory = new Map()
+  const modelResolver = typeof options.modelOf === 'function' ? options.modelOf : undefined
 
   // Native sources can notify many times per second while agents stream.
   // Notifications are coalesced: at most one projection rebuild per window.
@@ -113,7 +139,30 @@ export function createBoardStore(ctx, options = {}) {
     const workspaces = (() => {
       try { return service('workspaces')?.list?.getSnapshot?.() ?? {} } catch { return {} }
     })()
-    const projection = buildProjection({ list, statusMap, hostState: host, workspaces, now: Date.now() })
+    const now = Date.now()
+    // Resolve every known model first, so a change is recorded AND rendered in
+    // the same snapshot (no "chip now, history next tick" gap).
+    const projectionsBySession = list?.projectionsBySession
+    const assignmentBySession = new Map()
+    for (const assignment of Array.isArray(host?.assignments) ? host.assignments : []) {
+      if (typeof assignment?.sessionId === 'string') assignmentBySession.set(assignment.sessionId, assignment)
+    }
+    for (const id of knownSessionIds(list)) {
+      const row = list?.byId?.[id]
+      const model = resolveNodeModel({
+        sessionId: id, row, assignment: assignmentBySession.get(id) ?? null, modelOf: modelResolver, projectionsBySession,
+      })
+      trackModelChange(modelMemory, id, model, now)
+    }
+    const projection = buildProjection({
+      list,
+      statusMap,
+      hostState: host,
+      workspaces,
+      now,
+      modelOf: modelResolver,
+      modelHistory: modelHistoryOf(modelMemory),
+    })
     stats.rebuilds += 1
     return {
       projection,

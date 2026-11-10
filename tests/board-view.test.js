@@ -196,3 +196,48 @@ test('CSS: only the running mark animates and reduced motion disables it', async
   assert.match(animated[0], /data-status="running"/)
   assert.match(css, /prefers-reduced-motion: reduce[\s\S]*data-status="running"\]::before \{ animation: none/)
 })
+
+test('the new statuses use theme tokens for their mark and stay non-animated', async () => {
+  const css = await readFile(new URL('../src/client/ui/styles.js', import.meta.url), 'utf8')
+  assert.match(css, /\.dab-mark\[data-status="interrupted"\]::before \{[^}]*--dsw-alias-state-warn-primary/)
+  assert.match(css, /\.dab-mark\[data-status="provider_unavailable"\]::before \{[^}]*--dsw-alias-state-error-primary/)
+  // The model chip reuses the existing fill token and the unknown state is explicit.
+  assert.match(css, /\.dab-chip \{[^}]*var\(--dab-chip-fill\)/)
+  assert.match(css, /\.dab-chip\[data-source="unknown"\]/)
+  assert.doesNotMatch(css, /dab-chip[^}]*animation/)
+})
+
+test('interrupted and provider_unavailable cards are attention and sort deterministically', () => {
+  const NOW_MS = 1_800_000_000_000
+  const row = (id, extra = {}) => ({ id, displayTitle: id, running: false, updatedAt: NOW_MS - 60_000, projectionValues: { modelSelection: { lastUsed: { provider: 'opencode-go', model: 'm' } } }, ...extra })
+  const projection = buildProjection({
+    list: {
+      ids: ['stopped', 'outage', 'unread', 'calm'],
+      byId: { stopped: row('stopped'), outage: row('outage'), unread: row('unread'), calm: row('calm') },
+      projectionsBySession: {},
+    },
+    statusMap: new Map(),
+    hostState: {
+      assignments: [{ id: 'a', sessionId: 'stopped', status: 'interrupted', endedAt: NOW_MS - 1000 }],
+      turnEnd: {
+        outage: { at: NOW_MS - 2000, kind: 'error' },
+        unread: { at: NOW_MS - 1000, kind: 'completed' },
+        calm: { at: NOW_MS - 9000, kind: 'completed' },
+      },
+      acks: { calm: { seenAt: NOW_MS - 8000 } },
+      health: { 'opencode-go': { cooldownUntil: NOW_MS + 60_000, lastFailureAt: NOW_MS - 2000 } },
+    },
+    now: NOW_MS,
+  })
+  for (const id of ['stopped', 'outage']) assert.equal(isAttention(projection.byId.get(id)), true)
+  assert.equal(isAttention(projection.byId.get('calm')), false)
+  const ranked = [...projection.nodes].sort(sortAttention).map(node => node.id)
+  assert.equal(ranked[0], 'unread', 'an unread result is still the first non-running tier')
+  assert.ok(ranked.indexOf('stopped') < ranked.indexOf('outage'), 'interrupted before provider outage')
+  assert.ok(ranked.indexOf('outage') < ranked.indexOf('calm'))
+  const view = buildBoardView(projection, { now: NOW_MS })
+  const shown = view.projects.flatMap(entry => entry.trees).map(tree => tree.node.id)
+  assert.ok(shown.includes('stopped'))
+  assert.ok(shown.includes('outage'))
+  assert.ok(!shown.includes('calm'), 'a read result stays history')
+})

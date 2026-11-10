@@ -11,7 +11,8 @@ function dabCardSignature(props) {
   const node = props.node
   return [
     node.id, node.status, node.seen, node.title, node.role, node.updatedAt, node.expectedAction, node.waitingDetail,
-    node.model?.model, node.model?.provider, node.taskId, node.error, node.orphan, node.parentCycle,
+    node.model?.model, node.model?.provider, node.model?.reasoningEffort, node.model?.source, node.recentlyFinished,
+    node.taskId, node.error, node.orphan, node.parentCycle, node.parentReason, node.interrupted, node.providerUnavailable,
     props.selected, props.root, props.hiddenChildren, props.totalChildren, props.collapsed, props.expanded, props.groupActive,
     props.depth, props.compact, props.nowBucket,
   ].join('|')
@@ -20,10 +21,10 @@ function dabCardSignature(props) {
 function DabAgentCardImpl(props) {
   const { node, selected, root, arbiter, onToggleBranch, onRevealHidden, hiddenChildren, totalChildren, collapsed, expanded, groupActive, depth, compact } = props
   const h = React.createElement
-  const model = dabModelText(node.model)
+  const modelLabel = dabModelText(node.model)
   const age = dabFormatAge(node.updatedAt)
   const statusText = dabStatusLabel(node.status)
-  const calm = !(node.status === 'running' || node.status === 'recovering' || node.status === 'waiting_user' || node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true))
+  const calm = !(node.status === 'running' || node.status === 'recovering' || node.status === 'waiting_user' || node.status === 'finished_unread' || node.status === 'interrupted' || node.status === 'provider_unavailable' || (node.status === 'failed' && node.seen !== true))
   const label = [node.title, statusText, node.role, groupActive ? dabT('groupActive') : null].filter(Boolean).join(' — ')
 
   const stop = event => { event.stopPropagation() }
@@ -40,11 +41,21 @@ function DabAgentCardImpl(props) {
   ))
   const meta = []
   if (node.role) meta.push(h('span', { key: 'role', className: 'dab-role' }, node.role))
-  if (model !== null && (root || !node.role)) meta.push(h('span', { key: 'model', title: dabModelTitle(node.model) }, model))
+  // Compact model chip: the card's provider/model fact, never a guess. The
+  // height does not change: it lives in the existing single-line meta row.
+  if (root || !node.role) {
+    meta.push(h('span', {
+      key: 'model',
+      className: 'dab-chip',
+      'data-source': typeof node.model?.source === 'string' ? node.model.source : 'unknown',
+      title: dabModelTitle(node.model),
+    }, modelLabel ?? dabT('noModel')))
+  }
   if (node.taskId) meta.push(h('span', { key: 'task', className: 'dab-mono', title: `${dabT('task')} ${node.taskId}` }, node.taskId))
   if (age !== '') meta.push(h('span', { key: 'age', title: node.updatedAt ? new Date(node.updatedAt).toLocaleString() : '' }, age))
   if (node.orphan) meta.push(h('span', { key: 'orphan', title: dabT('orphan') }, `⚠ ${dabT('orphan')}`))
   if (node.parentCycle) meta.push(h('span', { key: 'cycle', title: dabT('cycle') }, `⚠ ${dabT('cycle')}`))
+  if (node.parentContested) meta.push(h('span', { key: 'contested', title: `${dabT('cycle')} · ${(node.parentCandidates ?? []).join(', ')}` }, `⚠ ${dabT('contest')}`))
   const metaWithSeps = []
   meta.forEach((item, index) => {
     if (index > 0) metaWithSeps.push(h('span', { key: `sep-${index}`, className: 'dab-sep', 'aria-hidden': 'true' }))
@@ -92,6 +103,8 @@ function DabAgentCardImpl(props) {
     'data-root': root ? 'true' : 'false',
     'data-selected': selected ? 'true' : 'false',
     'data-calm': calm ? 'true' : 'false',
+    // Non-status view hint: the turn really completed inside the recent window.
+    'data-recent': node.recentlyFinished === true ? 'true' : 'false',
     'data-depth': String(depth ?? 0),
     title: dabT('keyboardHint'),
     onClick: event => arbiter.click(node.id, event.detail),

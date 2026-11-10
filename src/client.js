@@ -22,17 +22,27 @@ const SCHEMA_VERSION = 1
 /**
  * Native-ish agent statuses. Never derived from elapsed time alone.
  *
- * Five different facts are kept apart on purpose:
+ * Six different facts are kept apart on purpose:
  *   - session state      -> `unavailable` (the runtime says the agent is gone)
  *   - turn state         -> `running` / `finished_*` / `failed`
  *   - agent state        -> `waiting_user` / `recovering`
+ *   - assignment state   -> `interrupted` (lease/assignment facts: the launch
+ *                           was stopped, superseded, or its agent vanished)
+ *   - provider state     -> `provider_unavailable` (only from an injected
+ *                           provider-health table inside its cooldown)
  *   - task state         -> the Task Board ledger (never mirrored as a status)
  *   - user read state    -> `finished_unread` vs `finished_read` (persisted ack)
+ *
+ * There is deliberately NO `waiting_agent` status: DSH exposes no trustworthy
+ * per-session signal for "this agent is waiting for another agent" (see
+ * `supervisor/projection.js` for the investigated sources).
  */
 const STATUS = Object.freeze({
   RUNNING: 'running',
   WAITING_USER: 'waiting_user',
   RECOVERING: 'recovering',
+  INTERRUPTED: 'interrupted',
+  PROVIDER_UNAVAILABLE: 'provider_unavailable',
   FINISHED_UNREAD: 'finished_unread',
   FINISHED_READ: 'finished_read',
   FAILED: 'failed',
@@ -46,9 +56,11 @@ const STATUS_VALUES = Object.freeze(Object.values(STATUS))
 /** Statuses that mean "the user still has something to look at". */
 const ATTENTION_STATUSES = Object.freeze([
   STATUS.WAITING_USER,
+  STATUS.INTERRUPTED,
   STATUS.FAILED,
   STATUS.FINISHED_UNREAD,
   STATUS.RECOVERING,
+  STATUS.PROVIDER_UNAVAILABLE,
 ])
 
 /** Ranking used for stable ordering (lower = shown first). */
@@ -56,6 +68,8 @@ const STATUS_RANK = Object.freeze({
   [STATUS.WAITING_USER]: 0,
   [STATUS.RUNNING]: 1,
   [STATUS.RECOVERING]: 2,
+  [STATUS.INTERRUPTED]: 2.2,
+  [STATUS.PROVIDER_UNAVAILABLE]: 2.4,
   [STATUS.FINISHED_UNREAD]: 3,
   [STATUS.FAILED]: 4,
   [STATUS.IDLE]: 5,
@@ -99,16 +113,25 @@ const DEFAULT_POLICY = Object.freeze({
   // 'board' = the board creates the session (model-level failover possible, but
   // the Task Board gets no execution record). 'taskboard' = the Task Board's own
   // executor creates the session/execution/worktree (no model-level failover).
+  // 'contract' = the unified backend: the Task Board leases the canonical
+  // execution, the board creates the session (so it can fail over) and attaches
+  // it to that execution. It requires the negotiated execution contract.
   executionBackend: 'board',
   allowCloudFallback: false,
   autoResumeOnRestart: false,
   serializeSameWorkspace: false,
   routeChain: [],
   autonomyBudget: { maxTasksPerHour: 6 },
+  // Bounded request budget for the sliding hour. Only metrics the board can
+  // substantiate are enforced; token/cost stay explicitly unavailable.
+  requestsPerHour: 120,
+  // The board may attach a settlement report composed from OBSERVED facts when
+  // the agent did not submit one. Set to false to never write a report.
+  contractBoardReport: true,
 })
 
 const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
-const EXECUTION_BACKENDS = Object.freeze(['board', 'taskboard'])
+const EXECUTION_BACKENDS = Object.freeze(['board', 'taskboard', 'contract'])
 
 function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
   const mode = isMode(input.mode) ? input.mode : fallback.mode
@@ -137,6 +160,10 @@ function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     autonomyBudget: {
       maxTasksPerHour: clampInt(input.autonomyBudget?.maxTasksPerHour, 0, 100, fallback.autonomyBudget.maxTasksPerHour),
     },
+    requestsPerHour: clampInt(input.requestsPerHour, 1, 10_000, fallback.requestsPerHour ?? 120),
+    contractBoardReport: input.contractBoardReport === undefined
+      ? fallback.contractBoardReport !== false
+      : input.contractBoardReport === true,
   }
 }
 
@@ -272,19 +299,40 @@ function clampInt(value, min, max, fallback) {
  * Everything here is pure. The input is the client `sessions.list` snapshot
  * (ids / byId / projectionsBySession), the unified `uiSession.sessionStatus`
  * map, and the host-side facts the board persists (last assistant segment,
- * turn-end kind, read cursor, assignments). The output is one node per agent,
- * grouped by project, with a filiation tree.
+ * turn-end kind, read cursor, assignments, provider health). The output is one
+ * node per agent, grouped by project, with a filiation tree.
  *
  * Status rules (non-negotiable):
  *   - pendingInteraction  -> waiting_user (even while running)
  *   - running             -> running (animated ring)
- *   - turn ended in error -> failed
+ *   - assignment stopped / superseded / failed / interrupted -> interrupted
+ *   - turn ended in error -> failed, or provider_unavailable when the model's
+ *                            provider is inside an injected cooldown
  *   - turn ended, not consulted -> finished_unread (green)
  *   - turn ended, consulted     -> finished_read (grey)
- *   - no signal at all          -> idle, or unknown for a disconnected row
+ *   - runtime says the agent is gone -> unavailable
+ *   - session deleted / no live row  -> unknown with an explicit reason
+ *   - no signal at all          -> idle
  *
  * Elapsed time alone NEVER produces running/finished. A missing row is
- * `unknown`, never `finished`.
+ * `unknown`, never `finished`. `recentlyFinished` is a view flag derived from a
+ * real turn-end timestamp inside a bounded window; it is NOT a status, so a
+ * quiet card never turns green because it aged.
+ *
+ * `waiting_agent` deliberately does NOT exist. The candidate native sources
+ * were investigated: `agent/status` only carries idle/running, `subagents`
+ * exposes awaited helpers (`waitForChildren`, `drainChildren`) and lifecycle
+ * events for the CHILD (`subagent/start`, `subagent/end`) but no per-parent
+ * "blocked on a child" projection value, and `uiSession.sessionStatus` only
+ * carries running / pendingInteraction / completionUnread. While a parent
+ * awaits a child its row stays `running: true`, so "waiting for another agent"
+ * cannot be told apart from "working" without inventing a signal. The board
+ * therefore keeps showing the truthful `running` status.
+ *
+ * Model/provider rule: the model chip is a fact, not a default. It comes from
+ * the session's own `modelSelection` projection (native) or from the board
+ * assignment that launched the card, never from the deployment default model
+ * and never copied from an assignment onto a native session.
  *
  * @module dsh-agent-board/supervisor/projection
  */
@@ -295,6 +343,23 @@ const PENDING_ACTION = Object.freeze({
   'plan-review': 'plan-review',
   question: 'question',
 })
+
+/** Where a displayed model came from. Never guessed. */
+const MODEL_SOURCE = Object.freeze({
+  NATIVE: 'native',
+  ASSIGNMENT: 'assignment',
+  UNKNOWN: 'unknown',
+})
+
+/** One bounded window for the non-status `recentlyFinished` view flag. */
+const RECENT_FINISHED_MS = 5 * 60 * 1000
+
+/** Assignment statuses that mean "this launch did not finish its work". */
+const TERMINAL_NEGATIVE_ASSIGNMENT_STATUSES = Object.freeze(['interrupted', 'failed', 'stopped', 'superseded'])
+
+/** How many model changes are kept in the visible history of one card. */
+const MODEL_HISTORY_LIMIT = 8
+
 
 function normalizeSessions(listSnapshot) {
   const snapshot = listSnapshot !== null && typeof listSnapshot === 'object' ? listSnapshot : {}
@@ -356,20 +421,33 @@ function isSubagentRow(row) {
 /**
  * Classify one agent and explain why. `live` is its unified status entry,
  * `turnEnd` the last turn/end fact the host recorded, `ack` the persisted read
- * cursor, `assignment` the board assignment bound to that session.
+ * cursor, `assignment` the board assignment bound to that session, `gone` the
+ * host fact that the session was removed, `provider` the resolved provider (for
+ * the injected-health check) and `health` the host provider-health table.
  *
  * The returned `reason`/`source`/`at` triple is what the UI shows in the card
  * details: a status without provenance is not allowed to be invented.
  *
  * @returns {{status:string, reason:string, source:string, at:number|null}}
  */
-function classifyStatusDetailed({ row, live, turnEnd, ack, assignment }) {
+function classifyStatusDetailed({ row, live, turnEnd, ack, assignment, gone = false, goneAt = null, provider = null, health = null, now = Date.now() }) {
   const end = turnEnd !== null && typeof turnEnd === 'object' ? turnEnd : null
   const seenAt = Number(ack?.seenAt)
   const hasSeen = Number.isFinite(seenAt)
   const updatedAt = Number(row?.updatedAt)
   const nativeEnd = nativeTurnEndOf(row)
+  const endAt = Number(end?.at)
+  const sessionAt = Math.max(Number.isFinite(updatedAt) ? updatedAt : 0, Number.isFinite(endAt) ? endAt : 0) || null
+  const outage = providerOutageOf(health, provider, { now, sessionAt })
+  const failed = (reason, source, at, extra = {}) => outage !== null
+    ? { status: STATUS.PROVIDER_UNAVAILABLE, reason: outage.reason, source: 'host_health', at: outage.at, healthUntil: outage.cooldownUntil, ...extra }
+    : { status: STATUS.FAILED, reason, source, at, ...extra }
 
+  if (gone === true) {
+    // The host observed the session leave the runtime. Cache or journal data can
+    // still hold a turn end for it: never turn that into "finished".
+    return { status: STATUS.UNKNOWN, reason: 'session_gone', source: 'host_registry', at: Number(goneAt) || null }
+  }
   if (row === undefined && live === undefined && assignment === undefined) {
     return { status: STATUS.UNKNOWN, reason: 'no_row_and_no_live_status', source: 'none', at: null }
   }
@@ -383,25 +461,51 @@ function classifyStatusDetailed({ row, live, turnEnd, ack, assignment }) {
   if (assignment?.status === 'recovering') {
     return { status: STATUS.RECOVERING, reason: `route_recovery:${truncate(String(assignment.reason ?? 'provider_failure'), 120)}`, source: 'assignment', at: Number(assignment.recoveringAt) || null }
   }
+  // Assignment/lease truth: a launch that was stopped, superseded, interrupted
+  // or failed is not "finished" and not "idle". A turn end NEWER than the
+  // assignment (the session was resumed and answered) wins over it.
+  if (assignment !== null && assignment !== undefined && TERMINAL_NEGATIVE_ASSIGNMENT_STATUSES.includes(assignment.status)) {
+    const assignmentEnd = Number(assignment.endedAt) || Number(assignment.startedAt) || null
+    const turnIsNewer = Number.isFinite(endAt) && assignmentEnd !== null && endAt > assignmentEnd
+    if (!turnIsNewer) {
+      const detail = nonEmptyString(assignment.reason) ?? nonEmptyString(assignment.error)
+      return {
+        status: STATUS.INTERRUPTED,
+        reason: `assignment:${assignment.status}${detail !== null ? `:${truncate(detail, 120)}` : ''}`,
+        source: 'assignment',
+        at: assignmentEnd,
+      }
+    }
+  }
+  if (row === undefined) {
+    // No live session row. Even a stale turn end, unread flag or ack in the host
+    // state cannot prove it finished: the runtime no longer knows it.
+    return { status: STATUS.UNKNOWN, reason: 'no_row_for_session', source: 'none', at: null }
+  }
   // Failure truth: the host-recorded turn end wins, then the native lifecycle
   // fact. A recovered failure (a later turn started) is no longer a failure.
   if (end !== null && ERROR_TURN_KINDS.includes(end.kind) && end.recoveredAt === undefined) {
-    const covered = hasSeen && Number.isFinite(Number(end.at)) && seenAt >= Number(end.at)
-    return { status: STATUS.FAILED, reason: `turn_end:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null, _seen: covered }
+    const covered = hasSeen && Number.isFinite(endAt) && seenAt >= endAt
+    return failed(`turn_end:${end.kind}`, 'host_turn_end', Number.isFinite(endAt) ? endAt : null, { _seen: covered })
   }
   if ((end === null || end.recoveredAt !== undefined) && nativeEnd !== null && ERROR_TURN_KINDS.includes(nativeEnd.reason)) {
     // Native-only failure: the host may have missed the event (restart). There
     // is no board ack that could have covered it, so it stays unread/visible.
-    return { status: STATUS.FAILED, reason: `native_turn_end:${nativeEnd.reason}`, source: 'session_projection', at: null, _seen: false }
+    return failed(`native_turn_end:${nativeEnd.reason}`, 'session_projection', null, { _seen: false })
   }
-  if (end !== null && Number.isFinite(Number(end.at))) {
+  // Session truth: an agent the runtime reports as gone is `unavailable`, even
+  // when a turn end was recorded earlier. It is never "finished".
+  if (row?.agentAvailable === false) {
+    return { status: STATUS.UNAVAILABLE, reason: 'agent_not_available', source: 'session_row', at: null }
+  }
+  if (end !== null && Number.isFinite(endAt)) {
     if (INTERRUPTED_TURN_KINDS.includes(end.kind)) {
-      return { status: STATUS.IDLE, reason: `turn_ended:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null }
+      return { status: STATUS.IDLE, reason: `turn_ended:${end.kind}`, source: 'host_turn_end', at: endAt }
     }
-    if (hasSeen && seenAt >= Number(end.at)) {
-      return { status: STATUS.FINISHED_READ, reason: `ack_after_turn:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null }
+    if (hasSeen && seenAt >= endAt) {
+      return { status: STATUS.FINISHED_READ, reason: `ack_after_turn:${end.kind}`, source: 'host_turn_end', at: endAt }
     }
-    return { status: STATUS.FINISHED_UNREAD, reason: `turn_end:${end.kind}_not_acknowledged`, source: 'host_turn_end', at: Number(end.at) || null }
+    return { status: STATUS.FINISHED_UNREAD, reason: `turn_end:${end.kind}_not_acknowledged`, source: 'host_turn_end', at: endAt }
   }
   if (live?.completionUnread === true) {
     // The native runtime also tracks unread completions. An explicit board ack
@@ -414,13 +518,8 @@ function classifyStatusDetailed({ row, live, turnEnd, ack, assignment }) {
   }
   if (nativeEnd !== null) {
     // A turn that completed before the board observed it is history, not "new".
+    // A native-only turn end has no timestamp, so it can never be "recent".
     return { status: STATUS.FINISHED_READ, reason: `native_history:${nativeEnd.reason}`, source: 'session_projection', at: null }
-  }
-  if (row?.agentAvailable === false) {
-    return { status: STATUS.UNAVAILABLE, reason: 'agent_not_available', source: 'session_row', at: null }
-  }
-  if (row === undefined) {
-    return { status: STATUS.UNKNOWN, reason: 'no_row_for_session', source: 'none', at: null }
   }
   return { status: STATUS.IDLE, reason: 'no_activity', source: 'session_row', at: null }
 }
@@ -465,30 +564,175 @@ function waitingDetailOf(row) {
   return null
 }
 
-function modelOf(row, assignment) {
-  const candidates = [
-    assignment?.model,
-    row?.model,
-    row?.modelSelection,
-    row?.projectionValues?.modelSelection?.lastUsed,
-    row?.projectionValues?.modelSelection?.next,
-    row?.header?.model,
-    row?.llm,
-  ]
-  for (const candidate of candidates) {
-    if (candidate === null || typeof candidate !== 'object') continue
-    const provider = typeof candidate.provider === 'string' ? candidate.provider : undefined
-    const model = typeof candidate.model === 'string' ? candidate.model : (typeof candidate.id === 'string' ? candidate.id : undefined)
-    if (provider !== undefined || model !== undefined) {
-      return {
-        provider: provider ?? '—',
-        model: model ?? '—',
-        reasoningEffort: typeof candidate.reasoningEffort === 'string' ? candidate.reasoningEffort : null,
-        source: assignment?.model !== undefined ? 'assignment' : 'session',
-      }
+function nonEmptyString(value) {
+  return typeof value === 'string' && value !== '' ? value : null
+}
+
+/**
+ * Normalize any accepted model shape to `{provider, model, reasoningEffort}`.
+ * Returns `null` when nothing is known: a partial shape with neither a
+ * provider nor a model is not a model.
+ */
+function normalizeModelInfo(value) {
+  if (typeof value === 'string') {
+    const [provider, model] = value.split('/')
+    if (nonEmptyString(provider) !== null && nonEmptyString(model) !== null) {
+      return { provider, model, reasoningEffort: null }
+    }
+    return null
+  }
+  if (value === null || typeof value !== 'object') return null
+  const provider = nonEmptyString(value.provider)
+  const model = nonEmptyString(value.model) ?? nonEmptyString(value.id)
+  if (provider === null && model === null) return null
+  return { provider, model, reasoningEffort: nonEmptyString(value.reasoningEffort) }
+}
+
+/**
+ * The default native resolver: ONLY the `modelSelection` projection value DSH
+ * publishes per session (`modelSelection.lastUsed`, fed by the `model/selection`
+ * session event). No other field is consulted — a session whose model is
+ * unknown must stay unknown instead of inheriting the deployment default.
+ */
+function nativeModelOf(row) {
+  return normalizeModelInfo(row?.projectionValues?.modelSelection?.lastUsed)
+}
+
+/**
+ * Resolve the model shown on one card.
+ *
+ * Contract the host may inject as `modelOf`:
+ *   `modelOf(sessionId: string, row: object|undefined) -> {provider, model, reasoningEffort?} | "provider/model" | null | undefined`
+ * The injected resolver is authoritative: when it is supplied, its `null`
+ * result means "unknown" and no other field is used as a fallback. A throw is
+ * treated as unknown (the panel must never crash on a resolver).
+ *
+ * Precedence: injected/native `modelSelection` projection, then the board
+ * assignment that launched the card (a real fact about that launch). An
+ * assignment route is NEVER copied onto a native session: an assignment only
+ * exists for a card the board launched.
+ */
+function resolveNodeModel({ sessionId, row, assignment = null, modelOf, projectionsBySession = null }) {
+  const id = String(sessionId ?? row?.id ?? '')
+  let native = null
+  if (typeof modelOf === 'function') {
+    try {
+      native = normalizeModelInfo(modelOf(id, row))
+    } catch {
+      native = null
+    }
+  } else {
+    native = nativeModelOf(row) ?? normalizeModelInfo(projectionsBySession?.[id]?.values?.modelSelection?.lastUsed)
+  }
+  if (assignment !== null && typeof assignment === 'object') {
+    const assigned = normalizeModelInfo(assignment.model)
+    if (assigned !== null) return { ...assigned, source: MODEL_SOURCE.ASSIGNMENT }
+  }
+  if (native !== null) return { ...native, source: MODEL_SOURCE.NATIVE }
+  return { provider: null, model: null, reasoningEffort: null, source: MODEL_SOURCE.UNKNOWN }
+}
+
+/** `provider/model` label of a resolved model, or null when unknown. */
+function modelLabelOf(model) {
+  if (model === null || model === undefined || typeof model !== 'object') return null
+  const provider = nonEmptyString(model.provider)
+  const name = nonEmptyString(model.model)
+  if (provider === null && name === null) return null
+  return `${provider ?? '?'}/${name ?? '?'}`
+}
+
+/**
+ * Remember the last model observed for a session and return the history entry
+ * appended when it CHANGED (or null). The memory map is owned by the caller
+ * (the client store) and bounded, so a long-lived panel cannot grow forever.
+ * Identity stays the session id: a model change never creates a second card.
+ */
+function trackModelChange(memory, sessionId, model, now = Date.now(), { limit = MODEL_HISTORY_LIMIT, maxSessions = 512 } = {}) {
+  if (memory === null || typeof memory?.get !== 'function' || typeof memory.set !== 'function') return null
+  const label = modelLabelOf(model)
+  if (label === null) return null
+  const id = String(sessionId)
+  const current = memory.get(id)
+  if (current === undefined) {
+    memory.set(id, { last: label, entries: [] })
+    if (memory.size > maxSessions) {
+      const oldest = memory.keys().next()
+      if (oldest.done !== true) memory.delete(oldest.value)
+    }
+    return null
+  }
+  if (current.last === label) return null
+  const entry = { from: current.last, to: label, at: Number(now) || null, reason: 'model_change', source: 'native' }
+  current.last = label
+  current.entries = [...current.entries, entry].slice(-limit)
+  return entry
+}
+
+/** Snapshot `{ sessionId: entries[] }` of the model history memory. */
+function modelHistoryOf(memory) {
+  const out = {}
+  if (memory === null || memory === undefined || typeof memory.entries !== 'function') return out
+  for (const [id, record] of memory) {
+    if (Array.isArray(record?.entries) && record.entries.length > 0) out[id] = record.entries
+  }
+  return out
+}
+
+/** Merge two route/model histories, dropping exact duplicates, order preserved. */
+function mergeRouteHistory(assignmentHistory, nativeHistory) {
+  const out = []
+  const seen = new Set()
+  const sources = [Array.isArray(assignmentHistory) ? assignmentHistory : [], Array.isArray(nativeHistory) ? nativeHistory : []]
+  for (const entries of sources) {
+    for (const entry of entries) {
+      if (entry === null || typeof entry !== 'object') continue
+      const key = `${entry.from ?? ''}>${entry.to ?? ''}@${entry.at ?? ''}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(entry)
     }
   }
-  return { provider: '—', model: '—', reasoningEffort: null, source: 'unknown' }
+  return out
+}
+
+function historyFor(modelHistory, sessionId) {
+  if (modelHistory === null || modelHistory === undefined) return []
+  const value = typeof modelHistory.get === 'function' ? modelHistory.get(sessionId) : modelHistory[sessionId]
+  if (Array.isArray(value)) return value
+  if (Array.isArray(value?.entries)) return value.entries
+  return []
+}
+
+/**
+ * The provider outage affecting a session, or null.
+ *
+ * Only an INJECTED health table can produce `provider_unavailable`: the entry
+ * must still be cooling down (`cooldownUntil > now`) and the session must not
+ * have moved since the outage was observed (a later completed turn means this
+ * card is not blocked). No health table -> the status never appears.
+ */
+function providerOutageOf(health, provider, { now = Date.now(), sessionAt = null } = {}) {
+  if (health === null || health === undefined || typeof health !== 'object') return null
+  const name = nonEmptyString(provider)
+  if (name === null) return null
+  const entry = health[name]
+  if (entry === null || typeof entry !== 'object') return null
+  const cooldownUntil = Number(entry.cooldownUntil)
+  if (!Number.isFinite(cooldownUntil) || cooldownUntil <= now) return null
+  const lastFailureAt = Number(entry.lastFailureAt)
+  const failureAt = Number.isFinite(lastFailureAt) ? lastFailureAt : null
+  const activityAt = Number(sessionAt)
+  if (failureAt !== null && Number.isFinite(activityAt) && activityAt > failureAt) return null
+  const kind = nonEmptyString(entry.lastFailureKind) ?? 'unknown'
+  return {
+    provider: name,
+    cooldownUntil,
+    kind,
+    at: failureAt,
+    // The reason carries the exact cooldown deadline so the card explains when
+    // the provider is expected back, without a second status field.
+    reason: `provider_cooldown:${name}:${kind}:until:${new Date(cooldownUntil).toISOString()}`,
+  }
 }
 
 /**
@@ -613,13 +857,48 @@ function titleOf(row, catalogEntry, nodeId) {
  * @param {object} input.workspaces      { items, archivedSessionIds }
  * @param {number} input.now
  */
-function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now = Date.now() }) {
+/** Session ids the host observed leaving the runtime (`api-session/removed`). */
+function indexGone(hostState) {
+  const index = new Map()
+  const source = hostState?.gone ?? hostState?.removedSessions
+  if (source === null || source === undefined) return index
+  if (Array.isArray(source)) {
+    for (const entry of source) {
+      if (typeof entry === 'string') index.set(entry, null)
+      else if (typeof entry?.sessionId === 'string') index.set(entry.sessionId, Number(entry.at) || null)
+    }
+    return index
+  }
+  if (typeof source === 'object') {
+    for (const [id, value] of Object.entries(source)) index.set(id, typeof value === 'number' ? value : (Number(value?.at) || null))
+  }
+  return index
+}
+
+/**
+ * Build the tree.
+ *
+ * @param {object} input
+ * @param {object} input.list            sessions.list snapshot
+ * @param {Map|object} input.statusMap   uiSession.sessionStatus snapshot
+ * @param {object} input.hostState       { previews, turnEnd, acks, assignments, health, gone }
+ * @param {object} input.workspaces      { items, archivedSessionIds }
+ * @param {number} input.now
+ * @param {Function} [input.modelOf]     host resolver: `(sessionId, row) => model|null`
+ * @param {object|Map} [input.modelHistory] per-session model changes `{ [id]: entry[] }`
+ * @param {object} [input.health]        provider health table (defaults to hostState.health)
+ * @param {number} [input.recentWindowMs] window of the non-status `recentlyFinished` flag
+ */
+function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now = Date.now(), modelOf, modelHistory = null, health, recentWindowMs = RECENT_FINISHED_MS }) {
   const normalized = normalizeSessions(list)
   const assignmentsBySession = new Map()
   for (const assignment of hostState.assignments ?? []) {
     if (typeof assignment?.sessionId === 'string') assignmentsBySession.set(assignment.sessionId, assignment)
   }
   const archived = new Set(Array.isArray(workspaces.archivedSessionIds) ? workspaces.archivedSessionIds.map(String) : [])
+  const goneIndex = indexGone(hostState)
+  const healthTable = health !== undefined ? health : hostState?.health
+  const windowMs = Number.isFinite(Number(recentWindowMs)) ? Number(recentWindowMs) : RECENT_FINISHED_MS
 
   /** @type {Map<string, object>} */
   const nodes = new Map()
@@ -640,10 +919,18 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
   }
   // Catalog entries may describe children whose row is not in the flat list yet
   // (or is filtered out). They still belong to the tree, as unknown if needed.
+  // Two catalogs may claim the same child: every claim is recorded, never
+  // silently collapsed, so the anomaly stays visible and deterministic.
   const catalogParentOf = new Map()
-  for (const parentId of Object.keys(normalized.projectionsBySession)) {
+  const catalogClaimants = new Map()
+  // Sorted parents keep the "first claim" fallback deterministic.
+  const catalogParents = Object.keys(normalized.projectionsBySession).sort()
+  for (const parentId of catalogParents) {
     for (const entry of catalogChildrenOf(normalized.projectionsBySession, parentId)) {
       ensureNode(entry.id, normalized.byId[entry.id])
+      const claimants = catalogClaimants.get(entry.id) ?? []
+      if (!claimants.includes(parentId)) claimants.push(parentId)
+      catalogClaimants.set(entry.id, claimants)
       if (!catalogParentOf.has(entry.id)) catalogParentOf.set(entry.id, parentId)
     }
   }
@@ -652,7 +939,7 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
   // Team member names declared by a parent (role labels for its children).
   const roleOf = new Map()
   const catalogEntryOf = new Map()
-  for (const parentId of Object.keys(normalized.projectionsBySession)) {
+  for (const parentId of catalogParents) {
     for (const entry of catalogChildrenOf(normalized.projectionsBySession, parentId)) catalogEntryOf.set(entry.id, entry)
   }
   for (const id of normalized.ids) {
@@ -670,14 +957,38 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
     const turnEnd = hostState.turnEnd?.[node.id] ?? null
     const ack = hostState.acks?.[node.id] ?? null
     const assignment = assignmentsBySession.get(node.id) ?? null
-    const detail = classifyStatusDetailed({ row, live, turnEnd, ack, assignment })
+    const model = resolveNodeModel({ sessionId: node.id, row, assignment, modelOf, projectionsBySession: normalized.projectionsBySession })
+    const detail = classifyStatusDetailed({
+      row,
+      live,
+      turnEnd,
+      ack,
+      assignment,
+      gone: goneIndex.has(node.id),
+      goneAt: goneIndex.get(node.id),
+      provider: model.provider,
+      health: healthTable,
+      now,
+    })
     const status = detail.status
-    const parentId = row !== undefined ? parentIdOf(row) : null
     const project = row !== undefined ? resolveProject(row, workspaceIndex) : UNASSIGNED_PROJECT
-    const resolvedParent = parentId ?? (catalogParentOf.get(node.id) ?? null)
+    // Parentage: the session row's own lineage wins, a catalog claim is the
+    // fallback. A disagreement is flagged, never silently re-parented.
+    const rowParent = row !== undefined ? parentIdOf(row) : null
+    const claimants = catalogClaimants.get(node.id) ?? []
+    const catalogParent = claimants.length > 0 ? [...claimants].sort()[0] : (catalogParentOf.get(node.id) ?? null)
+    const resolvedParent = rowParent ?? catalogParent
+    const parentSource = rowParent !== null ? 'session_row' : (catalogParent !== null ? 'subagent_catalog' : 'none')
+    const contested = claimants.length > 1 || (rowParent !== null && claimants.length > 0 && !claimants.includes(rowParent))
     const ownRunning = row?.running === true || live?.running === true
     const preview = previewOf(hostState, node.id, assignment, row, ownRunning)
     const stats = row?.projectionValues?.sessionStats
+    const endAt = Number(turnEnd?.at)
+    const endKind = typeof turnEnd?.kind === 'string' ? turnEnd.kind : null
+    const completedTurnEnd = endKind !== null && !ERROR_TURN_KINDS.includes(endKind) && !INTERRUPTED_TURN_KINDS.includes(endKind) && endKind !== 'unknown'
+    // A real finish timestamp inside a bounded window. A future timestamp (host
+    // and panel clocks differ) still counts: the flag must not flicker.
+    const recentlyFinished = completedTurnEnd && Number.isFinite(endAt) && now - endAt <= windowMs
     // Explicit acknowledgement covers a failure only when a cursor exists and
     // it is at/after the recorded failure. A native-only failure has no such
     // cursor: it stays visible instead of silently leaving the home view.
@@ -685,6 +996,10 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
     out.push({
       id: node.id,
       parentId: resolvedParent,
+      parentSource,
+      parentReason: null,
+      parentCandidates: contested ? [...claimants].sort() : [],
+      parentContested: contested,
       projectId: project.id,
       projectTitle: project.title,
       projectSource: project.source,
@@ -699,7 +1014,8 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
       seen,
       expectedAction: expectedActionOf(live, row),
       waitingDetail: waitingDetailOf(row),
-      model: modelOf(row, assignment),
+      model,
+      modelSource: model.source,
       preview,
       activity: stats !== undefined && stats !== null
         ? { turns: Number(stats.turns) || 0, steps: Number(stats.steps) || 0, toolMs: Number(stats.toolMs) || 0, llmMs: Number(stats.llmMs) || 0 }
@@ -709,6 +1025,8 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
       unread: status === STATUS.FINISHED_UNREAD,
       waiting: status === STATUS.WAITING_USER,
       recovering: status === STATUS.RECOVERING,
+      interrupted: status === STATUS.INTERRUPTED,
+      providerUnavailable: status === STATUS.PROVIDER_UNAVAILABLE,
       failed: status === STATUS.FAILED,
       unavailable: status === STATUS.UNAVAILABLE,
       archived: archived.has(node.id),
@@ -718,35 +1036,25 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
       viewing: Number(row?.retainedBy?.mainView) > 0,
       agentAvailable: typeof row?.agentAvailable === 'boolean' ? row.agentAvailable : null,
       updatedAt: Number(row?.updatedAt) || null,
+      // Non-status view facts: a real turn end inside the window, and the
+      // provider cooldown deadline when the status is `provider_unavailable`.
+      recentlyFinished,
+      finishedAt: completedTurnEnd && Number.isFinite(endAt) ? endAt : null,
+      healthUntil: Number(detail.healthUntil) || null,
+      gone: goneIndex.has(node.id),
       assignmentId: assignment?.id ?? null,
       taskId: assignment?.taskId ?? null,
       assignmentStatus: assignment?.status ?? null,
       previousSessionId: assignment?.previousSessionId ?? null,
-      routeHistory: Array.isArray(assignment?.routeHistory) ? assignment.routeHistory : [],
+      routeHistory: mergeRouteHistory(assignment?.routeHistory, historyFor(modelHistory, node.id)),
       children: [],
       now,
     })
   }
 
-  // Link children. A malformed parent chain (self-parent or cycle) is broken at
-  // the node that closes the loop: it becomes a root flagged `parentCycle`.
+  linkHierarchy(out)
+
   const byId = new Map(out.map(node => [node.id, node]))
-  for (const node of out) {
-    if (node.parentId === null) continue
-    if (!byId.has(node.parentId)) { node.orphan = true; continue }
-    const seen = new Set([node.id])
-    let cursor = byId.get(node.parentId)
-    let cycle = false
-    while (cursor !== undefined) {
-      if (seen.has(cursor.id)) { cycle = true; break }
-      seen.add(cursor.id)
-      cursor = cursor.parentId !== null && !cursor.parentCycle ? byId.get(cursor.parentId) : undefined
-    }
-    if (cycle) { node.parentCycle = true; continue }
-  }
-  for (const node of out) {
-    if (node.parentId !== null && !node.orphan && !node.parentCycle) byId.get(node.parentId).children.push(node.id)
-  }
   const isRoot = node => node.parentId === null || node.orphan === true || node.parentCycle === true
   // Descendants live in their root's project: one tree is never split.
   const inherit = (node, project) => {
@@ -758,6 +1066,66 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
 
   const roots = out.filter(isRoot)
   return { nodes: out, byId, roots, projects: groupProjects(out), counts: summarize(out) }
+}
+
+/**
+ * Link the filiation tree in O(n).
+ *
+ *   - orphan: the claimed parent is not in the projection. The claim is kept
+ *     (`parentId` unchanged, `parentReason: 'orphan_parent'`) and the node
+ *     becomes a root: it is never re-parented silently.
+ *   - cycle: the malformed chain is broken at the SMALLEST id of the cycle, so
+ *     the result never depends on the input order. That node keeps its
+ *     `parentId` but is a root (`parentCycle`, `parentReason: 'cycle_detected'`).
+ *   - contested: a child claimed by two catalogs (or by its row and a catalog)
+ *     keeps the deterministic parent and carries `parentContested` plus the
+ *     candidate list.
+ *
+ * Each anomaly is also appended to `statusReason`, so the card explains the
+ * parentage warning next to the status provenance.
+ */
+function linkHierarchy(out) {
+  const byId = new Map(out.map(node => [node.id, node]))
+  // Colouring walk over the functional "parent" graph: every node enters one
+  // path once, so the whole pass is linear (the old per-node upward walk was
+  // quadratic on a deep chain).
+  const color = new Map()
+  for (const node of out) {
+    if ((color.get(node.id) ?? 0) !== 0) continue
+    const path = []
+    let cursor = node
+    while (cursor !== undefined) {
+      const state = color.get(cursor.id) ?? 0
+      if (state !== 0) break
+      color.set(cursor.id, 1)
+      path.push(cursor)
+      cursor = cursor.parentId !== null && byId.has(cursor.parentId) ? byId.get(cursor.parentId) : undefined
+    }
+    if (cursor !== undefined && color.get(cursor.id) === 1) {
+      const start = path.findIndex(candidate => candidate.id === cursor.id)
+      const cycle = start === -1 ? path : path.slice(start)
+      let breaker = cycle[0]
+      for (const member of cycle) if (member.id < breaker.id) breaker = member
+      breaker.parentCycle = true
+      breaker.parentReason = 'cycle_detected'
+    }
+    for (const visited of path) color.set(visited.id, 2)
+  }
+  for (const node of out) {
+    if (node.parentId !== null && !byId.has(node.parentId)) {
+      node.orphan = true
+      node.parentReason = node.parentReason ?? 'orphan_parent'
+    } else if (node.parentContested === true) {
+      node.parentReason = node.parentReason ?? 'contested_parents'
+    }
+    if (node.parentReason !== null && node.parentReason !== undefined) {
+      node.statusReason = `${node.statusReason} · ${node.parentReason}`
+    }
+  }
+  for (const node of out) {
+    if (node.parentId !== null && !node.orphan && !node.parentCycle) byId.get(node.parentId).children.push(node.id)
+  }
+  return byId
 }
 
 function groupProjects(nodes) {
@@ -775,6 +1143,8 @@ function summarize(nodes) {
     running: 0,
     waiting_user: 0,
     recovering: 0,
+    interrupted: 0,
+    provider_unavailable: 0,
     finished_unread: 0,
     finished_read: 0,
     failed: 0,
@@ -867,6 +1237,11 @@ function isAttention(node) {
   if (node.status === STATUS.WAITING_USER) return true
   if (node.status === STATUS.RUNNING) return true
   if (node.status === STATUS.RECOVERING) return true
+  // A stopped/superseded launch is unfinished work: never hidden as history.
+  if (node.status === STATUS.INTERRUPTED) return true
+  // The model's provider is inside an injected cooldown: the card is blocked
+  // on something outside its own turn and needs a decision.
+  if (node.status === STATUS.PROVIDER_UNAVAILABLE) return true
   if (node.status === STATUS.FINISHED_UNREAD) return true
   if (node.status === STATUS.FAILED && node.seen !== true) return true
   return false
@@ -878,7 +1253,9 @@ function attentionRank(node) {
     case STATUS.WAITING_USER: return 0
     case STATUS.RUNNING: return 1
     case STATUS.FINISHED_UNREAD: return 2
+    case STATUS.INTERRUPTED: return 2.2
     case STATUS.RECOVERING: return 2.5
+    case STATUS.PROVIDER_UNAVAILABLE: return 2.7
     case STATUS.FAILED: return node.seen === true ? 5 : 3
     default: return 4 + (STATUS_RANK[node?.status] ?? 9) / 10
   }
@@ -1074,12 +1451,14 @@ function buildBoardView(projection, options = {}) {
 
 /** Global counters, independent from what is displayed. */
 function boardCounts(projection) {
-  const counts = { total: 0, running: 0, waiting: 0, unread: 0, failed: 0, history: 0, roots: projection.roots.length }
+  const counts = { total: 0, running: 0, waiting: 0, unread: 0, failed: 0, interrupted: 0, provider_unavailable: 0, history: 0, roots: projection.roots.length }
   for (const node of projection.nodes) {
     counts.total += 1
     if (node.status === STATUS.RUNNING) counts.running += 1
     else if (node.status === STATUS.WAITING_USER) counts.waiting += 1
     else if (node.status === STATUS.FINISHED_UNREAD) counts.unread += 1
+    else if (node.status === STATUS.INTERRUPTED) counts.interrupted += 1
+    else if (node.status === STATUS.PROVIDER_UNAVAILABLE) counts.provider_unavailable += 1
     else if (node.status === STATUS.FAILED && node.seen !== true) counts.failed += 1
     else counts.history += 1
   }
@@ -1241,12 +1620,32 @@ function emptyHostState() {
     assignments: [],
     routeEvents: [],
     health: {},
+    gone: {},
     lastTick: null,
     sync: null,
     adapters: { adapters: [], executors: [] },
     audit: [],
     reconcileNotes: [],
   }
+}
+
+/** Every session id the projection can create a node for (rows + catalogs). */
+function knownSessionIds(list) {
+  const ids = new Set()
+  const byId = list?.byId !== null && typeof list?.byId === 'object' ? list.byId : {}
+  for (const id of Array.isArray(list?.ids) ? list.ids : Object.keys(byId)) ids.add(String(id))
+  const projections = list?.projectionsBySession
+  if (projections !== null && typeof projections === 'object') {
+    for (const projection of Object.values(projections)) {
+      const catalog = projection?.values?.subagentCatalog
+      if (!Array.isArray(catalog)) continue
+      for (const entry of catalog) {
+        const id = typeof entry?.sessionId === 'string' ? entry.sessionId : (typeof entry?.id === 'string' ? entry.id : null)
+        if (id !== null) ids.add(id)
+      }
+    }
+  }
+  return ids
 }
 
 /**
@@ -1275,6 +1674,12 @@ function createBoardStore(ctx, options = {}) {
       return undefined
     }
   }
+
+  // Model identity is per SESSION id, never per model: a native `model/selection`
+  // change updates the chip and appends one entry to that card's visible route
+  // history. The memory lives here (not in the pure projection) and is bounded.
+  const modelMemory = new Map()
+  const modelResolver = typeof options.modelOf === 'function' ? options.modelOf : undefined
 
   // Native sources can notify many times per second while agents stream.
   // Notifications are coalesced: at most one projection rebuild per window.
@@ -1324,7 +1729,30 @@ function createBoardStore(ctx, options = {}) {
     const workspaces = (() => {
       try { return service('workspaces')?.list?.getSnapshot?.() ?? {} } catch { return {} }
     })()
-    const projection = buildProjection({ list, statusMap, hostState: host, workspaces, now: Date.now() })
+    const now = Date.now()
+    // Resolve every known model first, so a change is recorded AND rendered in
+    // the same snapshot (no "chip now, history next tick" gap).
+    const projectionsBySession = list?.projectionsBySession
+    const assignmentBySession = new Map()
+    for (const assignment of Array.isArray(host?.assignments) ? host.assignments : []) {
+      if (typeof assignment?.sessionId === 'string') assignmentBySession.set(assignment.sessionId, assignment)
+    }
+    for (const id of knownSessionIds(list)) {
+      const row = list?.byId?.[id]
+      const model = resolveNodeModel({
+        sessionId: id, row, assignment: assignmentBySession.get(id) ?? null, modelOf: modelResolver, projectionsBySession,
+      })
+      trackModelChange(modelMemory, id, model, now)
+    }
+    const projection = buildProjection({
+      list,
+      statusMap,
+      hostState: host,
+      workspaces,
+      now,
+      modelOf: modelResolver,
+      modelHistory: modelHistoryOf(modelMemory),
+    })
     stats.rebuilds += 1
     return {
       projection,
@@ -1493,6 +1921,8 @@ const DAB_STRINGS = {
     statusRunning: 'En cours',
     statusWaiting: 'Attend votre action',
     statusRecovering: 'Récupération en cours',
+    statusInterrupted: 'Interrompu',
+    statusProviderUnavailable: 'Fournisseur indisponible',
     statusUnavailable: 'Agent indisponible',
     statusUnread: 'Terminé — non consulté',
     statusRead: 'Terminé',
@@ -1538,6 +1968,7 @@ const DAB_STRINGS = {
     goal: 'Objectif',
     orphan: 'parent inconnu',
     cycle: 'parenté invalide (cycle)',
+    contest: 'parenté contestée',
     unassigned: 'Non attribué',
     emptyAttention: 'Rien à traiter : aucun agent en cours, en attente ou fraîchement terminé.',
     emptyHint: 'L\u2019historique reste accessible via « Historique » ou la recherche.',
@@ -1548,6 +1979,11 @@ const DAB_STRINGS = {
     loadMore: 'Charger plus',
     archived: 'archivée',
     noModel: 'modèle inconnu',
+    provider: 'Fournisseur',
+    modelNative: 'natif',
+    modelAssignment: 'board',
+    modelUnknown: 'inconnu',
+    modelSource: 'Source du modèle',
     proposals: 'Proposition en attente',
     approve: 'Approuver',
     reject: 'Refuser',
@@ -1601,6 +2037,8 @@ const DAB_STRINGS = {
     statusRunning: 'Running',
     statusWaiting: 'Needs your action',
     statusRecovering: 'Recovering',
+    statusInterrupted: 'Interrupted',
+    statusProviderUnavailable: 'Provider unavailable',
     statusUnavailable: 'Agent unavailable',
     statusUnread: 'Finished — not viewed',
     statusRead: 'Finished',
@@ -1646,6 +2084,7 @@ const DAB_STRINGS = {
     goal: 'Goal',
     orphan: 'unknown parent',
     cycle: 'invalid parentage (cycle)',
+    contest: 'contested parentage',
     unassigned: 'Unassigned',
     emptyAttention: 'Nothing to handle: no agent running, waiting or freshly finished.',
     emptyHint: 'History stays available through “History” or the search.',
@@ -1656,6 +2095,11 @@ const DAB_STRINGS = {
     loadMore: 'Load more',
     archived: 'archived',
     noModel: 'unknown model',
+    provider: 'Provider',
+    modelNative: 'native',
+    modelAssignment: 'board',
+    modelUnknown: 'unknown',
+    modelSource: 'Model source',
     proposals: 'Pending proposal',
     approve: 'Approve',
     reject: 'Reject',
@@ -1712,6 +2156,8 @@ const DAB_STATUS_TEXT = {
   running: 'statusRunning',
   waiting_user: 'statusWaiting',
   recovering: 'statusRecovering',
+  interrupted: 'statusInterrupted',
+  provider_unavailable: 'statusProviderUnavailable',
   finished_unread: 'statusUnread',
   finished_read: 'statusRead',
   failed: 'statusFailed',
@@ -1742,16 +2188,34 @@ function dabFormatAge(at, now = Date.now()) {
   return `${Math.round(hours / 24)} j`
 }
 
+/**
+ * Chip text: the model name when known, else the provider, else null (the card
+ * then renders the explicit "unknown model" label). Never a placeholder for a
+ * value the board does not have.
+ */
 function dabModelText(model) {
-  if (model === null || model === undefined || (model.model === '—' && model.provider === '—')) return null
-  const name = typeof model.model === 'string' && model.model !== '—' ? model.model : '?'
-  return name
+  if (model === null || model === undefined || model.source === 'unknown') return null
+  if (typeof model.model === 'string' && model.model !== '') return model.model
+  if (typeof model.provider === 'string' && model.provider !== '') return model.provider
+  return null
 }
 
 function dabModelTitle(model) {
   if (model === null || model === undefined || model.source === 'unknown') return dabT('noModel')
+  const provider = typeof model.provider === 'string' && model.provider !== '' ? model.provider : '?'
+  const name = typeof model.model === 'string' && model.model !== '' ? model.model : '?'
   const effort = typeof model.reasoningEffort === 'string' && model.reasoningEffort !== '' ? ` · ${model.reasoningEffort}` : ''
-  return `${model.provider}/${model.model}${effort}`
+  const source = model.source === 'assignment' ? ` · ${dabT('modelAssignment')}` : ` · ${dabT('modelNative')}`
+  return `${provider}/${name}${effort}${source}`
+}
+
+/** Compact `provider/model` chip label for the inspector, null when unknown. */
+function dabModelChipText(model) {
+  if (model === null || model === undefined || model.source === 'unknown') return null
+  const provider = typeof model.provider === 'string' && model.provider !== '' ? model.provider : '?'
+  const name = typeof model.model === 'string' && model.model !== '' ? model.model : '?'
+  const effort = typeof model.reasoningEffort === 'string' && model.reasoningEffort !== '' ? ` · ${model.reasoningEffort}` : ''
+  return `${provider}/${name}${effort}`
 }
 
 
@@ -1872,6 +2336,8 @@ const DAB_CSS = `
 .dab-card:focus-visible { box-shadow: 0 0 0 2px var(--dsw-alias-brand-primary); }
 .dab-card[data-selected="true"] { box-shadow: 0 0 0 1.5px var(--dsw-alias-brand-primary); }
 .dab-card[data-status="waiting_user"] { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, var(--dab-card-fill)); }
+.dab-card[data-status="interrupted"] { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 7%, var(--dab-card-fill)); }
+.dab-card[data-status="provider_unavailable"] { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 7%, var(--dab-card-fill)); }
 .dab-card[data-status="failed"][data-seen="false"] { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 9%, var(--dab-card-fill)); }
 .dab-card[data-calm="true"] .dab-name { color: var(--dsw-alias-label-secondary); }
 .dab-card-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -1884,6 +2350,13 @@ const DAB_CSS = `
 .dab-card-foot { display: flex; align-items: center; gap: 6px; margin-top: 2px; padding-left: 22px; }
 .dab-pill { display: inline-flex; align-items: center; gap: 4px; border: 0; border-radius: 999px; background: var(--dab-chip-fill);
   color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; padding: 0 8px; min-height: 22px; cursor: pointer; }
+/* Compact provider/model chip (card meta row and inspector). Same line height as
+   the surrounding meta text, so the card layout does not change. */
+.dab-chip { display: inline-flex; align-items: center; max-width: 100%; min-width: 0; padding: 0 6px; border-radius: 999px; corner-shape: round;
+  background: var(--dab-chip-fill); color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 16px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-chip[data-source="unknown"] { background: transparent; box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary)); }
+.dab-chip[data-source="assignment"] { box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l3, transparent); }
 .dab-pill[data-tone="running"] { color: var(--dsw-alias-label-primary); }
 .dab-quick { opacity: 0; }
 .dab-card:focus-within .dab-quick, .dab-card[data-selected="true"] .dab-quick { opacity: 1; }
@@ -1900,6 +2373,10 @@ const DAB_CSS = `
 .dab-mark[data-status="failed"][data-seen="true"]::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--dsw-alias-state-error-primary); }
 .dab-mark[data-status="finished_read"]::before { width: 8px; height: 8px; background: var(--dsw-alias-state-idle-primary, var(--dsw-alias-label-secondary)); }
 .dab-mark[data-status="idle"]::before { width: 8px; height: 8px; box-shadow: inset 0 0 0 1.5px var(--dsw-alias-state-idle-primary, var(--dsw-alias-label-secondary)); }
+/* Interrupted: hollow amber ring. Provider outage: dashed error ring. Neither
+   animates, so the running ring stays the only motion in the panel. */
+.dab-mark[data-status="interrupted"]::before { width: 9px; height: 9px; background: transparent; box-shadow: inset 0 0 0 2px var(--dsw-alias-state-warn-primary); }
+.dab-mark[data-status="provider_unavailable"]::before { width: 9px; height: 9px; border: 1.5px dashed var(--dsw-alias-state-error-primary); }
 .dab-mark[data-status="unknown"]::before { width: 8px; height: 8px; border: 1.5px dashed var(--dsw-alias-label-secondary); }
 .dab-group-ring { display: inline-block; width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--dsw-alias-label-primary); margin-right: 2px; }
 @keyframes dab-spin { to { transform: rotate(360deg); } }
@@ -2011,7 +2488,8 @@ function dabCardSignature(props) {
   const node = props.node
   return [
     node.id, node.status, node.seen, node.title, node.role, node.updatedAt, node.expectedAction, node.waitingDetail,
-    node.model?.model, node.model?.provider, node.taskId, node.error, node.orphan, node.parentCycle,
+    node.model?.model, node.model?.provider, node.model?.reasoningEffort, node.model?.source, node.recentlyFinished,
+    node.taskId, node.error, node.orphan, node.parentCycle, node.parentReason, node.interrupted, node.providerUnavailable,
     props.selected, props.root, props.hiddenChildren, props.totalChildren, props.collapsed, props.expanded, props.groupActive,
     props.depth, props.compact, props.nowBucket,
   ].join('|')
@@ -2020,10 +2498,10 @@ function dabCardSignature(props) {
 function DabAgentCardImpl(props) {
   const { node, selected, root, arbiter, onToggleBranch, onRevealHidden, hiddenChildren, totalChildren, collapsed, expanded, groupActive, depth, compact } = props
   const h = React.createElement
-  const model = dabModelText(node.model)
+  const modelLabel = dabModelText(node.model)
   const age = dabFormatAge(node.updatedAt)
   const statusText = dabStatusLabel(node.status)
-  const calm = !(node.status === 'running' || node.status === 'recovering' || node.status === 'waiting_user' || node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true))
+  const calm = !(node.status === 'running' || node.status === 'recovering' || node.status === 'waiting_user' || node.status === 'finished_unread' || node.status === 'interrupted' || node.status === 'provider_unavailable' || (node.status === 'failed' && node.seen !== true))
   const label = [node.title, statusText, node.role, groupActive ? dabT('groupActive') : null].filter(Boolean).join(' — ')
 
   const stop = event => { event.stopPropagation() }
@@ -2040,11 +2518,21 @@ function DabAgentCardImpl(props) {
   ))
   const meta = []
   if (node.role) meta.push(h('span', { key: 'role', className: 'dab-role' }, node.role))
-  if (model !== null && (root || !node.role)) meta.push(h('span', { key: 'model', title: dabModelTitle(node.model) }, model))
+  // Compact model chip: the card's provider/model fact, never a guess. The
+  // height does not change: it lives in the existing single-line meta row.
+  if (root || !node.role) {
+    meta.push(h('span', {
+      key: 'model',
+      className: 'dab-chip',
+      'data-source': typeof node.model?.source === 'string' ? node.model.source : 'unknown',
+      title: dabModelTitle(node.model),
+    }, modelLabel ?? dabT('noModel')))
+  }
   if (node.taskId) meta.push(h('span', { key: 'task', className: 'dab-mono', title: `${dabT('task')} ${node.taskId}` }, node.taskId))
   if (age !== '') meta.push(h('span', { key: 'age', title: node.updatedAt ? new Date(node.updatedAt).toLocaleString() : '' }, age))
   if (node.orphan) meta.push(h('span', { key: 'orphan', title: dabT('orphan') }, `⚠ ${dabT('orphan')}`))
   if (node.parentCycle) meta.push(h('span', { key: 'cycle', title: dabT('cycle') }, `⚠ ${dabT('cycle')}`))
+  if (node.parentContested) meta.push(h('span', { key: 'contested', title: `${dabT('cycle')} · ${(node.parentCandidates ?? []).join(', ')}` }, `⚠ ${dabT('contest')}`))
   const metaWithSeps = []
   meta.forEach((item, index) => {
     if (index > 0) metaWithSeps.push(h('span', { key: `sep-${index}`, className: 'dab-sep', 'aria-hidden': 'true' }))
@@ -2092,6 +2580,8 @@ function DabAgentCardImpl(props) {
     'data-root': root ? 'true' : 'false',
     'data-selected': selected ? 'true' : 'false',
     'data-calm': calm ? 'true' : 'false',
+    // Non-status view hint: the turn really completed inside the recent window.
+    'data-recent': node.recentlyFinished === true ? 'true' : 'false',
     'data-depth': String(depth ?? 0),
     title: dabT('keyboardHint'),
     onClick: event => arbiter.click(node.id, event.detail),
@@ -2312,16 +2802,20 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
     facts.push(h('dt', { key: `${key}-t` }, label), h('dd', { key: `${key}-d`, className: mono ? 'dab-mono' : undefined }, value))
   }
   fact('project', dabT('project'), node.projectId === 'unassigned' ? dabT('unassigned') : node.projectTitle)
+  fact('provider', dabT('provider'), node.model?.provider, true)
   fact('model', dabT('model'), node.model?.source === 'unknown' ? null : dabModelTitle(node.model), true)
+  fact('modelSource', dabT('modelSource'), node.model?.source === 'unknown' ? null : (node.model.source === 'assignment' ? dabT('modelAssignment') : dabT('modelNative')))
   fact('task', dabT('task'), node.taskId, true)
   fact('goal', dabT('goal'), node.goal)
   if (parent !== null && parent !== undefined) {
     facts.push(h('dt', { key: 'parent-t' }, dabT('parent')), h('dd', { key: 'parent-d' },
       h('button', { type: 'button', className: 'dab-linkish', onClick: () => onSelect(parent.id) }, parent.title)))
-  } else if (node.orphan) {
+  if (node.orphan) {
     fact('parent', dabT('parent'), `${dabT('orphan')} (${String(node.parentId).slice(-12)})`, true)
   } else if (node.parentCycle) {
     fact('parent', dabT('parent'), dabT('cycle'))
+  } else if (node.parentContested) {
+    fact('parent', dabT('parent'), `${dabT('contest')} (${(node.parentCandidates ?? []).join(', ')})`, true)
   }
   if (node.activity) fact('activity', dabT('activity'), `${node.activity.turns} ${dabT('turns')} · ${node.activity.steps} ${dabT('steps')}`)
   fact('cwd', dabT('directory'), node.cwd, true)
@@ -2336,6 +2830,12 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
   if (node.status === 'recovering') {
     facts.push(h('dt', { key: 'rec-t' }, dabT('recovery')), h('dd', { key: 'rec-d', className: 'dab-alert' }, node.statusReason ?? ''))
   }
+  if (node.status === 'interrupted') {
+    facts.push(h('dt', { key: 'int-t' }, dabT('statusInterrupted')), h('dd', { key: 'int-d', className: 'dab-wait' }, node.statusReason ?? ''))
+  }
+  if (node.status === 'provider_unavailable') {
+    facts.push(h('dt', { key: 'pu-t' }, dabT('statusProviderUnavailable')), h('dd', { key: 'pu-d', className: 'dab-alert' }, node.statusReason ?? ''))
+  }
 
   return h('aside', { className: 'dab-inspector', 'aria-label': `${dabT('finalAnswer')} — ${node.title}`, 'data-inspector-for': node.id },
     h('div', { className: 'dab-insp-head' },
@@ -2344,6 +2844,13 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
     h('div', { className: 'dab-insp-status' },
       h('span', { className: 'dab-mark', 'data-status': node.status, 'data-seen': node.seen === true ? 'true' : 'false', 'aria-hidden': 'true' }),
       dabStatusLabel(node.status),
+      // Compact provider/model chip, same tokens as the card. Unknown stays
+      // explicit instead of borrowing the deployment default model.
+      h('span', {
+        className: 'dab-chip',
+        'data-source': typeof node.model?.source === 'string' ? node.model.source : 'unknown',
+        title: dabModelTitle(node.model),
+      }, dabModelChipText(node.model) ?? dabT('noModel')),
       node.role ? h('span', { className: 'dab-tag' }, node.role) : null,
       node.origin === 'subagent' ? h('span', { className: 'dab-tag' }, dabT('subagent')) : null),
     node.status === 'waiting_user'
