@@ -1,13 +1,17 @@
 # GOAL 3 E2E — isolated real DSH host + fake OpenAI-compatible provider + fake Task Board
 
 - Date: 2026-11-10
-- Started: 2026-11-10T10:41:31.343Z
-- Verdict: **PASS** (0/0 assertions)
+- Started: 2026-11-10T10:42:47.455Z
+- Verdict: **FAIL** (0/0 assertions passed, 0 scenario(s) executed, FATAL ERROR)
+- Fatal: `Error: dsh --version failed (exit 1): '\"C:\Users\barat\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd\"' n'est pas reconnu en tant que commande interne
+ou externe, un programme ex�cutable ou un fichier de commandes.
+    at createProfileAndInstall (file:///D:/App/DSH-agent-board/scripts/e2e/run-e2e.mjs:409:11)
+    at async main (file:///D:/App/DSH-agent-board/scripts/e2e/run-e2e.mjs:975:3)`
 - DSH CLI: `C:\Users\barat\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd` ()
 - Disposable `DSH_HOME`: `D:\App\dsh-e2e-home-goal3`
 - Profile: `e2e` (created from the shipped `web` template, plugin installed with `link:D:/App/DSH-agent-board`)
-- Model provider: **simulated** OpenAI-compatible server on `127.0.0.1` (port 62419 primary, 62420 backup)
-- Task Board: **simulated** ledger on `127.0.0.1:62421` — every response carries `x-simulated-taskboard: true`
+- Model provider: **simulated** OpenAI-compatible server on `127.0.0.1` (port 54371 primary, 54372 backup)
+- Task Board: **simulated** ledger on `127.0.0.1:54373` — every response carries `x-simulated-taskboard: true`
 - Credentials: **none**. The provider route uses an invented environment value; the desktop profile was never read or written.
 
 ## Commands actually run

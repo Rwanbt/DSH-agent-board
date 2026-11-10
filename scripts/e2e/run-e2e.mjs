@@ -114,10 +114,33 @@ let token = null
 let serverOutput = ''
 
 // --------------------------------------------------------------------- utils
+/**
+ * Build a single cmd.exe command line. The DSH CLI is a `.cmd` shim living under
+ * a path with spaces, so the executable MUST be quoted: passing it as argv to
+ * `spawn(..., { shell: true })` splits at the first space and fails with
+ * "'C:\Users\...\DeepSeek' is not recognized".
+ */
+function commandLineOf(command, commandArgs) {
+  const quote = value => {
+    const text = String(value)
+    return /[\s"]/.test(text) ? `"${text.replaceAll('"', '\\"')}"` : text
+  }
+  return [quote(command), ...commandArgs.map(quote)].join(' ')
+}
+
+function spawnShell(command, commandArgs, options = {}) {
+  if (process.platform === 'win32') {
+    // `spawn(commandLine, { shell: true })` is the only form that survives a
+    // quoted `.cmd` path: passing args to a shell:true spawn re-quotes them
+    // (verified against this host's DSH CLI).
+    return spawn(commandLineOf(command, commandArgs), { ...options, shell: true, windowsHide: true })
+  }
+  return spawn(command, commandArgs, options)
+}
+
 function spawnCapture(command, commandArgs, options = {}) {
   return new Promise(resolvePromise => {
-    const child = spawn(command, commandArgs, {
-      shell: true,
+    const child = spawnShell(command, commandArgs, {
       windowsHide: true,
       cwd: options.cwd ?? REPO_ROOT,
       env: {
@@ -384,8 +407,11 @@ const patchFor = (primaryPort, backupPort, taskBoardPort) => `# E2E harness patc
 
 async function createProfileAndInstall() {
   const version = await spawnCapture(DSH_CLI, ['--version'], { timeoutMs: 60_000 })
-  results.environment.dshVersion = (version.stdout.trim().split(/\r?\n/).pop() ?? '').trim() || null
   results.processOutput.cli.push({ step: 'dsh --version', ...version })
+  if (version.code !== 0) {
+    throw new Error(`dsh --version failed (exit ${version.code}): ${version.stderr.trim().slice(-800) || version.stdout.trim().slice(-800)}`)
+  }
+  results.environment.dshVersion = (version.stdout.trim().split(/\r?\n/).pop() ?? '').trim() || null
 
   const created = await spawnCapture(DSH_CLI, ['--profile', PROFILE, '--from-default-profile', 'web', '--dump-config'], { timeoutMs: 180_000 })
   results.processOutput.cli.push({ step: 'create profile', code: created.code, stdoutTail: created.stdout.slice(-2000), stderrTail: created.stderr.slice(-2000) })
@@ -407,8 +433,7 @@ async function bootHost() {
   results.host.patchPath = patchPath
   results.host.patch = redact(patchPath)
 
-  dshChild = spawn(DSH_CLI, ['--profile', PROFILE, '--port', '0', '--no-open'], {
-    shell: true,
+  dshChild = spawnShell(DSH_CLI, ['--profile', PROFILE, '--port', '0', '--no-open'], {
     windowsHide: true,
     cwd: join(home, 'project'),
     env: {
@@ -785,12 +810,20 @@ async function writeEvidence({ finished = false } = {}) {
 function markdownOf() {
   const lines = []
   const p = value => (value === undefined || value === null ? '' : String(value))
-  const status = results.assertions.every(entry => entry.ok) ? 'PASS' : 'FAIL'
+  const executed = results.assertions.filter(entry => entry.ok).length
+  const failedAssertions = results.assertions.filter(entry => !entry.ok)
+  const verdict = (
+    results.fatalError !== undefined ||
+    results.assertions.length === 0 ||
+    results.scenarios.length === 0 ||
+    failedAssertions.length > 0
+  ) ? 'FAIL' : 'PASS'
   lines.push(`# GOAL 3 E2E — isolated real DSH host + fake OpenAI-compatible provider + fake Task Board`)
   lines.push('')
   lines.push(`- Date: ${results.date}`)
   lines.push(`- Started: ${results.startedAt}`)
-  lines.push(`- Verdict: **${status}** (${results.assertions.filter(entry => entry.ok).length}/${results.assertions.length} assertions)`)
+  lines.push(`- Verdict: **${verdict}** (${executed}/${results.assertions.length} assertions passed, ${results.scenarios.length} scenario(s) executed${results.fatalError === undefined ? '' : ', FATAL ERROR'})`)
+  if (results.fatalError !== undefined) lines.push(`- Fatal: \`${String(results.fatalError).slice(0, 800)}\``)
   lines.push(`- DSH CLI: \`${results.environment.dshCli}\` (${p(results.environment.dshVersion)})`)
   lines.push(`- Disposable \`DSH_HOME\`: \`${results.host.home ?? results.environment.home}\``)
   lines.push(`- Profile: \`${PROFILE}\` (created from the shipped \`web\` template, plugin installed with \`link:${REPO_ROOT.replaceAll('\\', '/')}\`)`)
