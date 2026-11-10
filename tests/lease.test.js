@@ -50,3 +50,18 @@ test('restart reconciliation never relaunches: it marks interrupted unless the a
   assert.equal(assignments[1].lease, null)
   assert.deepEqual(changes, [{ assignmentId: 'a2', taskId: 't2', status: 'interrupted' }])
 })
+
+test('ensureAssignment persists the recovering reason, timestamp and task mandate', () => {
+  const { created, assignment } = ensureAssignment([], {
+    taskId: 't', revision: 2, workspaceId: 'w', attempt: 1,
+    idempotencyKey: 'k', status: 'recovering', sessionId: 's',
+    reason: 'partial_output_handoff:server_error', recoveringAt: 1234,
+    taskPermission: 'read-only', taskIsolation: 'none', backend: 'board',
+  })
+  assert.equal(created, true)
+  assert.equal(assignment.reason, 'partial_output_handoff:server_error')
+  assert.equal(assignment.recoveringAt, 1234)
+  assert.equal(assignment.taskPermission, 'read-only')
+  assert.equal(assignment.taskIsolation, 'none')
+  assert.equal(assignment.backend, 'board')
+})

@@ -20,26 +20,45 @@ export const CAPABILITIES = Object.freeze([
   'update',
   'comment',
   'transition',
+  // Execution request handled by the external system's own executor (the Task
+  // Board creates the session/execution/worktree; the board only observes).
+  'run',
 ])
 
 export const KINDS = Object.freeze(['work-source', 'forge', 'executor', 'model-router'])
+
+/**
+ * Capability -> implementing method. Most capabilities are named like their
+ * method; `run` is an execution request implemented by `runTask`.
+ */
+export const CAPABILITY_METHODS = Object.freeze({ run: 'runTask' })
+
+export function methodOfCapability(capability) {
+  return CAPABILITY_METHODS[capability] ?? capability
+}
+
+export function hasCapability(adapter, capability) {
+  return typeof adapter?.[methodOfCapability(capability)] === 'function'
+}
 
 /** One adapter capability probe, safe to call from routes. */
 export function capabilitiesOf(adapter) {
   const out = {}
   for (const capability of CAPABILITIES) {
-    out[capability] = typeof adapter?.[capability] === 'function'
+    out[capability] = hasCapability(adapter, capability)
   }
   return out
 }
 
 export class AdapterError extends Error {
-  constructor(message, { code = 'adapter_error', cause, retryable = false, adapterId } = {}) {
+  constructor(message, { code = 'adapter_error', cause, retryable = false, adapterId, retryAfterMs = null } = {}) {
     super(message, cause === undefined ? undefined : { cause })
     this.name = 'AdapterError'
     this.code = code
     this.retryable = retryable
     this.adapterId = adapterId
+    // A retryable quota must tell the caller when it may retry.
+    this.retryAfterMs = Number.isFinite(Number(retryAfterMs)) ? Number(retryAfterMs) : null
   }
 }
 
@@ -54,7 +73,7 @@ export function defineAdapter(definition) {
   const declared = Array.isArray(definition.capabilities) ? definition.capabilities : []
   for (const capability of declared) {
     if (!CAPABILITIES.includes(capability)) throw new Error(`agent-board: adapter ${definition.id} declares unknown capability ${capability}`)
-    if (typeof definition[capability] !== 'function') {
+    if (!hasCapability(definition, capability)) {
       throw new Error(`agent-board: adapter ${definition.id} declares capability "${capability}" without implementing it`)
     }
   }
@@ -124,7 +143,10 @@ export function createAdapterRegistry() {
         title: adapter.title ?? adapter.id,
         status: adapter.status,
         validatedLive: adapter.validatedLive,
-        capabilities: capabilitiesOf(adapter),
+        // Report the DECLARED (and therefore effective) capabilities, not "does
+        // a method exist": a skeleton carries throwing stubs and must not look
+        // like a working integration in the matrix.
+        capabilities: Object.fromEntries(CAPABILITIES.map(capability => [capability, (adapter.capabilities ?? []).includes(capability)])),
         declaredCapabilities: [...(adapter.capabilities ?? [])],
         notes: adapter.notes ?? '',
       }))

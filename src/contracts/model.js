@@ -12,29 +12,55 @@
 
 export const SCHEMA_VERSION = 1
 
-/** Native-ish agent statuses. Never derived from elapsed time alone. */
+/**
+ * Native-ish agent statuses. Never derived from elapsed time alone.
+ *
+ * Five different facts are kept apart on purpose:
+ *   - session state      -> `unavailable` (the runtime says the agent is gone)
+ *   - turn state         -> `running` / `finished_*` / `failed`
+ *   - agent state        -> `waiting_user` / `recovering`
+ *   - task state         -> the Task Board ledger (never mirrored as a status)
+ *   - user read state    -> `finished_unread` vs `finished_read` (persisted ack)
+ */
 export const STATUS = Object.freeze({
   RUNNING: 'running',
   WAITING_USER: 'waiting_user',
+  RECOVERING: 'recovering',
   FINISHED_UNREAD: 'finished_unread',
   FINISHED_READ: 'finished_read',
   FAILED: 'failed',
   IDLE: 'idle',
   UNKNOWN: 'unknown',
+  UNAVAILABLE: 'unavailable',
 })
 
 export const STATUS_VALUES = Object.freeze(Object.values(STATUS))
+
+/** Statuses that mean "the user still has something to look at". */
+export const ATTENTION_STATUSES = Object.freeze([
+  STATUS.WAITING_USER,
+  STATUS.FAILED,
+  STATUS.FINISHED_UNREAD,
+  STATUS.RECOVERING,
+])
 
 /** Ranking used for stable ordering (lower = shown first). */
 export const STATUS_RANK = Object.freeze({
   [STATUS.WAITING_USER]: 0,
   [STATUS.RUNNING]: 1,
-  [STATUS.FINISHED_UNREAD]: 2,
-  [STATUS.FAILED]: 3,
-  [STATUS.IDLE]: 4,
-  [STATUS.FINISHED_READ]: 5,
-  [STATUS.UNKNOWN]: 6,
+  [STATUS.RECOVERING]: 2,
+  [STATUS.FINISHED_UNREAD]: 3,
+  [STATUS.FAILED]: 4,
+  [STATUS.IDLE]: 5,
+  [STATUS.FINISHED_READ]: 6,
+  [STATUS.UNKNOWN]: 7,
+  [STATUS.UNAVAILABLE]: 8,
 })
+
+/** Turn-end kinds that must be surfaced as a failure, not as "finished". */
+export const ERROR_TURN_KINDS = Object.freeze(['error', 'failed'])
+/** Turn-end kinds that mean the work was interrupted, not completed. */
+export const INTERRUPTED_TURN_KINDS = Object.freeze(['aborted', 'blocked'])
 
 /** Orchestration modes. Default is always `off`. */
 export const MODES = Object.freeze({
@@ -45,8 +71,76 @@ export const MODES = Object.freeze({
 
 export const MODE_VALUES = Object.freeze(Object.values(MODES))
 
-/** Turn-end kinds that must be surfaced as a failure, not as "finished". */
-export const ERROR_TURN_KINDS = Object.freeze(['error', 'failed'])
+/** Default limits. Every one is configurable through the board API. */
+export const DEFAULT_POLICY = Object.freeze({
+  mode: MODES.OFF,
+  maxConcurrent: 2,
+  maxRetries: 2,
+  maxSwitches: 2,
+  proposalTtlMs: 30 * 60 * 1000,
+  leaseTtlMs: 10 * 60 * 1000,
+  // Automatic retries are bounded: a task whose last attempt failed is not
+  // relaunched on the next tick, and a revision has a maximum number of
+  // sessions (manual dispatch stays available to the operator).
+  retryCooldownMs: 5 * 60 * 1000,
+  maxAttemptsPerRevision: 4,
+  allowedWorkspaces: [],
+  allowedProviders: [],
+  // A card may ask for a permission level; the operator's mandate decides which
+  // levels this board may grant. `danger-full-access` is never inherited by default.
+  allowedPermissions: ['read-only', 'workspace-write'],
+  // 'board' = the board creates the session (model-level failover possible, but
+  // the Task Board gets no execution record). 'taskboard' = the Task Board's own
+  // executor creates the session/execution/worktree (no model-level failover).
+  executionBackend: 'board',
+  allowCloudFallback: false,
+  autoResumeOnRestart: false,
+  serializeSameWorkspace: false,
+  routeChain: [],
+  autonomyBudget: { maxTasksPerHour: 6 },
+})
+
+const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
+const EXECUTION_BACKENDS = Object.freeze(['board', 'taskboard'])
+
+export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
+  const mode = isMode(input.mode) ? input.mode : fallback.mode
+  const maxConcurrent = clampInt(input.maxConcurrent, 0, 8, fallback.maxConcurrent)
+  const maxSwitches = clampInt(input.maxSwitches, 0, 5, fallback.maxSwitches)
+  return {
+    mode,
+    maxConcurrent,
+    maxRetries: clampInt(input.maxRetries, 0, 5, fallback.maxRetries ?? 2),
+    maxSwitches,
+    proposalTtlMs: clampInt(input.proposalTtlMs, 60_000, 86_400_000, fallback.proposalTtlMs),
+    leaseTtlMs: clampInt(input.leaseTtlMs, 30_000, 86_400_000, fallback.leaseTtlMs),
+    retryCooldownMs: clampInt(input.retryCooldownMs, 0, 86_400_000, fallback.retryCooldownMs ?? 300_000),
+    maxAttemptsPerRevision: clampInt(input.maxAttemptsPerRevision, 1, 10, fallback.maxAttemptsPerRevision ?? 4),
+    allowedWorkspaces: uniqueStrings(input.allowedWorkspaces ?? fallback.allowedWorkspaces),
+    allowedProviders: uniqueStrings(input.allowedProviders ?? fallback.allowedProviders),
+    allowedPermissions: uniqueStrings(input.allowedPermissions ?? fallback.allowedPermissions)
+      .filter(level => PERMISSION_LEVELS.includes(level)),
+    executionBackend: EXECUTION_BACKENDS.includes(input.executionBackend)
+      ? input.executionBackend
+      : (fallback.executionBackend ?? 'board'),
+    allowCloudFallback: input.allowCloudFallback === true,
+    autoResumeOnRestart: input.autoResumeOnRestart === true,
+    serializeSameWorkspace: input.serializeSameWorkspace === true,
+    routeChain: normalizeRouteChain(input.routeChain ?? fallback.routeChain),
+    autonomyBudget: {
+      maxTasksPerHour: clampInt(input.autonomyBudget?.maxTasksPerHour, 0, 100, fallback.autonomyBudget.maxTasksPerHour),
+    },
+  }
+}
+
+/** The permission level this board is allowed to grant for a card, or null. */
+export function allowedPermissionOf(policy, requested) {
+  if (typeof requested !== 'string' || requested === '') return null
+  const allowed = Array.isArray(policy?.allowedPermissions) ? policy.allowedPermissions : DEFAULT_POLICY.allowedPermissions
+  return allowed.includes(requested) ? requested : null
+}
+
+/** Orchestration modes. Default is always `off`. */
 
 export function isMode(value) {
   return typeof value === 'string' && MODE_VALUES.includes(value)
@@ -129,40 +223,6 @@ export function textOfContent(content) {
 function requireString(value, field) {
   if (typeof value !== 'string' || value === '') throw new Error(`agent-board: ${field} must be a non-empty string`)
   return value
-}
-
-/** Default limits. Every one is configurable through the board API. */
-export const DEFAULT_POLICY = Object.freeze({
-  mode: MODES.OFF,
-  maxConcurrent: 2,
-  maxSwitches: 2,
-  proposalTtlMs: 30 * 60 * 1000,
-  leaseTtlMs: 10 * 60 * 1000,
-  allowedWorkspaces: [],
-  allowedProviders: [],
-  allowCloudFallback: false,
-  routeChain: [],
-  autonomyBudget: { maxTasksPerHour: 6 },
-})
-
-export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
-  const mode = isMode(input.mode) ? input.mode : fallback.mode
-  const maxConcurrent = clampInt(input.maxConcurrent, 0, 8, fallback.maxConcurrent)
-  const maxSwitches = clampInt(input.maxSwitches, 0, 5, fallback.maxSwitches)
-  return {
-    mode,
-    maxConcurrent,
-    maxSwitches,
-    proposalTtlMs: clampInt(input.proposalTtlMs, 60_000, 86_400_000, fallback.proposalTtlMs),
-    leaseTtlMs: clampInt(input.leaseTtlMs, 30_000, 86_400_000, fallback.leaseTtlMs),
-    allowedWorkspaces: uniqueStrings(input.allowedWorkspaces ?? fallback.allowedWorkspaces),
-    allowedProviders: uniqueStrings(input.allowedProviders ?? fallback.allowedProviders),
-    allowCloudFallback: input.allowCloudFallback === true,
-    routeChain: normalizeRouteChain(input.routeChain ?? fallback.routeChain),
-    autonomyBudget: {
-      maxTasksPerHour: clampInt(input.autonomyBudget?.maxTasksPerHour, 0, 100, fallback.autonomyBudget.maxTasksPerHour),
-    },
-  }
 }
 
 export function normalizeRouteChain(chain) {

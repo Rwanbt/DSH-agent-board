@@ -21,7 +21,7 @@
  * @module dsh-agent-board/supervisor/projection
  */
 
-import { ERROR_TURN_KINDS, STATUS, STATUS_RANK, truncate } from '../contracts/model.js'
+import { ERROR_TURN_KINDS, INTERRUPTED_TURN_KINDS, STATUS, STATUS_RANK, truncate } from '../contracts/model.js'
 
 const PENDING_ACTION = Object.freeze({
   approval: 'approval',
@@ -67,7 +67,7 @@ export function catalogChildrenOf(projectionsBySession, parentId) {
       if (id === null) return null
       return {
         id,
-        title: typeof entry.title === 'string' ? entry.title : undefined,
+        title: typeof entry.title === 'string' ? entry.title : (typeof entry.label === 'string' ? entry.label : undefined),
         mode: typeof entry.mode === 'string' ? entry.mode : undefined,
         status: typeof entry.status === 'string' ? entry.status : undefined,
       }
@@ -87,33 +87,115 @@ export function isSubagentRow(row) {
 }
 
 /**
- * Classify one agent. `live` is its unified status entry, `turnEnd` the last
- * turn/end fact the host recorded, `ack` the persisted read cursor.
+ * Classify one agent and explain why. `live` is its unified status entry,
+ * `turnEnd` the last turn/end fact the host recorded, `ack` the persisted read
+ * cursor, `assignment` the board assignment bound to that session.
+ *
+ * The returned `reason`/`source`/`at` triple is what the UI shows in the card
+ * details: a status without provenance is not allowed to be invented.
+ *
+ * @returns {{status:string, reason:string, source:string, at:number|null}}
  */
-export function classifyStatus({ row, live, turnEnd, ack }) {
-  if (row === undefined && live === undefined) return STATUS.UNKNOWN
-  const pendingKind = live?.pendingInteraction?.kind ?? live?.pendingInteraction
-  if (typeof pendingKind === 'string' && pendingKind !== '') return STATUS.WAITING_USER
-  if (row?.running === true || live?.running === true) return STATUS.RUNNING
+export function classifyStatusDetailed({ row, live, turnEnd, ack, assignment }) {
   const end = turnEnd !== null && typeof turnEnd === 'object' ? turnEnd : null
-  if (end !== null && ERROR_TURN_KINDS.includes(end.kind)) return STATUS.FAILED
-  if (end !== null && Number.isFinite(Number(end.at))) {
-    const seenAt = Number(ack?.seenAt)
-    if (Number.isFinite(seenAt) && seenAt >= Number(end.at)) return STATUS.FINISHED_READ
-    return STATUS.FINISHED_UNREAD
+  const seenAt = Number(ack?.seenAt)
+  const hasSeen = Number.isFinite(seenAt)
+  const updatedAt = Number(row?.updatedAt)
+  const nativeEnd = nativeTurnEndOf(row)
+
+  if (row === undefined && live === undefined && assignment === undefined) {
+    return { status: STATUS.UNKNOWN, reason: 'no_row_and_no_live_status', source: 'none', at: null }
   }
-  if (live?.completionUnread === true) return STATUS.FINISHED_UNREAD
-  if (row === undefined) return STATUS.UNKNOWN
-  return STATUS.IDLE
+  const action = expectedActionOf(live, row)
+  if (action !== null) {
+    return { status: STATUS.WAITING_USER, reason: `pending_interaction:${action}`, source: live?.pendingInteraction !== undefined ? 'host_status' : 'session_projection', at: null }
+  }
+  if (row?.running === true || live?.running === true) {
+    return { status: STATUS.RUNNING, reason: 'turn_in_progress', source: row?.running === true ? 'session_row' : 'host_status', at: null }
+  }
+  if (assignment?.status === 'recovering') {
+    return { status: STATUS.RECOVERING, reason: `route_recovery:${truncate(String(assignment.reason ?? 'provider_failure'), 120)}`, source: 'assignment', at: Number(assignment.recoveringAt) || null }
+  }
+  // Failure truth: the host-recorded turn end wins, then the native lifecycle
+  // fact. A recovered failure (a later turn started) is no longer a failure.
+  if (end !== null && ERROR_TURN_KINDS.includes(end.kind) && end.recoveredAt === undefined) {
+    const covered = hasSeen && Number.isFinite(Number(end.at)) && seenAt >= Number(end.at)
+    return { status: STATUS.FAILED, reason: `turn_end:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null, _seen: covered }
+  }
+  if ((end === null || end.recoveredAt !== undefined) && nativeEnd !== null && ERROR_TURN_KINDS.includes(nativeEnd.reason)) {
+    // Native-only failure: the host may have missed the event (restart). There
+    // is no board ack that could have covered it, so it stays unread/visible.
+    return { status: STATUS.FAILED, reason: `native_turn_end:${nativeEnd.reason}`, source: 'session_projection', at: null, _seen: false }
+  }
+  if (end !== null && Number.isFinite(Number(end.at))) {
+    if (INTERRUPTED_TURN_KINDS.includes(end.kind)) {
+      return { status: STATUS.IDLE, reason: `turn_ended:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null }
+    }
+    if (hasSeen && seenAt >= Number(end.at)) {
+      return { status: STATUS.FINISHED_READ, reason: `ack_after_turn:${end.kind}`, source: 'host_turn_end', at: Number(end.at) || null }
+    }
+    return { status: STATUS.FINISHED_UNREAD, reason: `turn_end:${end.kind}_not_acknowledged`, source: 'host_turn_end', at: Number(end.at) || null }
+  }
+  if (live?.completionUnread === true) {
+    // The native runtime also tracks unread completions. An explicit board ack
+    // that is newer than the session's last activity covers it; otherwise the
+    // pill would be impossible to clear.
+    if (hasSeen && Number.isFinite(updatedAt) && seenAt >= updatedAt) {
+      return { status: STATUS.FINISHED_READ, reason: 'ack_after_native_activity', source: 'host_status', at: seenAt }
+    }
+    return { status: STATUS.FINISHED_UNREAD, reason: 'native_completion_unread', source: 'host_status', at: null }
+  }
+  if (nativeEnd !== null) {
+    // A turn that completed before the board observed it is history, not "new".
+    return { status: STATUS.FINISHED_READ, reason: `native_history:${nativeEnd.reason}`, source: 'session_projection', at: null }
+  }
+  if (row?.agentAvailable === false) {
+    return { status: STATUS.UNAVAILABLE, reason: 'agent_not_available', source: 'session_row', at: null }
+  }
+  if (row === undefined) {
+    return { status: STATUS.UNKNOWN, reason: 'no_row_for_session', source: 'none', at: null }
+  }
+  return { status: STATUS.IDLE, reason: 'no_activity', source: 'session_row', at: null }
 }
 
-/** The action the user is expected to take right now, if any. */
-export function expectedActionOf(live) {
+/** Backward-compatible status-only view of {@link classifyStatusDetailed}. */
+export function classifyStatus(input) {
+  return classifyStatusDetailed(input).status
+}
+
+/** `projectionValues.mobilePushLifecycle.lastTurnEnd` = { turn, reason } when present. */
+export function nativeTurnEndOf(row) {
+  const end = row?.projectionValues?.mobilePushLifecycle?.lastTurnEnd
+  if (end === null || typeof end !== 'object') return null
+  const reason = typeof end.reason === 'string' ? end.reason : (typeof end.reason?.kind === 'string' ? end.reason.kind : null)
+  return reason === null ? null : { turn: Number(end.turn) || null, reason }
+}
+
+/**
+ * The action the user is expected to take right now, if any. Sources, in
+ * order: the unified status `pendingInteraction`, then the session's own
+ * projection (an active user question, a plan awaiting review).
+ */
+export function expectedActionOf(live, row) {
   const pending = live?.pendingInteraction
-  if (pending === null || pending === undefined) return null
-  const kind = typeof pending === 'string' ? pending : pending.kind
-  if (typeof kind !== 'string' || kind === '') return null
-  return PENDING_ACTION[kind] ?? 'unknown'
+  if (pending !== null && pending !== undefined) {
+    const kind = typeof pending === 'string' ? pending : pending.kind
+    if (typeof kind === 'string' && kind !== '') return PENDING_ACTION[kind] ?? 'unknown'
+  }
+  const values = row?.projectionValues
+  if (Array.isArray(values?.userQuestions?.active) && values.userQuestions.active.length > 0) return 'question'
+  if (values?.plan?.pending === true) return 'plan-review'
+  return null
+}
+
+/** Short human text of what is missing (first active question), if known. */
+export function waitingDetailOf(row) {
+  const question = row?.projectionValues?.userQuestions?.active?.[0]
+  const candidates = [question?.question, question?.questions?.[0]?.question, question?.title, question?.header]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim() !== '') return truncate(candidate.trim(), 160)
+  }
+  return null
 }
 
 export function modelOf(row, assignment) {
@@ -121,6 +203,8 @@ export function modelOf(row, assignment) {
     assignment?.model,
     row?.model,
     row?.modelSelection,
+    row?.projectionValues?.modelSelection?.lastUsed,
+    row?.projectionValues?.modelSelection?.next,
     row?.header?.model,
     row?.llm,
   ]
@@ -140,32 +224,116 @@ export function modelOf(row, assignment) {
   return { provider: '—', model: '—', reasoningEffort: null, source: 'unknown' }
 }
 
-function previewOf(hostState, sessionId, assignment) {
+/**
+ * The final answer excerpt. Only an answer that closed a turn is "final":
+ *   1. host-captured last assistant message when the session is not running
+ *      and a turn end was recorded at/after it;
+ *   2. the native turn outline `response` of the latest answered turn;
+ *   3. a board checkpoint text.
+ * A mid-turn assistant segment (between tool calls) is never presented as the
+ * final answer; it is exposed separately as `interim` only for activity.
+ */
+export function previewOf(hostState, sessionId, assignment, row, running = false) {
   const preview = hostState?.previews?.[sessionId]
-  if (preview !== undefined && typeof preview.text === 'string' && preview.text !== '') {
-    return { text: truncate(preview.text, 600), at: Number(preview.at) || null }
-  }
-  const checkpointText = assignment?.checkpoint?.lastText
-  if (typeof checkpointText === 'string' && checkpointText !== '') {
-    return { text: truncate(checkpointText, 600), at: Number(assignment?.checkpoint?.at) || null }
-  }
-  return { text: '', at: null }
-}
-
-function projectKeyOf(row, workspaces) {
-  const sessionId = String(row?.id ?? '')
-  for (const workspace of workspaces?.items ?? []) {
-    if (Array.isArray(workspace.sessionIds) && workspace.sessionIds.includes(sessionId)) {
-      return { id: `ws:${workspace.id}`, title: workspace.title ?? workspace.path ?? 'Project' }
+  const end = hostState?.turnEnd?.[sessionId]
+  const hostText = preview !== undefined && typeof preview.text === 'string' ? preview.text.trim() : ''
+  if (hostText !== '' && !running && end !== undefined && Number(end.at) >= Number(preview.at)) {
+    // The captured segment is only a FINAL answer when the turn that closed it
+    // actually completed. An error/aborted/unknown turn ends with a partial
+    // segment, and an intermediate segment must never be labelled final.
+    const kind = typeof end.kind === 'string' ? end.kind : 'unknown'
+    const completed = !ERROR_TURN_KINDS.includes(kind) && !INTERRUPTED_TURN_KINDS.includes(kind) && kind !== 'unknown'
+    return {
+      text: truncate(hostText, 600),
+      at: Number(preview.at) || null,
+      final: completed,
+      partial: !completed,
+      turnEndKind: kind,
+      source: 'host',
     }
   }
-  const cwd = typeof row?.cwd === 'string' && row.cwd !== '' ? row.cwd : ''
-  if (cwd !== '') {
-    const parts = cwd.split(/[\\/]/).filter(Boolean)
-    const name = parts.at(-1) ?? cwd
-    return { id: `dir:${cwd}`, title: name }
+  const outline = row?.projectionValues?.turnOutline
+  if (Array.isArray(outline)) {
+    for (let index = outline.length - 1; index >= 0; index -= 1) {
+      const entry = outline[index]
+      const isOpenTurn = running && index === outline.length - 1
+      if (!isOpenTurn && typeof entry?.response === 'string' && entry.response.trim() !== '') {
+        return { text: truncate(entry.response.trim(), 600), at: null, final: true, partial: false, source: 'outline', turn: Number(entry.turn) || null }
+      }
+    }
   }
-  return { id: 'unassigned', title: 'Unassigned' }
+  const checkpointText = assignment?.checkpoint?.lastText
+  if (!running && typeof checkpointText === 'string' && checkpointText !== '') {
+    return { text: truncate(checkpointText, 600), at: Number(assignment?.checkpoint?.at) || null, final: true, partial: false, source: 'checkpoint' }
+  }
+  return { text: '', at: null, final: false, partial: false, source: null }
+}
+
+/** Last non-empty line of an answer, without markdown decoration. */
+export function lastUsefulLine(text) {
+  if (typeof text !== 'string') return ''
+  const lines = text.split(/\r?\n/).map(line => line.replace(/^[\s>#*\-|`]+/, '').replace(/[`*|]+$/g, '').trim())
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index] !== '' && !/^-{3,}$/.test(lines[index])) return truncate(lines[index], 220)
+  }
+  return ''
+}
+
+/** Normalize a filesystem path for comparison (case-insensitive drive, `/`). */
+export function normalizePath(value) {
+  if (typeof value !== 'string' || value.trim() === '') return ''
+  let path = value.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+  if (/^[a-zA-Z]:/.test(path)) path = path.toLowerCase()
+  return path
+}
+
+/** Workspace index: session membership and normalized directory. */
+export function indexWorkspaces(workspaces) {
+  const bySession = new Map()
+  const byPath = []
+  for (const workspace of Array.isArray(workspaces?.items) ? workspaces.items : []) {
+    if (workspace === null || typeof workspace !== 'object') continue
+    const id = workspace.workspaceId ?? workspace.id
+    if (typeof id !== 'string' || id === '') continue
+    const ref = { id: `ws:${id}`, workspaceId: id, title: workspace.title || workspace.path || id, path: workspace.path ?? null, source: 'workspace' }
+    for (const sessionId of Array.isArray(workspace.sessionIds) ? workspace.sessionIds : []) {
+      if (!bySession.has(String(sessionId))) bySession.set(String(sessionId), ref)
+    }
+    const path = normalizePath(workspace.path)
+    if (path !== '') byPath.push({ path, ref })
+  }
+  byPath.sort((a, b) => b.path.length - a.path.length)
+  return { bySession, byPath }
+}
+
+export const UNASSIGNED_PROJECT = Object.freeze({ id: 'unassigned', title: 'Non attribué', path: null, source: 'none' })
+
+/**
+ * Resolve a session's project with reliable keys only:
+ *   1. DSH workspace membership (workspace.sessionIds);
+ *   2. normalized working directory equal to (or inside) a workspace path;
+ *   3. otherwise "unassigned". Titles are never used.
+ * Sub-agents inherit their parent's project in buildProjection.
+ */
+export function resolveProject(row, index) {
+  const sessionId = String(row?.id ?? '')
+  const member = index.bySession.get(sessionId)
+  if (member !== undefined) return member
+  const cwd = normalizePath(row?.cwd ?? row?.projectionValues?.workingDirectory)
+  if (cwd !== '') {
+    for (const entry of index.byPath) {
+      if (cwd === entry.path || cwd.startsWith(`${entry.path}/`)) return { ...entry.ref, source: 'cwd' }
+    }
+  }
+  return UNASSIGNED_PROJECT
+}
+
+function titleOf(row, catalogEntry, nodeId) {
+  const label = row?.projectionValues?.subagent?.label ?? catalogEntry?.title
+  if (typeof label === 'string' && label.trim() !== '') return label.trim()
+  if (typeof row?.displayTitle === 'string' && row.displayTitle !== '') return row.displayTitle.replace(/^#+\s*/, '')
+  if (typeof row?.title === 'string' && row.title !== '') return row.title.replace(/^#+\s*/, '')
+  return nodeId.slice(-12)
 }
 
 /**
@@ -213,6 +381,21 @@ export function buildProjection({ list, statusMap, hostState = {}, workspaces = 
     }
   }
 
+  const workspaceIndex = indexWorkspaces(workspaces)
+  // Team member names declared by a parent (role labels for its children).
+  const roleOf = new Map()
+  const catalogEntryOf = new Map()
+  for (const parentId of Object.keys(normalized.projectionsBySession)) {
+    for (const entry of catalogChildrenOf(normalized.projectionsBySession, parentId)) catalogEntryOf.set(entry.id, entry)
+  }
+  for (const id of normalized.ids) {
+    const members = normalized.byId[id]?.projectionValues?.agentTeam?.members
+    if (!Array.isArray(members)) continue
+    for (const member of members) {
+      if (member?.role === 'teammate' && typeof member.id === 'string' && typeof member.name === 'string') roleOf.set(member.id, member.name)
+    }
+  }
+
   const out = []
   for (const node of nodes.values()) {
     const row = node.row
@@ -220,33 +403,57 @@ export function buildProjection({ list, statusMap, hostState = {}, workspaces = 
     const turnEnd = hostState.turnEnd?.[node.id] ?? null
     const ack = hostState.acks?.[node.id] ?? null
     const assignment = assignmentsBySession.get(node.id) ?? null
-    const status = classifyStatus({ row, live, turnEnd, ack })
+    const detail = classifyStatusDetailed({ row, live, turnEnd, ack, assignment })
+    const status = detail.status
     const parentId = row !== undefined ? parentIdOf(row) : null
-    const project = row !== undefined ? projectKeyOf(row, workspaces) : { id: 'unassigned', title: 'Unassigned' }
+    const project = row !== undefined ? resolveProject(row, workspaceIndex) : UNASSIGNED_PROJECT
     const resolvedParent = parentId ?? (catalogParentOf.get(node.id) ?? null)
-    const preview = previewOf(hostState, node.id, assignment)
+    const ownRunning = row?.running === true || live?.running === true
+    const preview = previewOf(hostState, node.id, assignment, row, ownRunning)
+    const stats = row?.projectionValues?.sessionStats
+    // Explicit acknowledgement covers a failure only when a cursor exists and
+    // it is at/after the recorded failure. A native-only failure has no such
+    // cursor: it stays visible instead of silently leaving the home view.
+    const seen = status === STATUS.FAILED ? detail._seen === true : status !== STATUS.FINISHED_UNREAD
     out.push({
       id: node.id,
       parentId: resolvedParent,
       projectId: project.id,
       projectTitle: project.title,
-      title: typeof row?.displayTitle === 'string' && row.displayTitle !== ''
-        ? row.displayTitle
-        : (typeof row?.title === 'string' && row.title !== '' ? row.title : node.id.slice(-12)),
+      projectSource: project.source,
+      title: titleOf(row, catalogEntryOf.get(node.id), node.id),
+      role: roleOf.get(node.id) ?? null,
       cwd: typeof row?.cwd === 'string' ? row.cwd : null,
       origin: typeof row?.origin === 'string' ? row.origin : (resolvedParent !== null ? 'subagent' : 'main'),
       status,
-      expectedAction: expectedActionOf(live),
+      statusReason: detail.reason,
+      statusSource: detail.source,
+      statusAt: detail.at,
+      seen,
+      expectedAction: expectedActionOf(live, row),
+      waitingDetail: waitingDetailOf(row),
       model: modelOf(row, assignment),
       preview,
+      activity: stats !== undefined && stats !== null
+        ? { turns: Number(stats.turns) || 0, steps: Number(stats.steps) || 0, toolMs: Number(stats.toolMs) || 0, llmMs: Number(stats.llmMs) || 0 }
+        : null,
+      error: typeof turnEnd?.error === 'string' ? turnEnd.error : null,
+      goal: typeof row?.projectionValues?.goal?.goal?.objective === 'string' ? truncate(row.projectionValues.goal.goal.objective, 240) : null,
       unread: status === STATUS.FINISHED_UNREAD,
       waiting: status === STATUS.WAITING_USER,
+      recovering: status === STATUS.RECOVERING,
       failed: status === STATUS.FAILED,
+      unavailable: status === STATUS.UNAVAILABLE,
       archived: archived.has(node.id),
       blank: row?.blank === true,
+      // Native fact: the user currently has this session open in the main view.
+      // The panel uses it to acknowledge reading done outside the board.
+      viewing: Number(row?.retainedBy?.mainView) > 0,
+      agentAvailable: typeof row?.agentAvailable === 'boolean' ? row.agentAvailable : null,
       updatedAt: Number(row?.updatedAt) || null,
       assignmentId: assignment?.id ?? null,
       taskId: assignment?.taskId ?? null,
+      assignmentStatus: assignment?.status ?? null,
       previousSessionId: assignment?.previousSessionId ?? null,
       routeHistory: Array.isArray(assignment?.routeHistory) ? assignment.routeHistory : [],
       children: [],
@@ -254,15 +461,35 @@ export function buildProjection({ list, statusMap, hostState = {}, workspaces = 
     })
   }
 
-  // Link children (two passes so forward references settle).
+  // Link children. A malformed parent chain (self-parent or cycle) is broken at
+  // the node that closes the loop: it becomes a root flagged `parentCycle`.
   const byId = new Map(out.map(node => [node.id, node]))
   for (const node of out) {
-    if (node.parentId !== null && byId.has(node.parentId) && node.parentId !== node.id) {
-      byId.get(node.parentId).children.push(node.id)
+    if (node.parentId === null) continue
+    if (!byId.has(node.parentId)) { node.orphan = true; continue }
+    const seen = new Set([node.id])
+    let cursor = byId.get(node.parentId)
+    let cycle = false
+    while (cursor !== undefined) {
+      if (seen.has(cursor.id)) { cycle = true; break }
+      seen.add(cursor.id)
+      cursor = cursor.parentId !== null && !cursor.parentCycle ? byId.get(cursor.parentId) : undefined
     }
+    if (cycle) { node.parentCycle = true; continue }
   }
+  for (const node of out) {
+    if (node.parentId !== null && !node.orphan && !node.parentCycle) byId.get(node.parentId).children.push(node.id)
+  }
+  const isRoot = node => node.parentId === null || node.orphan === true || node.parentCycle === true
+  // Descendants live in their root's project: one tree is never split.
+  const inherit = (node, project) => {
+    node.projectId = project.projectId
+    node.projectTitle = project.projectTitle
+    for (const childId of node.children) inherit(byId.get(childId), project)
+  }
+  for (const node of out) if (isRoot(node)) inherit(node, { projectId: node.projectId, projectTitle: node.projectTitle })
 
-  const roots = out.filter(node => node.parentId === null || !byId.has(node.parentId))
+  const roots = out.filter(isRoot)
   return { nodes: out, byId, roots, projects: groupProjects(out), counts: summarize(out) }
 }
 
@@ -280,11 +507,13 @@ export function summarize(nodes) {
     total: nodes.length,
     running: 0,
     waiting_user: 0,
+    recovering: 0,
     finished_unread: 0,
     finished_read: 0,
     failed: 0,
     idle: 0,
     unknown: 0,
+    unavailable: 0,
   }
   for (const node of nodes) {
     if (counts[node.status] !== undefined) counts[node.status] += 1

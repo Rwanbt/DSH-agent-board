@@ -10,7 +10,7 @@
 
 import { MODES } from '../contracts/model.js'
 
-const ACTIVE_ASSIGNMENT_STATUSES = Object.freeze(['starting', 'running'])
+const ACTIVE_ASSIGNMENT_STATUSES = Object.freeze(['starting', 'running', 'recovering'])
 const URGENCY_WEIGHT = Object.freeze({ urgent: 0, normal: 1, relaxed: 2 })
 
 export function taskStatusOf(task) {
@@ -126,6 +126,11 @@ export function selectDispatchable({ tasks, assignments = [], proposals = [], po
       .filter(assignment => ACTIVE_ASSIGNMENT_STATUSES.includes(assignment?.status))
       .map(assignment => String(assignment.taskId)),
   )
+  const busyWorkspaces = new Set(
+    (assignments ?? [])
+      .filter(assignment => ACTIVE_ASSIGNMENT_STATUSES.includes(assignment?.status))
+      .map(assignment => String(assignment.workspaceId ?? '')),
+  )
   const proposedTaskIds = new Set(
     (proposals ?? []).filter(proposal => proposal?.status === 'pending').map(proposal => String(proposal.taskId)),
   )
@@ -141,6 +146,9 @@ export function selectDispatchable({ tasks, assignments = [], proposals = [], po
   )
 
   let remaining = slots
+  // Workspaces already claimed by an active assignment OR by an action of this
+  // very plan (the plan is computed before any launch, so it must reserve).
+  const reservedWorkspaces = new Set(busyWorkspaces)
   for (const task of candidates) {
     const readiness = readinessOf(task, tasksById)
     if (!readiness.ready) {
@@ -155,20 +163,83 @@ export function selectDispatchable({ tasks, assignments = [], proposals = [], po
       skipped.push({ taskId: task.id, reason: 'awaiting_approval' })
       continue
     }
+    // Bounded automatic retries: a card whose last attempt failed is not
+    // relaunched on every tick (the isolated E2E showed an unbounded loop), and
+    // one revision cannot spawn unlimited sessions. Manual `/dispatch` remains
+    // available to the operator.
+    const prior = (assignments ?? []).filter(assignment => String(assignment.taskId) === String(task.id))
+    const lastAttempt = prior[prior.length - 1]
+    // A `done` assignment whose card is STILL todo means the session ended
+    // without claiming/moving the task (e.g. a claim version conflict): that is
+    // exactly the unbounded-relaunch class, so it obeys the same retry bound.
+    const ended = lastAttempt !== undefined && (
+      ['failed', 'interrupted', 'stopped'].includes(lastAttempt.status)
+      || (lastAttempt.status === 'done' && taskStatusOf(task) === 'todo')
+    )
+    if (ended) {
+      const revision = task.revision ?? task.version ?? task.rev ?? null
+      const attemptsForRevision = prior.filter(assignment => String(assignment.revision ?? '') === String(revision ?? '')).length
+      const maxAttempts = Number(policy?.maxAttemptsPerRevision) || 4
+      const cooldownMs = Number.isFinite(Number(policy?.retryCooldownMs)) ? Number(policy.retryCooldownMs) : 300_000
+      const endedAt = Number(lastAttempt.endedAt ?? lastAttempt.startedAt) || 0
+      if (attemptsForRevision >= maxAttempts) {
+        skipped.push({ taskId: task.id, reason: 'max_attempts_reached' })
+        continue
+      }
+      if (cooldownMs > 0 && now - endedAt < cooldownMs) {
+        skipped.push({ taskId: task.id, reason: 'retry_cooldown' })
+        continue
+      }
+    }
+    // The Task Board owns its own executions and its own scheduler. Launching a
+    // session for a task another executor already runs would create a second
+    // writer for the same work: skip it and say why.
+    if (task.activeExecution === true) {
+      skipped.push({ taskId: task.id, reason: 'already_running_in_taskboard' })
+      continue
+    }
+    if (typeof task.claimedBy === 'string' && task.claimedBy !== '') {
+      skipped.push({ taskId: task.id, reason: 'claimed_by_another_session' })
+      continue
+    }
+    if (task.execution?.mode === 'scheduled') {
+      skipped.push({ taskId: task.id, reason: 'owned_by_taskboard_scheduler' })
+      continue
+    }
+    // A board-launched session always runs in the workspace directory. Only the
+    // Task Board's own executor can create the worktree the card asks for.
+    if (task.isolation === 'worktree' && policy?.executionBackend !== 'taskboard') {
+      skipped.push({ taskId: task.id, reason: 'worktree_isolation_not_supported' })
+      continue
+    }
+    if (policy?.serializeSameWorkspace === true && reservedWorkspaces.has(String(task.workspaceId ?? ''))) {
+      skipped.push({ taskId: task.id, reason: 'workspace_busy' })
+      continue
+    }
     const mandate = mandateCheck(task, policy)
     if (!mandate.ok) {
       skipped.push({ taskId: task.id, reason: mandate.reason })
       continue
     }
+    // A card may ask for a permission level; the operator's mandate decides
+    // whether the board may grant it. Refuse before launching, visibly.
+    if (typeof task.permission === 'string' && task.permission !== '') {
+      const allowedPermissions = Array.isArray(policy?.allowedPermissions) ? policy.allowedPermissions : []
+      if (!allowedPermissions.includes(task.permission)) {
+        skipped.push({ taskId: task.id, reason: `permission_not_allowed:${task.permission}` })
+        continue
+      }
+    }
     const action = {
       task,
       taskId: String(task.id),
       workspaceId: String(task.workspaceId ?? ''),
-      revision: task.revision ?? task.rev ?? null,
+      revision: task.revision ?? task.version ?? task.rev ?? null,
       urgency: task.urgency ?? 'normal',
       kind: mode === MODES.SUPERVISED ? 'proposal' : 'launch',
       reason: mode === MODES.SUPERVISED ? 'supervised_requires_approval' : 'autonomous_mandate',
     }
+    reservedWorkspaces.add(String(task.workspaceId ?? ''))
     if (mode === MODES.SUPERVISED) {
       actions.push(action)
       continue

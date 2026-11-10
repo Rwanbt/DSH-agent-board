@@ -39,6 +39,97 @@ test('supervised proposes, it does not launch', () => {
   assert.equal(plan.actions[0].taskId, 'a')
 })
 
+test('a task the Task Board already runs, claims or schedules is never launched twice', () => {
+  const owned = [
+    { id: 'run', title: 'Running elsewhere', status: 'todo', urgency: 'normal', workspaceId: 'w1', activeExecution: true },
+    { id: 'claimed', title: 'Claimed', status: 'todo', urgency: 'normal', workspaceId: 'w1', claimedBy: 'session-x' },
+    { id: 'sched', title: 'Scheduled', status: 'todo', urgency: 'normal', workspaceId: 'w1', execution: { mode: 'scheduled' } },
+    { id: 'wt', title: 'Worktree', status: 'todo', urgency: 'normal', workspaceId: 'w1', isolation: 'worktree' },
+    { id: 'ok', title: 'Free', status: 'todo', urgency: 'normal', workspaceId: 'w1' },
+  ]
+  const plan = selectDispatchable({
+    tasks: owned,
+    assignments: [],
+    proposals: [],
+    policy: normalizePolicy({ mode: MODES.AUTONOMOUS, maxConcurrent: 4 }),
+  })
+  assert.deepEqual(plan.actions.map(action => action.taskId), ['ok'])
+  const reasons = new Map(plan.skipped.map(entry => [entry.taskId, entry.reason]))
+  assert.equal(reasons.get('run'), 'already_running_in_taskboard')
+  assert.equal(reasons.get('claimed'), 'claimed_by_another_session')
+  assert.equal(reasons.get('sched'), 'owned_by_taskboard_scheduler')
+  assert.equal(reasons.get('wt'), 'worktree_isolation_not_supported')
+})
+
+test('a task asking for a permission outside the mandate is skipped with a reason', () => {
+  const withPermission = [
+    { id: 'p1', title: 'Needs full access', status: 'todo', workspaceId: 'w1', permission: 'danger-full-access' },
+    { id: 'p2', title: 'Read only', status: 'todo', workspaceId: 'w1', permission: 'read-only' },
+  ]
+  const policy = normalizePolicy({ mode: MODES.AUTONOMOUS, maxConcurrent: 4 })
+  const plan = selectDispatchable({ tasks: withPermission, assignments: [], proposals: [], policy })
+  assert.deepEqual(plan.actions.map(action => action.taskId), ['p2'])
+  assert.ok(plan.skipped.some(entry => entry.taskId === 'p1' && entry.reason === 'permission_not_allowed:danger-full-access'))
+  const widened = selectDispatchable({
+    tasks: withPermission,
+    assignments: [],
+    proposals: [],
+    policy: normalizePolicy({ mode: MODES.AUTONOMOUS, maxConcurrent: 4, allowedPermissions: ['read-only', 'danger-full-access'] }),
+  })
+  assert.deepEqual(widened.actions.map(action => action.taskId).sort(), ['p1', 'p2'])
+})
+
+test('automatic retries are bounded: cooldown then max attempts per revision', () => {
+  const task = { id: 'r1', title: 'Retry me', status: 'todo', workspaceId: 'w1', version: 2 }
+  const failed = [{ id: 'a1', taskId: 'r1', revision: 2, attempt: 0, status: 'failed', startedAt: 1000, endedAt: 2000 }]
+  const policy = normalizePolicy({ mode: MODES.AUTONOMOUS, maxConcurrent: 2, retryCooldownMs: 300_000, maxAttemptsPerRevision: 3 })
+  const cooling = selectDispatchable({ tasks: [task], assignments: failed, proposals: [], policy, now: 10_000 })
+  assert.deepEqual(cooling.actions, [])
+  assert.ok(cooling.skipped.some(entry => entry.reason === 'retry_cooldown'))
+  const afterCooldown = selectDispatchable({ tasks: [task], assignments: failed, proposals: [], policy, now: 400_000 })
+  assert.equal(afterCooldown.actions.length, 1)
+
+  const exhausted = [0, 1, 2].map(attempt => ({ id: `a${attempt}`, taskId: 'r1', revision: 2, attempt, status: 'failed', startedAt: attempt * 1000, endedAt: attempt * 1000 + 500 }))
+  const capped = selectDispatchable({ tasks: [task], assignments: exhausted, proposals: [], policy, now: 9_000_000 })
+  assert.deepEqual(capped.actions, [])
+  assert.ok(capped.skipped.some(entry => entry.reason === 'max_attempts_reached'))
+
+  // A new revision (the human rewrote the card) resets the automatic budget.
+  const newRevision = selectDispatchable({ tasks: [{ ...task, version: 3 }], assignments: exhausted, proposals: [], policy, now: 9_000_000 })
+  assert.equal(newRevision.actions.length, 1)
+})
+
+test('a stopped task is not automatically relaunched during the cooldown', () => {
+  const task = { id: 's1', title: 'Stopped', status: 'todo', workspaceId: 'w1', version: 1 }
+  const stopped = [{ id: 'a1', taskId: 's1', revision: 1, attempt: 0, status: 'stopped', startedAt: 1000, endedAt: 2000 }]
+  const policy = normalizePolicy({ mode: MODES.AUTONOMOUS, maxConcurrent: 2 })
+  const plan = selectDispatchable({ tasks: [task], assignments: stopped, proposals: [], policy, now: 5000 })
+  assert.deepEqual(plan.actions, [])
+  assert.ok(plan.skipped.some(entry => entry.reason === 'retry_cooldown'))
+})
+
+test('serializeSameWorkspace keeps one running agent per workspace when asked', () => {
+  const sameProject = [
+    { id: 'x', title: 'X', status: 'todo', urgency: 'normal', workspaceId: 'w1' },
+    { id: 'y', title: 'Y', status: 'todo', urgency: 'normal', workspaceId: 'w1' },
+    { id: 'z', title: 'Z', status: 'todo', urgency: 'normal', workspaceId: 'w2' },
+  ]
+  const policy = normalizePolicy({ mode: MODES.AUTONOMOUS, maxConcurrent: 4, serializeSameWorkspace: true })
+  const plan = selectDispatchable({ tasks: sameProject, assignments: [], proposals: [], policy })
+  // One task per workspace per plan: w1 emits x, w1/y is reserved out, w2 emits z.
+  assert.deepEqual(plan.actions.map(action => action.taskId).sort(), ['x', 'z'])
+  assert.ok(plan.skipped.some(entry => entry.taskId === 'y' && entry.reason === 'workspace_busy'))
+  const first = plan.actions[0]
+  const withBusy = selectDispatchable({
+    tasks: sameProject,
+    assignments: [{ id: 'asg', taskId: 'other', workspaceId: first.workspaceId, status: 'running' }],
+    proposals: [],
+    policy,
+  })
+  assert.ok(!withBusy.actions.some(action => action.workspaceId === first.workspaceId))
+  assert.ok(withBusy.skipped.some(entry => entry.reason === 'workspace_busy'))
+})
+
 test('autonomous launches only ready tasks and respects concurrency', () => {
   const plan = selectDispatchable({
     tasks,
@@ -105,4 +196,16 @@ test('stop plan only targets in-flight assignments', () => {
     { id: '2', taskId: 'b', sessionId: 's2', status: 'done' },
   ])
   assert.deepEqual(plan, [{ assignmentId: '1', taskId: 'a', sessionId: 's1' }])
+})
+
+test('a done assignment whose card is still todo is bound like a failure', () => {
+  const task = { id: 'd1', title: 'Did not claim', status: 'todo', workspaceId: 'w1', version: 1 }
+  const done = [{ id: 'a1', taskId: 'd1', revision: 1, attempt: 0, status: 'done', startedAt: 1000, endedAt: 2000 }]
+  const policy = normalizePolicy({ mode: MODES.AUTONOMOUS, maxConcurrent: 2, maxAttemptsPerRevision: 2 })
+  const cooling = selectDispatchable({ tasks: [task], assignments: done, proposals: [], policy, now: 10_000 })
+  assert.deepEqual(cooling.actions, [])
+  assert.ok(cooling.skipped.some(entry => entry.reason === 'retry_cooldown'))
+  const exhausted = selectDispatchable({ tasks: [task], assignments: [...done, { ...done[0], id: 'a2', attempt: 1 }], proposals: [], policy, now: 9_000_000 })
+  assert.deepEqual(exhausted.actions, [])
+  assert.ok(exhausted.skipped.some(entry => entry.reason === 'max_attempts_reached'))
 })
