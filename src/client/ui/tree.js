@@ -32,10 +32,77 @@ function DabTreeBranch({ entry, ctx }) {
   )
 }
 
+/** Parent → child pairs of the visible tree (render order). */
+function dabEdgesOf(entry, out = []) {
+  for (const child of entry.children) {
+    out.push({ from: entry.node.id, to: child.node.id, active: child.aggregate?.running === true || child.node.status === 'running' })
+    dabEdgesOf(child, out)
+  }
+  return out
+}
+
+/**
+ * Smooth node-graph link between two card rectangles (tile coordinates).
+ * Horizontal layout: right-middle of the parent → left-middle of the child.
+ * Stacked (narrow) layout: below the parent's mark → left-middle of the child.
+ */
+function dabLinkPath(a, b) {
+  if (b.left >= a.right - 1) {
+    const x1 = a.right
+    const y1 = a.top + Math.min(24, a.height / 2)
+    const x2 = b.left
+    const y2 = b.top + Math.min(24, b.height / 2)
+    const dx = Math.max(12, (x2 - x1) * 0.55)
+    return `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`
+  }
+  const x1 = a.left + 16
+  const y1 = a.bottom
+  const x2 = b.left
+  const y2 = b.top + Math.min(18, b.height / 2)
+  return `M${x1},${y1} C${x1},${y2} ${x1},${y2} ${x2},${y2}`
+}
+
 function DabAgentTree({ entry, ctx }) {
   const h = React.createElement
-  return h('div', { className: 'dab-tile' },
-    h('ul', { className: 'dab-branch-root', role: 'tree', 'aria-label': entry.node.title, style: { listStyle: 'none', margin: 0, padding: 0 } },
+  const tileRef = React.useRef(null)
+  const [links, setLinks] = React.useState({ paths: [], width: 0, height: 0 })
+  const edges = dabEdgesOf(entry)
+  const edgeKey = edges.map(edge => `${edge.from}>${edge.to}:${edge.active ? 1 : 0}`).join('|')
+
+  React.useLayoutEffect(() => {
+    const tile = tileRef.current
+    if (tile === null) return undefined
+    const measure = () => {
+      const base = tile.getBoundingClientRect()
+      const rectOf = id => {
+        const element = tile.querySelector(`.dab-card[data-node-id="${CSS.escape(id)}"]`)
+        if (element === null) return null
+        const r = element.getBoundingClientRect()
+        const left = r.left - base.left + tile.scrollLeft
+        const top = r.top - base.top + tile.scrollTop
+        return { left, top, right: left + r.width, bottom: top + r.height, width: r.width, height: r.height }
+      }
+      const paths = []
+      for (const edge of edges) {
+        const a = rectOf(edge.from)
+        const b = rectOf(edge.to)
+        if (a !== null && b !== null) paths.push({ key: `${edge.from}>${edge.to}`, d: dabLinkPath(a, b), active: edge.active })
+      }
+      setLinks({ paths, width: tile.scrollWidth, height: tile.scrollHeight })
+    }
+    measure()
+    if (typeof ResizeObserver !== 'function') return undefined
+    const observer = new ResizeObserver(() => measure())
+    observer.observe(tile)
+    return () => observer.disconnect()
+  }, [edgeKey, ctx.selectedId])
+
+  return h('div', { className: 'dab-tile', ref: tileRef },
+    links.paths.length > 0
+      ? h('svg', { className: 'dab-links', width: links.width, height: links.height, 'aria-hidden': 'true' },
+        links.paths.map(link => h('path', { key: link.key, d: link.d, 'data-active': link.active ? 'true' : 'false' })))
+      : null,
+    h('ul', { className: 'dab-tree', role: 'tree', 'aria-label': entry.node.title },
       h(DabTreeBranch, { entry, ctx })))
 }
 
