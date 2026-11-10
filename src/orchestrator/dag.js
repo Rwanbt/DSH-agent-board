@@ -206,9 +206,12 @@ export function selectDispatchable({ tasks, assignments = [], proposals = [], po
       skipped.push({ taskId: task.id, reason: 'owned_by_taskboard_scheduler' })
       continue
     }
-    // A board-launched session always runs in the workspace directory. Only the
-    // Task Board's own executor can create the worktree the card asks for.
-    if (task.isolation === 'worktree' && policy?.executionBackend !== 'taskboard') {
+    // A board-launched session runs in a directory the board can provide. The
+    // Task Board executor creates the worktree itself; the contract backend may
+    // hand one back from the lease. Anything else must not run an isolated card
+    // in the shared workspace.
+    const worktreeCapable = policy?.executionBackend === 'taskboard' || policy?.executionBackend === 'contract'
+    if (task.isolation === 'worktree' && !worktreeCapable) {
       skipped.push({ taskId: task.id, reason: 'worktree_isolation_not_supported' })
       continue
     }

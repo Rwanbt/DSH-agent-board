@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildProjection, classifyStatus, flattenVisible, compactRows, ancestorsOf } from '../src/supervisor/projection.js'
-import { STATUS } from '../src/contracts/model.js'
+import { buildProjection, classifyStatus, flattenVisible, compactRows, ancestorsOf, normalizeModelInfo, resolveNodeModel } from '../src/supervisor/projection.js'
+import { STATUS, STATUS_VALUES } from '../src/contracts/model.js'
 
 const baseList = {
   phase: 'ready',
@@ -262,4 +262,50 @@ test('an ack newer than native unread activity clears the native-only pill', () 
     hostState: { acks: { c: { seenAt: 1500 } } },
   }).byId.get('c')
   assert.equal(read.status, STATUS.FINISHED_READ)
+})
+
+test('the model chip is a fact: native projection or assignment, never a guess', () => {
+  const list = {
+    ids: ['native', 'unknown', 'assigned'],
+    byId: {
+      native: { id: 'native', projectionValues: { modelSelection: { lastUsed: { provider: 'opencode-go', model: 'deepseek-v4.1-flash' } } } },
+      // These plausible fields are NOT the model projection.
+      unknown: { id: 'unknown', model: { provider: 'default', model: 'deployment-default' }, header: { model: 'deployment-default' } },
+      assigned: { id: 'assigned', projectionValues: { modelSelection: { lastUsed: { provider: 'native-p', model: 'native-m' } } } },
+    },
+    projectionsBySession: {},
+  }
+  const projection = buildProjection({
+    list,
+    statusMap: new Map(),
+    hostState: { assignments: [{ id: 'a', sessionId: 'assigned', status: 'running', model: { provider: 'backup', model: 'medium' } }] },
+  })
+  assert.deepEqual(projection.byId.get('native').model, { provider: 'opencode-go', model: 'deepseek-v4.1-flash', reasoningEffort: null, source: 'native' })
+  assert.deepEqual(projection.byId.get('unknown').model, { provider: null, model: null, reasoningEffort: null, source: 'unknown' })
+  assert.equal(projection.byId.get('unknown').modelSource, 'unknown')
+  assert.equal(projection.byId.get('assigned').model.provider, 'backup')
+  assert.equal(projection.byId.get('assigned').modelSource, 'assignment')
+  assert.deepEqual(normalizeModelInfo({ provider: '', model: '' }), null)
+  assert.equal(resolveNodeModel({ sessionId: 'x', row: { id: 'x' } }).source, 'unknown')
+})
+
+test('the status vocabulary is closed: no invented waiting_agent', () => {
+  assert.ok(Object.values(STATUS).includes(STATUS.INTERRUPTED))
+  assert.ok(Object.values(STATUS).includes(STATUS.PROVIDER_UNAVAILABLE))
+  assert.equal(STATUS_VALUES.includes('waiting_agent'), false)
+  // A parent with a running child stays running: the child lifecycle is not a
+  // parent-wait signal (see the module comment for the investigated sources).
+  const projection = buildProjection({
+    list: {
+      ids: ['p', 'c'],
+      byId: {
+        p: { id: 'p', displayTitle: 'Parent', running: true },
+        c: { id: 'c', parentId: 'p', origin: 'subagent', displayTitle: 'Child', running: true },
+      },
+      projectionsBySession: { p: { values: { subagentCatalog: [{ sessionId: 'c', status: 'running' }] } } },
+    },
+    statusMap: new Map(),
+    hostState: {},
+  })
+  assert.equal(projection.byId.get('p').status, STATUS.RUNNING)
 })

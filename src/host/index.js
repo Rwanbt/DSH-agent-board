@@ -24,14 +24,17 @@ import { DEFAULT_POLICY, INTERRUPTED_TURN_KINDS, MODES, STATUS, allowedPermissio
 import { buildProjection, normalizeSessions } from '../supervisor/projection.js'
 import { selectDispatchable, stopPlan, readinessOf, mandateCheck, countRunning } from '../orchestrator/dag.js'
 import {
-  LEASE_STATUS, acquireLease, assignmentKey, createLease, ensureAssignment, reconcileAfterRestart,
+  LEASE_STATUS, acquireLease, assignmentKey, checkFencing, createLease, ensureAssignment, nextFencingToken, reconcileAfterRestart,
 } from '../orchestrator/lease.js'
 import { StateStore, compactState } from '../orchestrator/journal.js'
 import { DEFAULT_LOCK_TTL_MS, acquireInstanceLock, heartbeat, release, releaseSync } from '../orchestrator/lock.js'
 import { classifyFailure, parseRetryAfter } from '../routing/classify.js'
-import { isRouteAllowed, planRoute, recordHealth, routeKey } from '../routing/router.js'
+import { isRouteAllowed, planPrimaryReturn, planRoute, recordHealth, routeKey } from '../routing/router.js'
+import { resolveRoutePolicy } from '../routing/policy.js'
+import { consume as consumeBudget, describeBudget } from '../routing/budget.js'
 import { buildCheckpoint, handoffPrompt } from '../recovery/checkpoint.js'
 import { createConnectors } from '../connectors/registry.js'
+import { createTaskBoardContractClient } from '../connectors/taskboard-contract.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -65,6 +68,15 @@ function createDefaultState() {
     routeEvents: [],
     audit: [],
     health: {},
+    // Task Board execution contract: the negotiation outcome (or null before the
+    // first probe). `writes:false` means this host must stay on the two built-in
+    // backends and say so — it never emulates a canonical execution.
+    contract: null,
+    // Bounded budget counters (sliding hour). Token/cost are reported as
+    // unavailable by the budget module: the board cannot meter them.
+    usage: null,
+    // Last safe-boundary decision to come back to the primary route.
+    primaryReturn: null,
     lastTick: null,
     sync: null,
   }
@@ -88,6 +100,16 @@ function publicStateOf(state, adapters, extra = {}) {
     sync: state.sync,
     adapters,
     audit: state.audit.slice(-40),
+    // The panel shows the negotiation honestly: a degraded/absent contract is a
+    // visible fact, not a silent fallback to a second ledger.
+    contract: state.contract,
+    budget: describeBudget(state.policy, {
+      ...(state.usage ?? {}),
+      // Active concurrency is derived from the live assignments, never from a
+      // counter that a crashed host could leave behind.
+      concurrent: countRunning(state.assignments),
+    }),
+    primaryReturn: state.primaryReturn ?? null,
     ...extra,
   }
 }
@@ -244,7 +266,20 @@ export function apply(ctx, config = {}) {
     if (changes.length > 0) {
       reconcileNotes.push(...changes)
       audit({ type: 'restart_reconciled', changes })
+      // A restored contract attempt whose session is gone must release the Task
+      // Board lease it held; otherwise the canonical execution stays reserved by
+      // a session that no longer exists.
+      for (const change of changes) {
+        const assignment = state.assignments.find(entry => entry.id === change.assignmentId)
+        if (assignment !== undefined && assignment.backend === 'contract') releaseContractLease(assignment, 'restart_interrupted')
+      }
       if (isPrimary) void store.write(state).catch(error => warn(`reconcile save failed: ${String(error)}`))
+    }
+    // The unified backend needs a negotiated contract before it may do anything.
+    // Probing at boot (only when the operator selected it) keeps the card honest:
+    // `state.contract` is broadcast even when the extension is absent.
+    if (isPrimary && state.policy.executionBackend === 'contract') {
+      void ensureContract().catch(error => warn(`contract negotiation failed: ${String(error)}`))
     }
     ready = true
     broadcast()
@@ -254,6 +289,160 @@ export function apply(ctx, config = {}) {
   })
 
   connectors = createConnectors({ baseUrl: configuredOrigin(), githubRepository })
+
+  // ------------------------------------------------------ execution contract
+  // The Task Board owns the canonical execution record. This client speaks the
+  // PROPOSED, versioned execution-ownership extension: negotiate first, then
+  // lease -> attach session -> (failover attempt) -> report -> settle. When the
+  // extension is absent the board stays on its built-in backends and reports the
+  // refusal instead of emulating an execution it does not own.
+  const contractClient = createTaskBoardContractClient({
+    baseUrl: configuredOrigin(),
+    timeoutMs: 4000,
+  })
+  let contractProbe = null
+  let contractInFlight = null
+
+  function contractSummaryOf(negotiation) {
+    const features = negotiation?.features instanceof Set ? [...negotiation.features] : []
+    return {
+      version: negotiation?.version ?? null,
+      ok: negotiation?.ok === true,
+      writes: negotiation?.writes === true,
+      degraded: negotiation?.degraded === true,
+      absent: negotiation?.absent === true,
+      simulated: negotiation?.simulated === true,
+      reason: typeof negotiation?.reason === 'string' ? negotiation.reason : 'unnegotiated',
+      features,
+      missing: Array.isArray(negotiation?.missing) ? negotiation.missing.slice(0, 20) : [],
+      missingWrite: Array.isArray(negotiation?.missingWrite) ? negotiation.missingWrite.slice(0, 20) : [],
+      at: Date.now(),
+    }
+  }
+
+  function contractWritesReady() {
+    return state.contract !== null && state.contract.writes === true
+  }
+
+  async function ensureContract({ force = false } = {}) {
+    // One probe at a time: a burst of ticks or a policy change must not fan out
+    // into concurrent negotiations that could interleave their audit entries.
+    if (contractInFlight !== null && force !== true) return contractInFlight
+    if (contractProbe !== null && force !== true) return contractProbe
+    contractInFlight = (async () => {
+      let negotiation = null
+      try {
+        negotiation = await contractClient.contract()
+      } catch (error) {
+        negotiation = { ok: false, writes: false, reason: `probe_failed:${String(error?.message ?? error)}`, features: new Set(), missing: [], missingWrite: [] }
+      }
+      contractProbe = contractSummaryOf(negotiation)
+      state.contract = contractProbe
+      audit({ type: 'contract_negotiated', ok: contractProbe.ok, writes: contractProbe.writes, reason: contractProbe.reason, version: contractProbe.version })
+      touch()
+      return contractProbe
+    })().finally(() => { contractInFlight = null })
+    return contractInFlight
+  }
+
+  // ------------------------------------------------------------------ budget
+  // Only the metrics the board can substantiate are enforced; token/cost stay
+  // `available:false` in the snapshot. `describeBudget` is the single formatter.
+  function budgetUsage() {
+    return { ...(state.usage ?? {}), concurrent: countRunning(state.assignments) }
+  }
+
+  function budgetRefusal(now = Date.now()) {
+    const snapshot = describeBudget(state.policy, budgetUsage(), now)
+    if (snapshot.remaining.tasks <= 0) return 'budget_tasks_per_hour_exhausted'
+    if (snapshot.remaining.requests <= 0) return 'budget_requests_per_hour_exhausted'
+    return null
+  }
+
+  function recordBudget(kind, at = Date.now()) {
+    const result = consumeBudget(state.usage, { kind, limits: state.policy, at }, at)
+    state.usage = result.usage
+    return result
+  }
+
+  /**
+   * Fencing: a writer may only act while it holds the CURRENT token of a LIVE
+   * lease. Called right after every awaited step that could have raced a
+   * takeover or a Stop, so a stale writer cannot resurrect a decided attempt.
+   */
+  function fencingRefusal(assignment) {
+    if (assignment === null || assignment === undefined) return 'unknown_assignment'
+    const verdict = checkFencing({
+      assignment,
+      token: assignment.fencingToken,
+      now: Date.now(),
+      owner: typeof assignment.lease?.owner === 'string' ? assignment.lease.owner : undefined,
+    })
+    if (!verdict.ok) audit({ type: 'fencing_refused', assignmentId: assignment.id ?? null, taskId: assignment.taskId ?? null, reason: verdict.reason })
+    return verdict.ok ? null : verdict.reason
+  }
+
+  /**
+   * Takeover check for an EXISTING writer (a turn/end, a settlement).
+   *
+   * An expired lease is tolerated here: a legitimate long turn can outlive the
+   * board lease TTL, and the watchdog renews it on its next pass. What must never
+   * be tolerated is another writer having taken the assignment over, or the
+   * assignment having been ended underneath the caller.
+   */
+  function takeoverRefusal(assignment) {
+    if (assignment === null || assignment === undefined) return 'unknown_assignment'
+    const verdict = checkFencing({
+      assignment,
+      token: assignment.fencingToken,
+      now: Date.now(),
+      owner: typeof assignment.lease?.owner === 'string' ? assignment.lease.owner : undefined,
+    })
+    if (verdict.ok) return null
+    if (verdict.reason === 'lease_expired') return null
+    audit({ type: 'fencing_refused', assignmentId: assignment.id ?? null, taskId: assignment.taskId ?? null, reason: verdict.reason })
+    return verdict.reason
+  }
+
+  /**
+   * Release a Task Board execution lease without blocking the caller. Every
+   * terminal path of a contract attempt calls it: an un-released lease keeps the
+   * task reserved by a session that will never come back.
+   */
+  function releaseContractLease(assignment, reason) {
+    const leaseId = assignment?.leaseId
+    if (typeof leaseId !== 'string' || leaseId === '') return null
+    const pending = contractClient.releaseLease(leaseId, { reason: String(reason ?? '').slice(0, 120) })
+    void pending.then(result => {
+      if (result?.ok === true) audit({ type: 'contract_released', assignmentId: assignment.id ?? null, leaseId, reason })
+      else audit({ type: 'contract_release_failed', assignmentId: assignment.id ?? null, leaseId, code: result?.code ?? null })
+    }).catch(() => { /* the audit is best effort; the release itself is not retried silently */ })
+    return pending
+  }
+
+  /** Close the canonical execution of a contract attempt (never `done`). */
+  async function settleContractExecution(assignment, { outcome, git = null }) {
+    if (assignment?.backend !== 'contract' || typeof assignment?.leaseId !== 'string') return null
+    const succeeded = outcome === 'succeeded'
+    const report = succeeded && state.policy.contractBoardReport !== false ? boardReportOf(assignment, { git }) : null
+    const result = await contractClient.settleExecution(assignment.leaseId, {
+      outcome,
+      report,
+      requestReview: succeeded,
+    })
+    if (result?.ok === true) {
+      assignment.settledAt = Date.now()
+      assignment.settleError = null
+      audit({ type: 'contract_settled', assignmentId: assignment.id, leaseId: assignment.leaseId, outcome, reviewed: succeeded })
+    } else {
+      // The session is over but the canonical record could not be closed: keep
+      // the failure visible instead of pretending the execution ended cleanly.
+      assignment.settleError = `contract_settle_failed:${result?.code ?? 'unknown'}`
+      audit({ type: 'contract_settle_failed', assignmentId: assignment.id, leaseId: assignment.leaseId, code: result?.code ?? null, status: result?.status ?? null })
+    }
+    return result
+  }
+
 
   // ------------------------------------------------------- native observation
   // Preview + turn-end facts come from the session log itself (durable events),
@@ -338,14 +527,42 @@ export function apply(ctx, config = {}) {
     return undefined
   }
 
-  function defaultRoute() {
+  function defaultRoute(policy = state.policy) {
+    // An explicit operator chain wins over the deployment default: the board's
+    // policy is what the operator authorized for THIS board.
+    if (Array.isArray(policy?.routeChain) && policy.routeChain.length > 0) return policy.routeChain[0]
     try {
       const selection = ctx.get?.('agentDefaultModel')?.currentSelection?.()
       if (selection !== null && selection !== undefined && typeof selection.provider === 'string' && typeof selection.model === 'string') {
         return { provider: selection.provider, model: selection.model }
       }
     } catch { /* optional */ }
-    return state.policy.routeChain[0] ?? null
+    return policy?.routeChain?.[0] ?? null
+  }
+
+  /**
+   * Effective route policy for one card: the operator's global layer, then the
+   * project layer (most-restrictive-wins). A conflicting provider set is a
+   * refusal — `allowedProviders: []` alone would read as "unrestricted".
+   */
+  function effectiveRoutePolicy(task) {
+    const project = typeof task?.workspaceId === 'string'
+      ? (state.policy.projectPolicies?.[task.workspaceId] ?? null)
+      : null
+    const resolved = resolveRoutePolicy({ global: state.policy, project })
+    if (resolved.warnings.length > 0) {
+      audit({ type: 'route_policy_warning', at: Date.now(), warnings: resolved.warnings.slice(0, 8) })
+    }
+    return {
+      ...state.policy,
+      allowedProviders: resolved.allowedProviders,
+      allowCloudFallback: resolved.allowCloudFallback,
+      maxRetries: resolved.maxRetries,
+      maxSwitches: resolved.maxSwitches,
+      cooldownMs: resolved.cooldownMs,
+      routeChain: resolved.routeChain.length > 0 ? resolved.routeChain : state.policy.routeChain,
+      providersConflict: resolved.providersConflict === true,
+    }
   }
 
   function routeForTask(task) {
@@ -353,7 +570,30 @@ export function apply(ctx, config = {}) {
     if (pinned !== null && pinned !== undefined && typeof pinned.provider === 'string' && typeof pinned.model === 'string') {
       return { provider: pinned.provider, model: pinned.model, reasoningEffort: pinned.reasoningEffort, locality: pinned.locality ?? 'remote' }
     }
-    return defaultRoute()
+    const policy = effectiveRoutePolicy(task)
+    // Return to the PRIMARY route at a safe boundary: a task whose last attempt
+    // was handed off to a fallback route goes back to the operator's first
+    // choice for the next attempt, instead of drifting onto the fallback for
+    // ever. `planPrimaryReturn` refuses while a stream is in flight, while the
+    // provider cools down, or when the allow-list forbids it.
+    const decision = primaryReturnDecision(task)
+    if (decision.action === 'return') return decision.route
+    return defaultRoute(policy)
+  }
+
+  function primaryReturnDecision(task) {
+    const prior = state.assignments.filter(assignment => String(assignment.taskId) === String(task?.id)).slice(-1)[0]
+    if (prior === undefined || prior?.model === null || prior?.model === undefined) return { action: 'keep', route: null, reason: 'no_prior_route' }
+    // A new launch only happens after the previous attempt ended; anything else
+    // would be a duplicate and is refused elsewhere.
+    const atSafeBoundary = ['done', 'failed', 'stopped', 'interrupted', 'superseded'].includes(prior.status)
+    return planPrimaryReturn({
+      policy: effectiveRoutePolicy({ workspaceId: prior.workspaceId }),
+      currentRoute: prior.model,
+      atSafeBoundary,
+      health: state.health,
+      now: Date.now(),
+    })
   }
 
   const ACTIVE_STATUSES = Object.freeze([LEASE_STATUS.STARTING, LEASE_STATUS.RUNNING, LEASE_STATUS.RECOVERING])
@@ -369,6 +609,7 @@ export function apply(ctx, config = {}) {
   function authorizeLaunch(task, { source = 'tick' } = {}) {
     if (state.mode === MODES.OFF) return { ok: false, reason: 'mode_off' }
     if (isStopped()) return { ok: false, reason: 'stopped_by_operator' }
+    const backend = state.policy.executionBackend
     if (source !== 'failover') {
       const mandate = mandateCheck(task, state.policy)
       if (!mandate.ok) return { ok: false, reason: mandate.reason }
@@ -378,9 +619,19 @@ export function apply(ctx, config = {}) {
       if (typeof task?.permission === 'string' && task.permission !== '' && allowedPermissionOf(state.policy, task.permission) === null) {
         return { ok: false, reason: `permission_not_allowed:${task.permission}` }
       }
-      if (state.policy.executionBackend === 'taskboard') {
+      if (backend === 'taskboard') {
         // The Task Board executor honours isolation, permission, preset and
         // prompt itself; the board only observes the session it returns.
+      } else if (backend === 'contract') {
+        // The contract backend creates the session itself (so the model can be
+        // switched), but the Task Board still owns the execution record. It must
+        // have negotiated a COMPLETE extension: a partial one is more dangerous
+        // than none, so the client refuses every write in that case.
+        if (!contractWritesReady()) return { ok: false, reason: 'contract_unavailable' }
+        // A worktree card is accepted here only because the lease may hand back
+        // the prepared worktree directory; `launchTask` refuses (before creating
+        // a session) when the lease has no directory, so the card never runs in
+        // the shared workspace.
       } else if (task?.isolation === 'worktree') {
         // Honest refusal: a board-launched session cannot create the Task Board
         // worktree, and running a worktree-isolated card in the shared
@@ -390,13 +641,19 @@ export function apply(ctx, config = {}) {
       if (task?.activeExecution === true) return { ok: false, reason: 'already_running_in_taskboard' }
       if (typeof task?.claimedBy === 'string' && task.claimedBy !== '') return { ok: false, reason: 'claimed_by_another_session' }
       if (task?.execution?.mode === 'scheduled') return { ok: false, reason: 'owned_by_taskboard_scheduler' }
-      if (state.policy.executionBackend !== 'taskboard') {
+      if (backend !== 'taskboard') {
+        const routePolicy = effectiveRoutePolicy(task)
+        if (routePolicy.providersConflict) return { ok: false, reason: 'route_policy_conflict' }
         const route = routeForTask(task)
         if (route !== null && route !== undefined) {
-          const allowed = isRouteAllowed(route, state.policy, null)
+          const allowed = isRouteAllowed(route, routePolicy, null)
           if (!allowed.ok) return { ok: false, reason: allowed.reason }
         }
       }
+      // The operator's budget is checked at the ONE launch gate: a manual
+      // dispatch, an approval and a tick all count against the same window.
+      const budget = budgetRefusal()
+      if (budget !== null) return { ok: false, reason: budget }
     }
     return { ok: true, reason: 'allowed' }
   }
@@ -421,11 +678,15 @@ export function apply(ctx, config = {}) {
     ].join('\n')
   }
 
-  async function createSession({ task, assignment, message, sessionId: fixedSessionId = null }) {
+  async function createSession({ task, assignment, message, sessionId: fixedSessionId = null, cwd = null }) {
     const workspace = resolveWorkspace(task.workspaceId)
     if (workspace === undefined) {
       throw new Error(`unknown workspace ${JSON.stringify(task.workspaceId)}: the board only launches inside a registered DSH workspace`)
     }
+    // A contract lease may hand back the prepared worktree/baseline directory;
+    // the session must run THERE, never in the shared workspace, when the card
+    // asked for isolation.
+    const directory = typeof cwd === 'string' && cwd !== '' ? cwd : workspace.path
     const sessionId = fixedSessionId ?? `session-agentboard-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`
     const route = assignment.model ?? routeForTask(task)
     const agentOptions = route !== null && route !== undefined ? {
@@ -435,7 +696,7 @@ export function apply(ctx, config = {}) {
     } : undefined
     const handle = await ctx.agents.create({
       sessionId,
-      meta: { cwd: workspace.path },
+      meta: { cwd: directory },
       ...(agentOptions !== undefined ? { agentOptions } : {}),
     })
     try {
@@ -492,11 +753,15 @@ export function apply(ctx, config = {}) {
       .map(assignment => Number(assignment.attempt) || 0)
     const attempt = priorAttempts.length === 0 ? 0 : Math.max(...priorAttempts) + 1
     const key = assignmentKey({ taskId: task.id, revision, attempt })
-    const backend = state.policy.executionBackend === 'taskboard' ? 'taskboard' : 'board'
+    const backend = state.policy.executionBackend === 'taskboard'
+      ? 'taskboard'
+      : (state.policy.executionBackend === 'contract' ? 'contract' : 'board')
     // The board path needs a pre-generated session id (an early turn/end can be
     // attributed before `ctx.agents.create` resolves); the Task Board path gets
-    // the session id from the Task Board executor.
-    const sessionId = backend === 'board' ? `session-agentboard-${globalThis.crypto?.randomUUID?.() ?? Date.now()}` : null
+    // the session id from the Task Board executor. The contract path creates the
+    // session itself (so failover stays possible) but the Task Board owns the
+    // execution record it is attached to.
+    const sessionId = backend === 'board' || backend === 'contract' ? `session-agentboard-${globalThis.crypto?.randomUUID?.() ?? Date.now()}` : null
     const { lease, fencingToken } = acquireLease(undefined, {
       owner: 'agent-board',
       now: Date.now(),
@@ -527,10 +792,21 @@ export function apply(ctx, config = {}) {
       return { ok: false, reason: 'duplicate_assignment', assignmentId: assignment.id }
     }
     state.assignments.push(assignment)
+    // Count the launch against the operator's budget in the SAME step that makes
+    // the assignment durable: a refused launch never consumes a slot.
+    recordBudget('task')
     if (proposalId !== null) {
       const proposal = state.proposals.find(entry => entry.id === proposalId)
       if (proposal !== undefined) proposal.status = 'approved'
     }
+    // A new attempt that intentionally goes back to the primary route is a
+    // visible decision, not a silent drift.
+    const primary = primaryReturnDecision(task)
+    if (primary.action === 'return') {
+      state.primaryReturn = { at: Date.now(), from: routeKey(assignment.model), to: routeKey(primary.route), reason: primary.reason, taskId: task.id }
+      audit({ type: 'primary_return', taskId: task.id, assignmentId: assignment.id, from: routeKey(assignment.model), to: routeKey(primary.route) })
+    }
+    state.executionBackendUsed = backend
     const epochAtLaunch = state.stopEpoch
     touch()
     try {
@@ -575,6 +851,19 @@ export function apply(ctx, config = {}) {
         touch()
         return { ok: true, assignmentId: assignment.id, sessionId: started.sessionId, executionId: started.executionId }
       }
+      if (backend === 'contract') {
+        // Unified path: the Task Board leases the canonical execution, the board
+        // creates a session it can later switch, then attaches that session to
+        // the execution. One record, and failover stays possible.
+        return await runContractAttempt({
+          task,
+          assignment,
+          sessionId,
+          message: buildLaunchBody(task, assignment),
+          epochAtLaunch,
+          expectedVersion: Number.isInteger(Number(task.version)) ? Number(task.version) : null,
+        })
+      }
       const { handle } = await createSession({ task, assignment, message: buildLaunchBody(task, assignment), sessionId })
       // Stop during launch: no session may survive an operator stop that landed
       // while `ctx.agents.create` was in flight.
@@ -618,6 +907,174 @@ export function apply(ctx, config = {}) {
   }
 
   /**
+   * One attempt on the `contract` backend.
+   *
+   * Order is the contract: LEASE (the Task Board reserves the task and returns an
+   * execution id, optionally a prepared worktree), CREATE a session the board
+   * controls, ATTACH it to the execution, then observe. The previous
+   * execution id is passed so the Task Board can link attempts of the same task.
+   *
+   * Every exit path releases the lease when no session was attached: a lease
+   * without a release would hold a claim for ever.
+   */
+  async function runContractAttempt({ task, assignment, sessionId, message, epochAtLaunch, expectedVersion = null, source = 'launch' }) {
+    const route = assignment.model ?? routeForTask(task)
+    const priorExecutionId = (() => {
+      const prior = state.assignments
+        .filter(entry => entry.id !== assignment.id && String(entry.taskId) === String(task.id) && typeof entry.executionId === 'string' && entry.executionId !== '')
+        .slice(-1)[0]
+      return prior?.executionId ?? null
+    })()
+    const attemptNumber = Math.max(1, (Number(assignment.attempt) || 0) + 1)
+    const leased = await contractClient.leaseExecution(String(task.id), {
+      route: route === null || route === undefined ? null : { provider: route.provider, model: route.model },
+      attempt: attemptNumber,
+      previousExecutionId: priorExecutionId,
+      idempotencyKey: assignment.idempotencyKey,
+      expectedVersion,
+    })
+    if (leased.ok !== true) {
+      assignment.status = LEASE_STATUS.FAILED
+      assignment.endedAt = Date.now()
+      assignment.error = `contract_lease_refused:${leased.code}`
+      audit({ type: 'contract_lease_refused', taskId: task.id, assignmentId: assignment.id, code: leased.code, message: leased.message, status: leased.status })
+      touch()
+      return { ok: false, reason: 'contract_lease_refused', code: leased.code, assignmentId: assignment.id }
+    }
+    const leaseId = leased.value.leaseId
+    assignment.executionId = leased.value.executionId
+    assignment.leaseId = leaseId
+    assignment.contract = {
+      leaseId,
+      executionId: leased.value.executionId,
+      attempt: Number(leased.value.attempt) || attemptNumber,
+      previousExecutionId: priorExecutionId,
+      leasedAt: Date.now(),
+    }
+    const workdir = typeof leased.value.workdir === 'string' && leased.value.workdir !== ''
+      ? leased.value.workdir
+      : (typeof leased.value.worktreePath === 'string' && leased.value.worktreePath !== '' ? leased.value.worktreePath : null)
+    // Isolation is a guarantee, not a preference: an isolated card with no
+    // prepared directory must not fall back to the shared workspace.
+    if (assignment.taskIsolation === 'worktree' && workdir === null) {
+      await contractClient.releaseLease(leaseId, { reason: 'worktree_unavailable' })
+      assignment.status = LEASE_STATUS.FAILED
+      assignment.endedAt = Date.now()
+      assignment.error = 'worktree_isolation_unavailable'
+      audit({ type: 'contract_attempt_refused', taskId: task.id, assignmentId: assignment.id, reason: 'worktree_unavailable' })
+      touch()
+      return { ok: false, reason: 'worktree_isolation_unavailable', assignmentId: assignment.id }
+    }
+    let handle = null
+    try {
+      const created = await createSession({ task, assignment, message, sessionId, cwd: workdir })
+      handle = created.handle
+      // Fencing after the awaited creation: the assignment may have been taken
+      // over (or settled) while `ctx.agents.create` was in flight.
+      const fenced = fencingRefusal(assignment)
+      if (fenced !== null) {
+        try { handle?.agent?.cancel?.({ kind: 'user' }) } catch { /* best effort */ }
+        await contractClient.releaseLease(leaseId, { reason: `fencing:${fenced}` })
+        assignment.status = LEASE_STATUS.INTERRUPTED
+        assignment.endedAt = Date.now()
+        assignment.error = `fencing_refused:${fenced}`
+        touch()
+        return { ok: false, reason: `fencing:${fenced}`, assignmentId: assignment.id, sessionId }
+      }
+      if (state.stopEpoch !== epochAtLaunch || isStopped() || state.mode === MODES.OFF) {
+        let cancelled = false
+        try { handle?.agent?.cancel?.({ kind: 'user' }); cancelled = true } catch { /* best effort */ }
+        await contractClient.releaseLease(leaseId, { reason: 'stopped_during_launch' })
+        assignment.status = cancelled ? LEASE_STATUS.STOPPED : LEASE_STATUS.INTERRUPTED
+        assignment.endedAt = Date.now()
+        assignment.error = cancelled ? 'stopped_during_launch' : 'stop_race_cancel_failed'
+        audit({ type: 'contract_launch_cancelled', taskId: task.id, assignmentId: assignment.id, sessionId, cancelled })
+        touch()
+        return { ok: false, reason: cancelled ? 'stopped_during_launch' : 'stop_failed', assignmentId: assignment.id, sessionId }
+      }
+      if (assignment.status !== LEASE_STATUS.STARTING && assignment.status !== LEASE_STATUS.RECOVERING) {
+        audit({ type: 'launch_settled_early', taskId: task.id, assignmentId: assignment.id, sessionId, status: assignment.status, backend: 'contract' })
+        touch()
+        return { ok: true, assignmentId: assignment.id, sessionId, settled: assignment.status }
+      }
+      const attached = await contractClient.attachSession(leaseId, {
+        sessionId,
+        route: route === null || route === undefined ? null : { provider: route.provider, model: route.model },
+      })
+      if (attached.ok !== true) {
+        // The canonical execution refused the session: never present the task as
+        // running under it. Cancel the orphan session and release the lease.
+        let cancelled = false
+        try { handle?.agent?.cancel?.({ kind: 'user' }); cancelled = true } catch { /* best effort */ }
+        await contractClient.releaseLease(leaseId, { reason: `attach_refused:${attached.code}` })
+        assignment.status = LEASE_STATUS.INTERRUPTED
+        assignment.endedAt = Date.now()
+        assignment.error = `contract_attach_refused:${attached.code}`
+        audit({ type: 'contract_attach_refused', taskId: task.id, assignmentId: assignment.id, sessionId, code: attached.code, cancelled })
+        touch()
+        return { ok: false, reason: 'contract_attach_refused', code: attached.code, assignmentId: assignment.id, sessionId }
+      }
+      // A Stop that landed while the attach was in flight wins.
+      if (state.stopEpoch !== epochAtLaunch || isStopped() || state.mode === MODES.OFF) {
+        let cancelled = false
+        try { handle?.agent?.cancel?.({ kind: 'user' }); cancelled = true } catch { /* best effort */ }
+        await contractClient.releaseLease(leaseId, { reason: 'stopped_during_attach' })
+        assignment.status = cancelled ? LEASE_STATUS.STOPPED : LEASE_STATUS.INTERRUPTED
+        assignment.endedAt = Date.now()
+        assignment.error = cancelled ? 'stopped_during_attach' : 'stop_race_cancel_failed'
+        audit({ type: 'contract_launch_cancelled', taskId: task.id, assignmentId: assignment.id, sessionId, cancelled, phase: 'attach' })
+        touch()
+        return { ok: false, reason: cancelled ? 'stopped_during_launch' : 'stop_failed', assignmentId: assignment.id, sessionId }
+      }
+      if (assignment.status === LEASE_STATUS.STARTING || assignment.status === LEASE_STATUS.RECOVERING) {
+        assignment.status = LEASE_STATUS.RUNNING
+        assignment.lease = { ...(assignment.lease ?? createLease({ owner: 'agent-board', now: Date.now(), ttlMs: state.policy.leaseTtlMs })), expiresAt: Date.now() + state.policy.leaseTtlMs }
+        assignment.reason = null
+        assignment.recoveringAt = null
+      }
+      audit({
+        type: source === 'handoff' ? 'handoff' : 'launch',
+        taskId: task.id, assignmentId: assignment.id, sessionId,
+        executionId: assignment.executionId, leaseId, route: routeKey(route), backend: 'contract', source,
+        ...(source === 'handoff' ? { to: sessionId, from: assignment.previousSessionId ?? null, switches: assignment.switches ?? 0 } : {}),
+      })
+      touch()
+      return { ok: true, assignmentId: assignment.id, sessionId, executionId: assignment.executionId, leaseId }
+    } catch (error) {
+      // A failure between lease and attach must release the lease, or the task
+      // stays claimed by nobody for ever.
+      await contractClient.releaseLease(leaseId, { reason: 'launch_failed' })
+      assignment.status = LEASE_STATUS.FAILED
+      assignment.endedAt = Date.now()
+      assignment.error = truncate(String(error?.message ?? error), 400)
+      audit({ type: 'contract_launch_failed', taskId: task.id, assignmentId: assignment.id, error: assignment.error })
+      touch()
+      return { ok: false, reason: 'launch_failed', error: assignment.error }
+    }
+  }
+
+  /** Board-observed settlement evidence, clearly labelled as such. */
+  function boardReportOf(assignment, { git = null } = {}) {
+    const lines = [
+      `Agent Board recorded the end of execution for task ${assignment.taskId} (attempt ${Number(assignment.attempt) || 0}, session ${assignment.sessionId ?? 'unknown'}).`,
+      'This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route).',
+      'It does not replace a richer report the agent may have submitted itself.',
+    ]
+    const checks = [`observed: session ${assignment.sessionId ?? 'unknown'}`, `observed: outcome ${assignment.outcome ?? assignment.status}`]
+    if (git?.head) checks.push(`observed: git head ${String(git.head).slice(0, 12)}`)
+    if (git?.branch) checks.push(`observed: git branch ${git.branch}`)
+    const changedFiles = Array.isArray(git?.changedFiles) ? git.changedFiles.slice(0, 50) : []
+    return {
+      summary: truncate(lines.join(' '), 2000),
+      changedFiles,
+      checks,
+      artifacts: [],
+      risk: 'Settlement report generated by Agent Board from observed session facts; external effects were not reconciled.',
+    }
+  }
+
+
+  /**
    * Watchdog: an assignment whose lease expired and whose agent is gone is a
    * ghost slot. It becomes `interrupted` (visible, never silently relaunched),
    * so `maxConcurrent` stops counting a dead execution forever.
@@ -637,6 +1094,7 @@ export function apply(ctx, config = {}) {
           assignment.error = assignment.error ?? 'recovering_without_lease'
           changed = true
           audit({ type: 'assignment_interrupted', assignmentId: assignment.id, taskId: assignment.taskId, reason: 'recovering_without_lease' })
+          releaseContractLease(assignment, 'interrupted_recovering_without_lease')
         }
         continue
       }
@@ -656,6 +1114,7 @@ export function apply(ctx, config = {}) {
       assignment.lease = null
       changed = true
       audit({ type: 'assignment_interrupted', assignmentId: assignment.id, taskId: assignment.taskId, reason: 'lease_expired' })
+      releaseContractLease(assignment, 'lease_expired')
     }
     if (changed) touch()
     return changed
@@ -711,14 +1170,16 @@ export function apply(ctx, config = {}) {
     }
     const mandate = mandateCheck(synthetic, state.policy)
     if (!mandate.ok) return { ok: false, reason: mandate.reason }
+    const routePolicy = effectiveRoutePolicy(synthetic)
+    if (routePolicy.providersConflict) return { ok: false, reason: 'route_policy_conflict' }
     if (typeof synthetic.permission === 'string' && synthetic.permission !== '' && allowedPermissionOf(state.policy, synthetic.permission) === null) {
       return { ok: false, reason: `permission_not_allowed:${synthetic.permission}` }
     }
-    if (synthetic.isolation === 'worktree' && state.policy.executionBackend !== 'taskboard') {
+    if (synthetic.isolation === 'worktree' && state.policy.executionBackend !== 'taskboard' && state.policy.executionBackend !== 'contract') {
       return { ok: false, reason: 'worktree_isolation_not_supported' }
     }
     if (nextRoute !== null && nextRoute !== undefined) {
-      const allowed = isRouteAllowed(nextRoute, state.policy, assignment.model)
+      const allowed = isRouteAllowed(nextRoute, routePolicy, assignment.model)
       if (!allowed.ok) return { ok: false, reason: allowed.reason }
     }
     // Fresh ledger truth: a card that was trashed, submitted, moved or claimed by
@@ -759,6 +1220,13 @@ export function apply(ctx, config = {}) {
     if (!isPrimary) return
     const assignment = state.assignments.find(entry => entry.sessionId === sessionId && [LEASE_STATUS.STARTING, LEASE_STATUS.RUNNING].includes(entry.status))
     if (assignment === undefined) return
+    // Fencing: another writer may have taken this assignment over while the turn
+    // was ending. A stale writer must not settle the new owner's attempt.
+    const takeover = takeoverRefusal(assignment)
+    if (takeover !== null) {
+      audit({ type: 'turn_end_refused', taskId: assignment.taskId, assignmentId: assignment.id, reason: takeover, kind })
+      return
+    }
     const cwd = (() => {
       try {
         return ctx.get?.('workingDirectory')?.get?.(ctx.get?.('sessions')?.get?.(sessionId)) ?? undefined
@@ -776,6 +1244,29 @@ export function apply(ctx, config = {}) {
       assignment.outcome = kind
       assignment.lease = null
       audit({ type: 'turn_done', taskId: assignment.taskId, assignmentId: assignment.id, kind })
+      if (assignment.backend === 'contract') {
+        // Close the canonical execution: `requestReview` asks the Task Board to
+        // move the card to in_review. The board never asks for `done`.
+        try {
+          await settleContractExecution(assignment, { outcome: 'succeeded', git: await gatherGit(cwd) })
+        } catch (error) {
+          warn(`contract settlement failed for ${assignment.id}: ${String(error?.message ?? error)}`)
+        }
+      }
+      // Record whether the NEXT attempt may come back to the operator's primary
+      // route. This is a decision on the record, not a silent drift.
+      if (assignment.model !== null && assignment.model !== undefined) {
+        const decision = planPrimaryReturn({
+          policy: state.policy,
+          currentRoute: assignment.model,
+          atSafeBoundary: true,
+          health: state.health,
+          now: Date.now(),
+        })
+        assignment.primaryReturn = decision.action === 'return'
+          ? { eligible: true, route: routeKey(decision.route), reason: decision.reason }
+          : { eligible: false, reason: decision.reason }
+      }
       touch()
       return
     }
@@ -788,6 +1279,9 @@ export function apply(ctx, config = {}) {
       assignment.lease = null
       assignment.error = assignment.error ?? (kind === 'aborted' ? 'turn_aborted' : 'turn_blocked')
       audit({ type: 'turn_interrupted', taskId: assignment.taskId, assignmentId: assignment.id, kind })
+      if (assignment.backend === 'contract') {
+        void settleContractExecution(assignment, { outcome: kind === 'aborted' ? 'cancelled' : 'failed' })
+      }
       touch()
       return
     }
@@ -796,6 +1290,9 @@ export function apply(ctx, config = {}) {
       assignment.endedAt = Date.now()
       assignment.outcome = kind
       assignment.lease = null
+      // An unrecognised ending is not a verified success: close the canonical
+      // execution as failed rather than asking for review on an unknown outcome.
+      if (assignment.backend === 'contract') void settleContractExecution(assignment, { outcome: 'failed' })
       touch()
       return
     }
@@ -805,6 +1302,7 @@ export function apply(ctx, config = {}) {
       assignment.outcome = 'error'
       assignment.error = truncate(`delegation_stopped: ${error ?? 'turn ended in error'}`, 400)
       audit({ type: 'recovery_suppressed', taskId: assignment.taskId, assignmentId: assignment.id, reason: state.mode === MODES.OFF ? 'mode_off' : 'stopped_by_operator' })
+      if (assignment.backend === 'contract') void settleContractExecution(assignment, { outcome: 'cancelled' })
       touch()
       return
     }
@@ -836,20 +1334,24 @@ export function apply(ctx, config = {}) {
       // the same request unreplayable.
       afterFirstChunk: Number.isFinite(firstOutputAt) && firstOutputAt >= Number(assignment.startedAt),
     })
-    const policy = state.policy
-    const currentRoute = assignment.model ?? defaultRoute()
+    const policy = effectiveRoutePolicy({ workspaceId: assignment.workspaceId })
+    const currentRoute = assignment.model ?? defaultRoute(policy)
     const triedRoutes = assignment.routeHistory.map(entry => entry.to)
-    const plan = planRoute({
-      failure,
-      retries: Number(assignment.retries) || 0,
-      switches: Number(assignment.switches) || 0,
-      currentRoute,
-      chain: policy.routeChain,
-      policy,
-      health: state.health,
-      now: Date.now(),
-      triedRoutes,
-    })
+    // A conflicting layered policy authorizes NO route: refuse instead of
+    // reading the empty allow-list as "everything is allowed".
+    const plan = policy.providersConflict
+      ? { action: 'stop', delayMs: 0, nextRoute: null, reason: 'route_policy_conflict', cooldownUntil: null }
+      : planRoute({
+        failure,
+        retries: Number(assignment.retries) || 0,
+        switches: Number(assignment.switches) || 0,
+        currentRoute,
+        chain: policy.routeChain,
+        policy,
+        health: state.health,
+        now: Date.now(),
+        triedRoutes,
+      })
     state.health = recordHealth(state.health, { provider: currentRoute?.provider ?? 'unknown', kind: failure.kind })
     state.routeEvents.push({
       at: Date.now(),
@@ -868,6 +1370,9 @@ export function apply(ctx, config = {}) {
       assignment.endedAt = Date.now()
       assignment.error = `${failure.kind}: ${failure.message}`
       assignment.lease = null
+      // The canonical execution must not stay `running` for ever: close it as
+      // failed instead of leaking a lease the Task Board will reclaim later.
+      if (assignment.backend === 'contract') void settleContractExecution(assignment, { outcome: 'failed' })
       touch()
       return
     }
@@ -959,6 +1464,10 @@ export function apply(ctx, config = {}) {
       if (verdict.unverified !== undefined) {
         audit({ type: 'handoff_unverified', assignmentId: assignment.id, taskId: assignment.taskId, error: truncate(verdict.unverified, 200) })
       }
+      // The previous attempt's canonical execution is over: release its lease so
+      // the Task Board can record the NEXT attempt instead of believing the old
+      // session still owns the task.
+      if (assignment.backend === 'contract') releaseContractLease(assignment, 'failover_handoff')
       const attempt = (Number(assignment.attempt) || 0) + 1
       const key = assignmentKey({ taskId: assignment.taskId, revision: assignment.revision, attempt })
       const sessionIdNext = `session-agentboard-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`
@@ -980,6 +1489,7 @@ export function apply(ctx, config = {}) {
         attempt,
         idempotencyKey: key,
         model: nextRoute,
+        backend: assignment.backend,
         // Visible `recovering` state until the new session is running, so the
         // card never pretends the task simply continued.
         status: LEASE_STATUS.RECOVERING,
@@ -998,6 +1508,23 @@ export function apply(ctx, config = {}) {
       const epochAtHandoff = state.stopEpoch
       try {
         const prompt = handoffPrompt(checkpoint, { task, fromRoute: assignment.model, toRoute: nextRoute, reason: plan.reason })
+        if (next.assignment.backend === 'contract') {
+          // Unified path: a new canonical execution attempt linked to the same
+          // task, carrying `previousExecutionId` so the Task Board keeps the
+          // attempt chain. The board still owns the session, so the model can be
+          // switched again if needed.
+          await runContractAttempt({
+            task: { id: assignment.taskId, title: assignment.taskTitle ?? assignment.taskId, workspaceId: assignment.workspaceId },
+            assignment: next.assignment,
+            sessionId: sessionIdNext,
+            message: prompt,
+            epochAtLaunch: epochAtHandoff,
+            expectedVersion: null,
+            source: 'handoff',
+          })
+          touch()
+          return
+        }
         const created = await createSession({ task, assignment: next.assignment, message: prompt, sessionId: sessionIdNext })
         // A Stop that landed while the handoff session was being created wins.
         if (state.stopEpoch !== epochAtHandoff || isStopped() || state.mode === MODES.OFF) {
@@ -1186,6 +1713,13 @@ export function apply(ctx, config = {}) {
         }
         assignment.endedAt = Date.now()
         assignment.lease = null
+        if (assignment.backend === 'contract' && typeof assignment.leaseId === 'string') {
+          // A Stopped board must not leave a Task Board execution reserved by a
+          // session it just cancelled. The not-yet-created case is handled by the
+          // launch's own epoch guard, which releases the lease it took.
+          if (cancelled) void settleContractExecution(assignment, { outcome: 'cancelled' })
+          else if (target.sessionId !== null) releaseContractLease(assignment, `stop_failed:${failure ?? 'unknown'}`)
+        }
       }
       stopped.push({ ...target, cancelled, failure })
     }
@@ -1271,6 +1805,16 @@ export function apply(ctx, config = {}) {
           void readyPromise.then(() => sendJson(res, 200, { ok: true, value: connectors.describe() }))
           return
         }
+        // The execution contract is part of the API, not a hidden capability: the
+        // panel and an operator can see exactly what was negotiated.
+        if (method === 'GET' && route === '/contract') {
+          void readyPromise.then(async () => {
+            const refresh = url.searchParams.get('refresh') === '1'
+            if (isPrimary && (refresh || state.contract === null)) await ensureContract({ force: refresh })
+            sendJson(res, 200, { ok: true, value: state.contract })
+          }).catch(error => sendJson(res, 500, { ok: false, error: truncate(String(error?.message ?? error), 300) }))
+          return
+        }
         if (method === 'POST') {
           void (async () => {
             await readyPromise
@@ -1324,11 +1868,17 @@ export function apply(ctx, config = {}) {
             if (route === '/policy') {
               const incoming = { ...state.policy, ...(body.policy ?? {}) }
               if (!isMode(body.policy?.mode)) incoming.mode = state.mode
+              const previousBackend = state.policy.executionBackend
               const merged = normalizePolicy(incoming, state.policy)
               state.policy = merged
               state.mode = merged.mode
               audit({ type: 'policy_changed', policy: merged })
               touch()
+              // Selecting the unified backend requires a fresh negotiation: a
+              // cached "absent" answer from another backend must not be trusted.
+              if (isPrimary && merged.executionBackend === 'contract' && (previousBackend !== 'contract' || state.contract === null)) {
+                void ensureContract({ force: true }).catch(error => warn(`contract negotiation failed: ${String(error)}`))
+              }
               return sendJson(res, 200, { ok: true, value: merged })
             }
             if (route === '/tick') {

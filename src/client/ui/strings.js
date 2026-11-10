@@ -33,6 +33,8 @@ const DAB_STRINGS = {
     statusRunning: 'En cours',
     statusWaiting: 'Attend votre action',
     statusRecovering: 'Récupération en cours',
+    statusInterrupted: 'Interrompu',
+    statusProviderUnavailable: 'Fournisseur indisponible',
     statusUnavailable: 'Agent indisponible',
     statusUnread: 'Terminé — non consulté',
     statusRead: 'Terminé',
@@ -78,6 +80,7 @@ const DAB_STRINGS = {
     goal: 'Objectif',
     orphan: 'parent inconnu',
     cycle: 'parenté invalide (cycle)',
+    contest: 'parenté contestée',
     unassigned: 'Non attribué',
     emptyAttention: 'Rien à traiter : aucun agent en cours, en attente ou fraîchement terminé.',
     emptyHint: 'L\u2019historique reste accessible via « Historique » ou la recherche.',
@@ -88,6 +91,11 @@ const DAB_STRINGS = {
     loadMore: 'Charger plus',
     archived: 'archivée',
     noModel: 'modèle inconnu',
+    provider: 'Fournisseur',
+    modelNative: 'natif',
+    modelAssignment: 'board',
+    modelUnknown: 'inconnu',
+    modelSource: 'Source du modèle',
     proposals: 'Proposition en attente',
     approve: 'Approuver',
     reject: 'Refuser',
@@ -141,6 +149,8 @@ const DAB_STRINGS = {
     statusRunning: 'Running',
     statusWaiting: 'Needs your action',
     statusRecovering: 'Recovering',
+    statusInterrupted: 'Interrupted',
+    statusProviderUnavailable: 'Provider unavailable',
     statusUnavailable: 'Agent unavailable',
     statusUnread: 'Finished — not viewed',
     statusRead: 'Finished',
@@ -186,6 +196,7 @@ const DAB_STRINGS = {
     goal: 'Goal',
     orphan: 'unknown parent',
     cycle: 'invalid parentage (cycle)',
+    contest: 'contested parentage',
     unassigned: 'Unassigned',
     emptyAttention: 'Nothing to handle: no agent running, waiting or freshly finished.',
     emptyHint: 'History stays available through “History” or the search.',
@@ -196,6 +207,11 @@ const DAB_STRINGS = {
     loadMore: 'Load more',
     archived: 'archived',
     noModel: 'unknown model',
+    provider: 'Provider',
+    modelNative: 'native',
+    modelAssignment: 'board',
+    modelUnknown: 'unknown',
+    modelSource: 'Model source',
     proposals: 'Pending proposal',
     approve: 'Approve',
     reject: 'Reject',
@@ -252,6 +268,8 @@ const DAB_STATUS_TEXT = {
   running: 'statusRunning',
   waiting_user: 'statusWaiting',
   recovering: 'statusRecovering',
+  interrupted: 'statusInterrupted',
+  provider_unavailable: 'statusProviderUnavailable',
   finished_unread: 'statusUnread',
   finished_read: 'statusRead',
   failed: 'statusFailed',
@@ -282,14 +300,32 @@ function dabFormatAge(at, now = Date.now()) {
   return `${Math.round(hours / 24)} j`
 }
 
+/**
+ * Chip text: the model name when known, else the provider, else null (the card
+ * then renders the explicit "unknown model" label). Never a placeholder for a
+ * value the board does not have.
+ */
 function dabModelText(model) {
-  if (model === null || model === undefined || (model.model === '—' && model.provider === '—')) return null
-  const name = typeof model.model === 'string' && model.model !== '—' ? model.model : '?'
-  return name
+  if (model === null || model === undefined || model.source === 'unknown') return null
+  if (typeof model.model === 'string' && model.model !== '') return model.model
+  if (typeof model.provider === 'string' && model.provider !== '') return model.provider
+  return null
 }
 
 function dabModelTitle(model) {
   if (model === null || model === undefined || model.source === 'unknown') return dabT('noModel')
+  const provider = typeof model.provider === 'string' && model.provider !== '' ? model.provider : '?'
+  const name = typeof model.model === 'string' && model.model !== '' ? model.model : '?'
   const effort = typeof model.reasoningEffort === 'string' && model.reasoningEffort !== '' ? ` · ${model.reasoningEffort}` : ''
-  return `${model.provider}/${model.model}${effort}`
+  const source = model.source === 'assignment' ? ` · ${dabT('modelAssignment')}` : ` · ${dabT('modelNative')}`
+  return `${provider}/${name}${effort}${source}`
+}
+
+/** Compact `provider/model` chip label for the inspector, null when unknown. */
+function dabModelChipText(model) {
+  if (model === null || model === undefined || model.source === 'unknown') return null
+  const provider = typeof model.provider === 'string' && model.provider !== '' ? model.provider : '?'
+  const name = typeof model.model === 'string' && model.model !== '' ? model.model : '?'
+  const effort = typeof model.reasoningEffort === 'string' && model.reasoningEffort !== '' ? ` · ${model.reasoningEffort}` : ''
+  return `${provider}/${name}${effort}`
 }

@@ -27,6 +27,11 @@ export function isAttention(node) {
   if (node.status === STATUS.WAITING_USER) return true
   if (node.status === STATUS.RUNNING) return true
   if (node.status === STATUS.RECOVERING) return true
+  // A stopped/superseded launch is unfinished work: never hidden as history.
+  if (node.status === STATUS.INTERRUPTED) return true
+  // The model's provider is inside an injected cooldown: the card is blocked
+  // on something outside its own turn and needs a decision.
+  if (node.status === STATUS.PROVIDER_UNAVAILABLE) return true
   if (node.status === STATUS.FINISHED_UNREAD) return true
   if (node.status === STATUS.FAILED && node.seen !== true) return true
   return false
@@ -38,7 +43,9 @@ export function attentionRank(node) {
     case STATUS.WAITING_USER: return 0
     case STATUS.RUNNING: return 1
     case STATUS.FINISHED_UNREAD: return 2
+    case STATUS.INTERRUPTED: return 2.2
     case STATUS.RECOVERING: return 2.5
+    case STATUS.PROVIDER_UNAVAILABLE: return 2.7
     case STATUS.FAILED: return node.seen === true ? 5 : 3
     default: return 4 + (STATUS_RANK[node?.status] ?? 9) / 10
   }
@@ -234,12 +241,14 @@ export function buildBoardView(projection, options = {}) {
 
 /** Global counters, independent from what is displayed. */
 export function boardCounts(projection) {
-  const counts = { total: 0, running: 0, waiting: 0, unread: 0, failed: 0, history: 0, roots: projection.roots.length }
+  const counts = { total: 0, running: 0, waiting: 0, unread: 0, failed: 0, interrupted: 0, provider_unavailable: 0, history: 0, roots: projection.roots.length }
   for (const node of projection.nodes) {
     counts.total += 1
     if (node.status === STATUS.RUNNING) counts.running += 1
     else if (node.status === STATUS.WAITING_USER) counts.waiting += 1
     else if (node.status === STATUS.FINISHED_UNREAD) counts.unread += 1
+    else if (node.status === STATUS.INTERRUPTED) counts.interrupted += 1
+    else if (node.status === STATUS.PROVIDER_UNAVAILABLE) counts.provider_unavailable += 1
     else if (node.status === STATUS.FAILED && node.seen !== true) counts.failed += 1
     else counts.history += 1
   }

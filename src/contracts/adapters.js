@@ -11,8 +11,8 @@
  * @module dsh-agent-board/contracts/adapters
  */
 
-/** Operations a work source or forge may implement. */
-export const CAPABILITIES = Object.freeze([
+/** Operations a work source may implement. */
+export const WORK_SOURCE_CAPABILITIES = Object.freeze([
   'list',
   'get',
   'subscribe',
@@ -24,6 +24,68 @@ export const CAPABILITIES = Object.freeze([
   // Board creates the session/execution/worktree; the board only observes).
   'run',
 ])
+
+/** Operations a forge may implement. */
+export const FORGE_CAPABILITIES = Object.freeze([
+  'list',
+  'get',
+  'subscribe',
+  'create',
+  'update',
+  'comment',
+  'transition',
+])
+
+/**
+ * Operations an agent executor may implement. Each entry is a distinct
+ * supervision primitive, so an executor can declare exactly the slice it
+ * really supports:
+ *   - discover:      enumerate known sessions/agents
+ *   - observe:       status facts for one session (running/idle/unknown + source)
+ *   - getSession:    session metadata (cwd, parent, origin, preset…)
+ *   - getChildren:   direct sub-agents of a parent session
+ *   - launch:        start a new agent session
+ *   - cancel:        stop the current turn/agent
+ *   - resume:        rebuild an agent on a persisted session
+ *   - openSession:   open the session in the host UI
+ *   - readLastOutput: last final output of a session
+ *   - getModel:      provider/model selection for a session
+ *   - getStatus:     cheap status probe
+ *
+ * Every capability is named like its implementing method, so registration can
+ * refuse a declaration whose method is missing (see defineAdapter).
+ */
+export const EXECUTOR_CAPABILITIES = Object.freeze([
+  'discover',
+  'observe',
+  'getSession',
+  'getChildren',
+  'launch',
+  'cancel',
+  'resume',
+  'openSession',
+  'readLastOutput',
+  'getModel',
+  'getStatus',
+])
+
+/**
+ * The union, kept for callers that probe "does this adapter have any known
+ * capability". `CAPABILITIES_BY_KIND` is the authoritative per-kind vocabulary
+ * used by registration and by the public matrix.
+ */
+export const CAPABILITIES = Object.freeze([
+  ...new Set([...WORK_SOURCE_CAPABILITIES, ...FORGE_CAPABILITIES, ...EXECUTOR_CAPABILITIES]),
+])
+
+export const CAPABILITIES_BY_KIND = Object.freeze({
+  'work-source': WORK_SOURCE_CAPABILITIES,
+  forge: FORGE_CAPABILITIES,
+  executor: EXECUTOR_CAPABILITIES,
+  // A model router routes requests; it does not implement work-source, forge or
+  // executor operations. Kept explicit so the vocabulary stays closed.
+  'model-router': Object.freeze([]),
+})
 
 export const KINDS = Object.freeze(['work-source', 'forge', 'executor', 'model-router'])
 
@@ -41,10 +103,15 @@ export function hasCapability(adapter, capability) {
   return typeof adapter?.[methodOfCapability(capability)] === 'function'
 }
 
-/** One adapter capability probe, safe to call from routes. */
-export function capabilitiesOf(adapter) {
+/**
+ * One adapter capability probe, safe to call from routes. With a `kind`, the
+ * result is restricted to that kind's vocabulary (what the matrix shows);
+ * without it, the union is probed (backward compatible).
+ */
+export function capabilitiesOf(adapter, kind) {
+  const vocabulary = kind === undefined ? CAPABILITIES : (CAPABILITIES_BY_KIND[kind] ?? CAPABILITIES)
   const out = {}
-  for (const capability of CAPABILITIES) {
+  for (const capability of vocabulary) {
     out[capability] = hasCapability(adapter, capability)
   }
   return out
@@ -71,15 +138,19 @@ export function defineAdapter(definition) {
   if (typeof definition.id !== 'string' || definition.id === '') throw new Error('agent-board: adapter id is required')
   if (!KINDS.includes(definition.kind)) throw new Error(`agent-board: adapter ${definition.id} has an unknown kind ${String(definition.kind)}`)
   const declared = Array.isArray(definition.capabilities) ? definition.capabilities : []
+  const vocabulary = CAPABILITIES_BY_KIND[definition.kind] ?? []
   for (const capability of declared) {
     if (!CAPABILITIES.includes(capability)) throw new Error(`agent-board: adapter ${definition.id} declares unknown capability ${capability}`)
+    if (!vocabulary.includes(capability)) {
+      throw new Error(`agent-board: adapter ${definition.id} declares capability "${capability}" that is not part of the ${definition.kind} vocabulary`)
+    }
     if (!hasCapability(definition, capability)) {
       throw new Error(`agent-board: adapter ${definition.id} declares capability "${capability}" without implementing it`)
     }
   }
-  const capabilities = capabilitiesOf(definition)
+  const capabilities = capabilitiesOf(definition, definition.kind)
   const effective = []
-  for (const capability of CAPABILITIES) {
+  for (const capability of vocabulary) {
     if (declared.includes(capability) && capabilities[capability] === true) effective.push(capability)
   }
   return Object.freeze({
@@ -137,19 +208,24 @@ export function createAdapterRegistry() {
     },
     /** The public, serializable capability matrix. */
     describe() {
-      return [...adapters.values()].map(adapter => ({
-        id: adapter.id,
-        kind: adapter.kind,
-        title: adapter.title ?? adapter.id,
-        status: adapter.status,
-        validatedLive: adapter.validatedLive,
-        // Report the DECLARED (and therefore effective) capabilities, not "does
-        // a method exist": a skeleton carries throwing stubs and must not look
-        // like a working integration in the matrix.
-        capabilities: Object.fromEntries(CAPABILITIES.map(capability => [capability, (adapter.capabilities ?? []).includes(capability)])),
-        declaredCapabilities: [...(adapter.capabilities ?? [])],
-        notes: adapter.notes ?? '',
-      }))
+      return [...adapters.values()].map(adapter => {
+        const vocabulary = CAPABILITIES_BY_KIND[adapter.kind] ?? CAPABILITIES
+        return {
+          id: adapter.id,
+          kind: adapter.kind,
+          title: adapter.title ?? adapter.id,
+          status: adapter.status,
+          validatedLive: adapter.validatedLive,
+          // Report the DECLARED (and therefore effective) capabilities, not "does
+          // a method exist": a skeleton carries throwing stubs and must not look
+          // like a working integration in the matrix. Only the adapter's own
+          // kind vocabulary is reported, so an executor row never grows
+          // work-source columns (and vice versa).
+          capabilities: Object.fromEntries(vocabulary.map(capability => [capability, (adapter.capabilities ?? []).includes(capability)])),
+          declaredCapabilities: [...(adapter.capabilities ?? [])],
+          notes: adapter.notes ?? '',
+        }
+      })
     },
   }
 }

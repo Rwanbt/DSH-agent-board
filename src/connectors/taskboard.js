@@ -11,9 +11,12 @@
  */
 
 import { AdapterError, defineAdapter } from '../contracts/adapters.js'
+import { negotiateContract, TASKBOARD_CONTRACT_ENDPOINTS } from './taskboard-contract.js'
 
-export const TASKBOARD_STATE_PATH = '/dsh-taskboard/state'
+export const TASKBOARD_STATE_PATH = TASKBOARD_CONTRACT_ENDPOINTS.state
 export const TASKBOARD_RUN_PATH = '/dsh-taskboard/tasks'
+/** PROPOSED extension probe. Real 0.10/0.11 Task Boards answer 404 here. */
+export const TASKBOARD_CONTRACT_PATH = TASKBOARD_CONTRACT_ENDPOINTS.contract
 
 /**
  * Normalize one Task Board `TaskRecord` (schema 0.10.2) into the board's shape.
@@ -79,8 +82,75 @@ function normalizeTask(raw, ledgerRevision) {
 export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, timeoutMs = 4000 }) {
   if (typeof baseUrl !== 'string' || baseUrl === '') throw new Error('agent-board: taskboard adapter needs a base URL')
 
+  // Last negotiation result (null = never probed) and the last `/state` meta,
+  // used only to make a refusal message honest — never to infer write support.
+  let contractState = null
+  let lastStateMeta = null
+
+  /**
+   * Probe the PROPOSED execution-contract extension. It never throws: an absent
+   * route negotiates as `absent` and this adapter keeps its read-only shape.
+   * Being able to read the extension is NOT a permission to write with it; the
+   * board must use `createTaskBoardContractClient` for that.
+   */
+  async function probeContract() {
+    const url = new URL(TASKBOARD_CONTRACT_PATH, baseUrl).toString()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let response
+    try {
+      response = await fetchImpl(url, {
+        method: 'GET', headers: { accept: 'application/json' }, signal: controller.signal,
+      })
+    } catch (error) {
+      contractState = negotiateContract({
+        stateMeta: lastStateMeta,
+        probeError: { code: 'unreachable', status: 0, message: String(error?.message ?? error) },
+      })
+      return contractState
+    } finally {
+      clearTimeout(timer)
+    }
+    const status = Number(response?.status) || 0
+    if (response === null || response?.ok !== true) {
+      contractState = negotiateContract({
+        stateMeta: lastStateMeta,
+        probeError: { code: `http_${status}`, status, message: `contract probe returned HTTP ${status}` },
+      })
+      return contractState
+    }
+    let contract = null
+    let probeError = null
+    try {
+      const envelope = await response.json()
+      contract = envelope?.ok === true ? envelope.value : null
+      if (contract === null) {
+        probeError = { code: 'refused', status, message: 'contract probe answered without ok:true' }
+      }
+    } catch (error) {
+      probeError = { code: 'invalid_json', status, message: `contract probe returned invalid JSON: ${String(error?.message ?? error)}` }
+    }
+    contractState = negotiateContract({ contract, stateMeta: lastStateMeta, probeError })
+    return contractState
+  }
+
   async function getJson(path) {
     return requestJson('GET', path)
+  }
+
+  /** Serializable snapshot of the last negotiation (a Set is not JSON-safe). */
+  function contractSummary() {
+    if (contractState === null) return null
+    return {
+      ok: contractState.ok,
+      version: contractState.version,
+      features: [...contractState.features],
+      missing: [...contractState.missing],
+      degraded: contractState.degraded,
+      absent: contractState.absent,
+      writes: contractState.writes,
+      reason: contractState.reason,
+    }
   }
 
   async function requestJson(method, path, body = undefined) {
@@ -135,6 +205,7 @@ export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, 
       // The ledger exposes `revision` (global monotonic counter), not `rev`.
       const ledgerRevision = state?.revision ?? state?.rev ?? null
       const tasks = Array.isArray(state?.tasks) ? state.tasks : []
+      lastStateMeta = { ledgerRevision, tasksTotal: tasks.length, doneCount: Number(state?.doneCount) || 0 }
       return {
         items: tasks.map(task => normalizeTask(task, ledgerRevision)).filter(task => task !== null),
         meta: {
@@ -172,6 +243,17 @@ export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, 
         sessionId: value.sessionId,
       }
     },
+    /**
+     * Probe the PROPOSED execution-contract extension. Never throws and never
+     * writes: a 404 (every real 0.10/0.11 Task Board) negotiates as absent.
+     */
+    contract() {
+      return probeContract()
+    },
+    /** Last negotiation snapshot, or null before `contract()` was called. */
+    contractStatus() {
+      return contractSummary()
+    },
     describe() {
       return {
         id: 'dsh-taskboard',
@@ -185,6 +267,9 @@ export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, 
         },
         notes: adapter.notes,
         baseUrl,
+        // PROPOSED extension probe result (null until probed). Informational
+        // only: `writes` is what a contract client would require.
+        contract: contractSummary(),
       }
     },
   })
