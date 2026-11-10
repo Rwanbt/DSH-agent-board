@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" font-family="Segoe UI, sans-serif" font-size="13">
+  <rect width="1200" height="700" fill="#1f1f20"/>
+  <text x="20" y="690" fill="#f59e0b" font-size="12">PROPOSITION A — wireframe statique, PAS une capture de l'application</text>
+  <!-- toolbar: one line -->
+  <text x="24" y="34" fill="#f9fafb" font-size="20">Agent Board</text>
+  <circle cx="180" cy="28" r="4" fill="#f9fafb"/><text x="190" y="33" fill="#adb2b8">5 en cours</text>
+  <circle cx="275" cy="28" r="4" fill="#f59e0b"/><text x="285" y="33" fill="#adb2b8">1 attente</text>
+  <circle cx="360" cy="28" r="4" fill="#22c55e"/><text x="370" y="33" fill="#adb2b8">5 non lus</text>
+  <rect x="640" y="14" width="260" height="30" rx="12" fill="#2c2c2e"/><text x="654" y="34" fill="#6b7075">Rechercher…</text>
+  <rect x="910" y="14" width="150" height="30" rx="12" fill="#2c2c2e"/><text x="924" y="34" fill="#f9fafb">À traiter ▾</text>
+  <rect x="1070" y="14" width="110" height="30" rx="12" fill="#2c2c2e"/><text x="1084" y="34" fill="#f9fafb">Orchestr. ▾</text>
+  <line x1="0" y1="58" x2="1200" y2="58" stroke="#ffffff1f" stroke-width="0.5"/>
+  <!-- single canvas, projects as plain section labels, no nested tiles -->
+  <text x="24" y="92" fill="#f9fafb" font-size="14">DSH-agent-board</text><text x="160" y="92" fill="#6b7075">8 agents · 2 en cours · 4 non lus</text>
+  <g>
+    <rect x="24" y="108" width="240" height="64" rx="16" fill="#2c2c2e"/>
+    <circle cx="44" cy="128" r="6" fill="none" stroke="#f9fafb" stroke-width="2" stroke-dasharray="20 18"/>
+    <text x="58" y="133" fill="#f9fafb">GOAL 2 — AGENT BOARD</text><text x="44" y="156" fill="#adb2b8">deepseek-v4.1-flash · 17 min</text>
+    <path d="M264 140 H292 V128 H316 M292 140 V196 H316 M292 196 V264 H316" fill="none" stroke="#ffffff33"/>
+    <rect x="316" y="108" width="210" height="44" rx="12" fill="#2c2c2e"/><text x="334" y="134" fill="#f9fafb">Fix StateStore durability</text>
+    <rect x="316" y="174" width="210" height="44" rx="12" fill="#2c2c2e"/><circle cx="330" cy="196" r="4" fill="#22c55e"/><text x="340" y="200" fill="#f9fafb">Fix dead SSE stream</text>
+    <rect x="316" y="242" width="210" height="44" rx="12" fill="#2c2c2e" stroke="#ffffff33" stroke-dasharray="4 3"/><text x="334" y="268" fill="#adb2b8">+4 sous-agents terminés</text>
+  </g>
+  <text x="600" y="92" fill="#f9fafb" font-size="14">Ravum</text><text x="660" y="92" fill="#6b7075">1 agent · en cours</text>
+  <rect x="600" y="108" width="240" height="64" rx="16" fill="#2c2c2e"/><text x="634" y="133" fill="#f9fafb">GOAL — RAVUM CORE</text>
+  <text x="600" y="214" fill="#f9fafb" font-size="14">default-workspace</text>
+  <rect x="600" y="230" width="240" height="64" rx="16" fill="#2c2c2e" stroke="#f25a5a" /><text x="634" y="256" fill="#f9fafb">E2E-D graph maintenance</text><text x="618" y="280" fill="#f25a5a">Échec · provider 500</text>
+  <text x="24" y="340" fill="#6b7075">Flux unique « masonry » : chaque famille prend sa largeur intrinsèque, pas de colonnes fixes ni de cadres imbriqués.</text>
+</svg>

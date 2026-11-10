@@ -6,7 +6,7 @@
  * @module dsh-agent-board/client/ui/preview
  */
 
-function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError }) {
+function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, onDismiss, dismissed }) {
   const h = React.createElement
   const [more, setMore] = React.useState(false)
   React.useEffect(() => { setMore(false) }, [node?.id])
@@ -69,7 +69,10 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError })
       : null,
     h('div', { className: 'dab-actions' },
       h('button', { type: 'button', className: 'dab-btn', 'aria-pressed': 'false', onClick: () => onOpen(node.id), 'data-testid': 'dab-open' }, `↗ ${dabT('openSession')}`),
-      parent ? h('button', { type: 'button', className: 'dab-btn', onClick: () => onOpen(parent.id) }, dabT('openParent')) : null),
+      parent ? h('button', { type: 'button', className: 'dab-btn', onClick: () => onOpen(parent.id) }, dabT('openParent')) : null,
+      node.status !== 'running' && typeof onDismiss === 'function'
+        ? h('button', { type: 'button', className: 'dab-btn', 'data-variant': 'ghost', title: dabT('dismissHint'), onClick: () => onDismiss(node.id, !dismissed) }, dismissed ? dabT('undismiss') : dabT('dismiss'))
+        : null),
     openError ? h('div', { className: 'dab-alert', role: 'status' }, openError) : null,
     h('dl', { className: 'dab-dl' }, facts),
   )

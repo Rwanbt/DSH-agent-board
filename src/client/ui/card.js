@@ -74,7 +74,7 @@ function DabAgentCardImpl(props) {
       title: collapsed ? dabT('expand') : dabT('collapse'),
       onClick: event => { stop(event); onToggleBranch(node.id, collapsed, expanded) },
       onDoubleClick: stop, onKeyDown: stop,
-    }, collapsed ? `▸ ${totalChildren}` : (expanded ? '▾ −' : `▾ ${totalChildren}`)))
+    }, collapsed ? `▸ ${totalChildren}` : `▾ ${totalChildren}`))
   } else if (groupActive) {
     foot.push(h('span', { key: 'grp', className: 'dab-muted' }, h('span', { className: 'dab-group-ring', 'aria-hidden': 'true' }), dabT('groupActive')))
   }
