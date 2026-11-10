@@ -154,6 +154,10 @@ test('FINDING R5: a local-only project layer must not launch a remote route', as
     const tick = await callJson(handler(), 'POST', '/tick', {})
     assert.equal(tick.status, 200)
     assert.equal(harness.created.length, 0, `a local-only project must not reach the cloud; created=${JSON.stringify(harness.created.map(entry => entry.agentOptions))}`)
+    // Refused for the POLICY reason, not for an unrelated one (mode, mandate...).
+    const after = (await callJson(handler(), 'GET', '/state')).body.value
+    const refusal = after.lastTick.actions.find(entry => entry.kind === 'launch')
+    assert.match(String(refusal?.reason), /local_only|no_route_allowed/, `unexpected refusal: ${JSON.stringify(refusal)}`)
   })
 })
 
@@ -171,6 +175,26 @@ test('FINDING R6: a denied provider must not be reached through a pinned card mo
     const tick = await callJson(handler(), 'POST', '/tick', {})
     assert.equal(tick.status, 200)
     assert.equal(harness.created.length, 0, `a denied provider must not launch; created=${JSON.stringify(harness.created.map(entry => entry.agentOptions))}`)
+    const after = (await callJson(handler(), 'GET', '/state')).body.value
+    const refusal = after.lastTick.actions.find(entry => entry.kind === 'launch')
+    assert.match(String(refusal?.reason), /provider_denied|provider_not_allowed/, `unexpected refusal: ${JSON.stringify(refusal)}`)
+  })
+})
+
+// CLEAN: the same local-only layer still launches a local route (the refusal is
+// not "everything is blocked").
+test('CLEAN: a local-only project layer launches a local route', async () => {
+  await withBoard([TASK_A], async ({ handler, harness }) => {
+    const policy = {
+      mode: 'autonomous',
+      routeChain: [{ provider: 'local', model: 'small', locality: 'local' }],
+      projectPolicies: { w1: { locality: 'local' } },
+    }
+    await callJson(handler(), 'POST', '/policy', { policy })
+    const tick = await callJson(handler(), 'POST', '/tick', {})
+    assert.equal(tick.status, 200)
+    assert.equal(harness.created.length, 1, JSON.stringify((await callJson(handler(), 'GET', '/state')).body.value.lastTick))
+    assert.equal(harness.created[0].agentOptions.provider, 'local')
   })
 })
 
@@ -209,3 +233,4 @@ test('FINDING R8: an enforceable request ceiling must actually be metered', asyn
     )
   })
 })
+

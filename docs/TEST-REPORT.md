@@ -4,6 +4,20 @@ Run date: 2026-11-09 (Europe/Paris). Host: DSH `0.2.2-rc.1`, profile `desktop`,
 GUI `http://127.0.0.1:62337`. Everything below was executed on this machine; no
 result is inferred from a mock unless it says so.
 
+> **GOAL 3 update (2026-11-10, branch `goal3/supervision-orchestration`).** The
+> suite is now **315 tests / 315 pass / 0 fail / 0 todo**, stable over three
+> consecutive runs, plus a **live isolated-host E2E** (`docs/e2e/GOAL3-E2E.md`,
+> 15/15 assertions, exit 0). Evidence classes: unit/pure (routing, budget,
+> fencing, projection), contract simulation (Task Board extension against
+> `tests/fixtures/fake-taskboard-server.mjs`), host integration (real HTTP API
+> against fakes), live isolated DSH host (fake OpenAI-compatible provider +
+> simulated Task Board extension), synthetic benchmarks
+> (`docs/PERFORMANCE.md`). **Not tested:** a real Task Board implementing the
+> extension, a real provider outage, Linux, crash injection, live load.
+> See `docs/GOAL3-DELIVERY.md`, `docs/REVIEW-GOAL3-BACKEND.md`,
+> `docs/REVIEW-GOAL3-SUPERVISION.md`. The GOAL 1/GOAL 2 sections below are kept
+> as historical evidence.
+
 > **GOAL 2 update (same day, branch `fix/agent-board-runtime-e2e`).** The
 > original report below is kept as the GOAL 1 evidence. The suite is now
 > **112 tests / 112 pass / 0 fail**; see §10 for the exact GOAL 2 commands,

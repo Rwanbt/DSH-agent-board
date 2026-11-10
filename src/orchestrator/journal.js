@@ -317,12 +317,16 @@ export function compactState(state, { maxPreviews = 200, maxAudit = 200, maxTurn
   if (Array.isArray(state.proposals) && state.proposals.length > maxProposals) {
     const pending = state.proposals.filter(proposal => proposal?.status === 'pending')
     const resolved = state.proposals.filter(proposal => proposal?.status !== 'pending')
-    state.proposals = [...resolved.slice(-Math.max(0, maxProposals - pending.length)), ...pending]
+    // `slice(-0)` would keep EVERYTHING, so the bound must be applied explicitly
+    // when the active count already fills the ceiling.
+    const keepResolved = Math.max(0, maxProposals - pending.length)
+    state.proposals = [...(keepResolved === 0 ? [] : resolved.slice(-keepResolved)), ...pending]
   }
   if (Array.isArray(state.assignments) && state.assignments.length > maxAssignments) {
     const active = state.assignments.filter(assignment => ['starting', 'running', 'recovering'].includes(assignment?.status))
     const ended = state.assignments.filter(assignment => !['starting', 'running', 'recovering'].includes(assignment?.status))
-    state.assignments = [...ended.slice(-Math.max(0, maxAssignments - active.length)), ...active]
+    const keepEnded = Math.max(0, maxAssignments - active.length)
+    state.assignments = [...(keepEnded === 0 ? [] : ended.slice(-keepEnded)), ...active]
   }
   if (state.acks !== null && typeof state.acks === 'object' && !Array.isArray(state.acks)) {
     const ackKeys = Object.keys(state.acks)

@@ -24,6 +24,10 @@ export const DEFAULT_TREE_LIMIT = 8
 /** Does this node by itself demand to be on the home view? */
 export function isAttention(node) {
   if (node === undefined || node === null) return false
+  // An archived session is history whatever its status: the operator archived
+  // it, so it is neither attention nor a fresh result (still reachable through
+  // "all", the search and the history drawer).
+  if (node.archived === true) return false
   if (node.status === STATUS.WAITING_USER) return true
   if (node.status === STATUS.RUNNING) return true
   if (node.status === STATUS.RECOVERING) return true

@@ -142,7 +142,21 @@ function installDelayedAttach(delayMs = 120) {
   return { restore: () => { globalThis.fetch = previous }, probe }
 }
 
-async function boot({ contractMode = 'full', task = simulatedTask({ isolation: 'none' }), gate = null, delayRelease = 0, delayAttach = 0 } = {}) {
+/** Delay only the LEASE POST so a Stop can land before the leaseId is known. */
+function installDelayedLease(delayMs = 120) {
+  const previous = globalThis.fetch
+  const probe = { started: false }
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/executions/lease')) {
+      probe.started = true
+      await new Promise(resolve => setTimeout(resolve, delayMs))
+    }
+    return previous(url, init)
+  }
+  return { restore: () => { globalThis.fetch = previous }, probe }
+}
+
+async function boot({ contractMode = 'full', task = simulatedTask({ isolation: 'none' }), gate = null, delayRelease = 0, delayAttach = 0, delayLease = 0 } = {}) {
   const home = await mkdtemp(join(tmpdir(), 'dab-review-'))
   const previousHome = process.env.DSH_HOME
   process.env.DSH_HOME = home
@@ -157,6 +171,7 @@ async function boot({ contractMode = 'full', task = simulatedTask({ isolation: '
   }
   const delayed = delayRelease > 0 ? installDelayedRelease(delayRelease) : null
   const attachProbe = delayAttach > 0 ? installDelayedAttach(delayAttach) : null
+  const leaseProbe = delayLease > 0 ? installDelayedLease(delayLease) : null
   const harness = makeCtx({ createGate: gatePromise })
   const dispose = apply(harness.ctx, { baseUrl: board.url })
   const handlerOf = () => harness.routes.get('/dsh-agent-board/api/v2').handler
@@ -195,6 +210,7 @@ async function boot({ contractMode = 'full', task = simulatedTask({ isolation: '
     releases: delayed?.releases ?? [],
     fetchLog: delayed?.log ?? null,
     attachProbe: attachProbe?.probe ?? null,
+    leaseProbe: leaseProbe?.probe ?? null,
     emit: (sessionId, event) => {
       const listener = harness.listeners.get('session/event')
       assert.equal(typeof listener, 'function')
@@ -205,6 +221,7 @@ async function boot({ contractMode = 'full', task = simulatedTask({ isolation: '
       await board.close()
       delayed?.restore()
       attachProbe?.restore()
+      leaseProbe?.restore()
       if (previousHome === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = previousHome
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
@@ -241,6 +258,30 @@ test('FINDING R2: Stop during attach must report `stopped` and close the lease e
     const releaseCalls = host.board.calls.filter(entry => entry.path.endsWith('/release')).length
     assert.equal(releaseCalls, 0, 'a settled execution must not also be released')
     assert.equal(view.audit.some(entry => entry.type === 'contract_release_failed'), false, 'no release-after-settle noise')
+  } finally {
+    await host.close()
+  }
+})
+
+// FINDING R10 (P1, introduced by the decide-early fix in 0964333): a Stop that
+// lands while the LEASE request is still in flight leaves the canonical execution
+// leased: `decidedEarly` returns before the old fencing path that released it.
+test('FINDING R10: Stop during the lease request must release the lease', async () => {
+  const host = await boot({ delayLease: 120 })
+  try {
+    await host.ready()
+    const tickPromise = host.tick()
+    assert.ok(await waitFor(() => host.leaseProbe.started), 'the lease request must be in flight')
+    const stop = await host.post('/stop', {})
+    assert.equal(stop.status, 200)
+    await tickPromise
+    await new Promise(resolve => setTimeout(resolve, 100))
+    const view = await host.state()
+    const assignment = view.assignments[0]
+    const leases = host.board.state().leases
+    assert.equal(leases.every(lease => lease.state === 'released'), true, `the lease must not stay attached after a Stop, leases=${JSON.stringify(leases.map(lease => lease.state))} assignment=${JSON.stringify({ status: assignment.status, error: assignment.error, leaseId: assignment.leaseId })}`)
+    assert.ok(['stopped', 'interrupted'].includes(assignment.status), `unexpected status ${assignment.status}`)
+    assert.equal(host.board.task('t-contract-1').status, 'todo', 'the card must not stay in_progress on a stopped attempt')
   } finally {
     await host.close()
   }

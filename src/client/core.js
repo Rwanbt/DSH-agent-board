@@ -39,6 +39,36 @@ export function emptyHostState() {
   }
 }
 
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+const HOST_STATE_OBJECT_KEYS = ['acks', 'previews', 'turnEnd', 'health', 'gone', 'policy', 'instance', 'sync', 'adapters']
+const HOST_STATE_ARRAY_KEYS = ['assignments', 'proposals', 'routeEvents', 'audit', 'reconcileNotes']
+
+/**
+ * Is this object a host state frame? The event stream is shared, so a valid
+ * JSON object that is not the board contract must never replace the state the
+ * projection reads. A frame is accepted only when it carries a known top-level
+ * field AND every present known field has its expected container type (arrays
+ * stay arrays, tables stay plain objects; null is tolerated for optional
+ * objects so a partially populated state is still accepted).
+ */
+function looksLikeHostState(value) {
+  if (!isPlainObject(value)) return false
+  const known = typeof value.mode === 'string'
+    || HOST_STATE_ARRAY_KEYS.some(key => Array.isArray(value[key]))
+    || HOST_STATE_OBJECT_KEYS.some(key => isPlainObject(value[key]))
+  if (!known) return false
+  for (const key of HOST_STATE_ARRAY_KEYS) {
+    if (value[key] !== undefined && !Array.isArray(value[key])) return false
+  }
+  for (const key of HOST_STATE_OBJECT_KEYS) {
+    if (value[key] !== undefined && value[key] !== null && !isPlainObject(value[key])) return false
+  }
+  return true
+}
+
 /** Every session id the projection can create a node for (rows + catalogs). */
 function knownSessionIds(list) {
   const ids = new Set()
@@ -193,7 +223,7 @@ export function createBoardStore(ctx, options = {}) {
       const response = await fetchImpl(`${apiBase}/state`, { headers: { accept: 'application/json' } })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const body = await response.json()
-      if (body?.ok !== true || body.value === null || typeof body.value !== 'object') throw new Error('invalid host state')
+      if (body?.ok !== true || !looksLikeHostState(body.value)) throw new Error('invalid host state')
       host = body.value
       hostError = null
       bump()
@@ -211,7 +241,11 @@ export function createBoardStore(ctx, options = {}) {
   function applyStreamFrame(event) {
     try {
       const parsed = JSON.parse(event?.data)
-      if (parsed !== null && typeof parsed === 'object') {
+      // Any valid JSON object is NOT a host state: an unrelated object (or a
+      // partially shaped one) would replace the board state and make the
+      // projection iterate garbage. Only a frame that looks like the host state
+      // contract is applied; the previous state is kept otherwise.
+      if (looksLikeHostState(parsed)) {
         host = parsed
         hostError = null
         bump()

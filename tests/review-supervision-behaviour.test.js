@@ -240,7 +240,7 @@ test('store: a native notification storm is coalesced into one rebuild per windo
 
 // ------------------------------------------------------- review reproductions
 
-test('BUG P1: the native turnOutline of an errored turn is labelled final', { todo: 'preview honesty: outline fallback ignores the turn-end kind' }, () => {
+test('BUG P1: the native turnOutline of an errored turn is labelled final', () => {
   const node = single(session('s', { projectionValues: { turnOutline: [{ turn: 1, response: 'I started the refactor and the provider failed' }] } }), {
     hostState: { turnEnd: { s: { at: NOW - 1000, kind: 'error', error: 'boom' } } },
   })
@@ -248,7 +248,7 @@ test('BUG P1: the native turnOutline of an errored turn is labelled final', { to
   assert.equal(node.preview.final, false, 'a response from an errored turn is not a final answer')
 })
 
-test('BUG P1: a failed/interrupted assignment checkpoint is labelled final', { todo: 'preview honesty: the checkpoint fallback never checks the assignment outcome' }, () => {
+test('BUG P1: a failed/interrupted assignment checkpoint is labelled final', () => {
   const node = single(session('s'), {
     hostState: {
       assignments: [{
@@ -261,21 +261,21 @@ test('BUG P1: a failed/interrupted assignment checkpoint is labelled final', { t
   assert.equal(node.preview.final, false, 'a mid-run checkpoint is not a final answer')
 })
 
-test('BUG P1: a native-only aborted/blocked turn becomes finished_read instead of idle', { todo: 'ARCHITECTURE 72-73: aborted/blocked turns are idle, never finished' }, () => {
+test('BUG P1: a native-only aborted/blocked turn becomes finished_read instead of idle', () => {
   for (const reason of ['aborted', 'blocked']) {
     const node = single(session('s', { projectionValues: { mobilePushLifecycle: { lastTurnEnd: { turn: 2, reason } } } }))
     assert.equal(node.status, STATUS.IDLE, `native-only ${reason} must be idle, got ${node.status}`)
   }
 })
 
-test('BUG P1: a failure the host missed (stale completed end + native error) is shown as a green unread result', { todo: 'status honesty: native error must win over a stale host turn end' }, () => {
+test('BUG P1: a failure the host missed (stale completed end + native error) is shown as a green unread result', () => {
   const node = single(session('s', { projectionValues: { mobilePushLifecycle: { lastTurnEnd: { turn: 7, reason: 'error' } } } }), {
     hostState: { turnEnd: { s: { at: NOW - 90_000, kind: 'completed' } } },
   })
   assert.equal(node.status, STATUS.FAILED, 'the newer native failure must not be hidden by an older completed end')
 })
 
-test('BUG P1: an unknown or recovered turn end becomes a green finished_unread result', { todo: 'status honesty: only a completed turn end can be an unread result' }, () => {
+test('BUG P1: an unknown or recovered turn end becomes a green finished_unread result', () => {
   const unknownKind = single(session('s'), { hostState: { turnEnd: { s: { at: NOW - 1000, kind: 'unknown' } } } })
   assert.notEqual(unknownKind.status, STATUS.FINISHED_UNREAD, 'kind unknown is not a completed result')
   assert.equal(unknownKind.unread, false)
@@ -283,7 +283,7 @@ test('BUG P1: an unknown or recovered turn end becomes a green finished_unread r
   assert.notEqual(recovered.status, STATUS.FINISHED_UNREAD, 'a recovered error is not a completed result')
 })
 
-test('BUG P2: a native-only failure can never be acknowledged (seen stays false forever)', { todo: 'the host persists acks[id].lastTurnEnd but the projection never reads it for native ends' }, () => {
+test('BUG P2: a native-only failure can never be acknowledged (seen stays false forever)', () => {
   const node = single(session('s', { projectionValues: { mobilePushLifecycle: { lastTurnEnd: { turn: 1, reason: 'error' } } } }), {
     hostState: { acks: { s: { seenAt: NOW, lastTurnEnd: null } } },
   })
@@ -291,7 +291,7 @@ test('BUG P2: a native-only failure can never be acknowledged (seen stays false 
   assert.equal(node.seen, true, 'an explicit ack must clear the attention flag')
 })
 
-test('BUG P2: a native completionUnread cannot be acked when the row has no updatedAt', { todo: 'ack must clear the green pill without requiring a timestamp on the row' }, () => {
+test('BUG P2: a native completionUnread cannot be acked when the row has no updatedAt', () => {
   const node = single({ id: 's', displayTitle: 's', running: false }, {
     statusMap: new Map([['s', { completionUnread: true }]]),
     hostState: { acks: { s: { seenAt: NOW } } },
@@ -299,7 +299,7 @@ test('BUG P2: a native completionUnread cannot be acked when the row has no upda
   assert.notEqual(node.status, STATUS.FINISHED_UNREAD, 'the persisted ack must clear the native unread flag')
 })
 
-test('BUG P2: an interrupted assignment without timestamps can never be seen', { todo: 'ack must clear an interrupted card even without endedAt/startedAt' }, () => {
+test('BUG P2: an interrupted assignment without timestamps can never be seen', () => {
   const node = single(session('s'), {
     hostState: { assignments: [{ id: 'a', sessionId: 's', status: 'stopped', reason: 'operator' }], acks: { s: { seenAt: NOW } } },
   })
@@ -307,7 +307,7 @@ test('BUG P2: an interrupted assignment without timestamps can never be seen', {
   assert.equal(node.seen, true)
 })
 
-test('BUG P2: a board assignment route change is recorded as a NATIVE model change', { todo: 'model history provenance: assignment route changes are not native model/selection events' }, () => {
+test('BUG P2: a board assignment route change is recorded as a NATIVE model change', () => {
   const memory = new Map()
   const row = session('s', { projectionValues: SELECTION('p', 'm1') })
   trackModelChange(memory, 's', resolveNodeModel({ sessionId: 's', row }), NOW)
@@ -316,14 +316,20 @@ test('BUG P2: a board assignment route change is recorded as a NATIVE model chan
   assert.ok(entry === null || entry.source === 'assignment', `a board route is not a native model change (got ${JSON.stringify(entry)})`)
 })
 
-test('BUG P2: resolveNodeModel ignores the documented native-first precedence', { todo: 'contract conflict: the function doc says native then assignment; code and existing tests do the opposite' }, () => {
+test('DECISION: the board assignment model wins for a board-owned card (native is the fallback)', () => {
   const row = session('s', { projectionValues: SELECTION('native-p', 'native-m') })
   const resolved = resolveNodeModel({ sessionId: 's', row, assignment: { model: { provider: 'backup', model: 'm2' } } })
-  assert.equal(resolved.source, 'native', 'documented precedence is injected/native first, assignment second')
-  assert.equal(resolved.model, 'native-m')
+  // The board created that session on `backup/m2` and may have switched it; the
+  // native projection cannot describe a board failover, so the assignment wins.
+  // For a native (board-less) session the native selection is the only source.
+  assert.equal(resolved.source, 'assignment')
+  assert.equal(resolved.model, 'm2')
+  const nativeOnly = resolveNodeModel({ sessionId: 's', row, assignment: null })
+  assert.equal(nativeOnly.source, 'native')
+  assert.equal(nativeOnly.model, 'native-m')
 })
 
-test('BUG P2: an archived unread result stays on the default attention view', { todo: 'board/view.js policy says archived is history, but isAttention/includedByFilter ignore it' }, () => {
+test('BUG P2: an archived unread result stays on the default attention view', () => {
   const node = single(session('arch'), {
     hostState: { turnEnd: { arch: { at: NOW - 500, kind: 'completed' } } },
     workspaces: { items: [], archivedSessionIds: ['arch'] },
@@ -332,7 +338,7 @@ test('BUG P2: an archived unread result stays on the default attention view', { 
   assert.equal(includedByFilter(node, 'attention', NOW), false, 'an archived session is history, not attention')
 })
 
-test('BUG P2: a stale gone tombstone keeps a resurrected live session unknown', { todo: 'gone is never expired/reconciled against a live row' }, () => {
+test('BUG P2: a stale gone tombstone keeps a resurrected live session unknown', () => {
   const node = project({
     list: listOf([session('s', { running: true, updatedAt: NOW })]),
     statusMap: new Map([['s', { running: true }]]),
@@ -341,7 +347,7 @@ test('BUG P2: a stale gone tombstone keeps a resurrected live session unknown', 
   assert.notEqual(node.status, STATUS.UNKNOWN, 'a live running row is stronger evidence than an old removal fact')
 })
 
-test('BUG P2: a valid JSON SSE frame that is not a host state replaces (or crashes) the store', { todo: 'applyStreamFrame accepts any object; buildProjection then iterates assignments' }, async () => {
+test('a valid JSON SSE frame that is not a host state is ignored, never replaces or breaks the store', async () => {
   const listeners = new Set()
   let created = null
   class FakeEventSource { constructor() { created = this } addEventListener() {} close() {} }
@@ -351,7 +357,7 @@ test('BUG P2: a valid JSON SSE frame that is not a host state replaces (or crash
       return { list: { getSnapshot: () => ({ phase: 'ready', ids: ['s'], byId: { s: { id: 's', displayTitle: 'S' } }, projectionsBySession: {} }), subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener) } } }
     },
   }
-  const hostState = { mode: 'supervised', acks: { s: { seenAt: 1 } }, previews: {}, turnEnd: { s: { at: 5, kind: 'completed' } }, assignments: [], health: {}, gone: {} }
+  const hostState = { mode: 'supervised', acks: { s: { seenAt: 10 } }, previews: {}, turnEnd: { s: { at: 5, kind: 'completed' } }, assignments: [], health: {}, gone: {} }
   const store = createBoardStore(ctx, {
     fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ ok: true, value: hostState }) }),
     EventSourceImpl: FakeEventSource,

@@ -1,7 +1,7 @@
 {
   "goal": "GOAL 3 §13.5 §16.17 — isolated real DSH host + fake OpenAI-compatible provider + fake Task Board",
   "date": "2026-11-10",
-  "startedAt": "2026-11-10T10:51:40.043Z",
+  "startedAt": "2026-11-10T11:11:13.673Z",
   "environment": {
     "platform": "win32",
     "release": "v26.13.0",
@@ -14,15 +14,15 @@
   },
   "simulation": {
     "primaryProvider": {
-      "url": "http://127.0.0.1:59015/v1",
+      "url": "http://127.0.0.1:52134/v1",
       "model": "e2e-fake-gpt"
     },
     "backupProvider": {
-      "url": "http://127.0.0.1:59016/v1",
+      "url": "http://127.0.0.1:52135/v1",
       "model": "e2e-fake-backup-gpt"
     },
     "taskBoard": {
-      "url": "http://127.0.0.1:59017",
+      "url": "http://127.0.0.1:52136",
       "simulatedHeader": "x-simulated-taskboard: true"
     },
     "primaryModels": {
@@ -42,20 +42,20 @@
     "primaryRequests": [
       {
         "seq": 1,
-        "at": "2026-11-10T10:51:46.644Z",
+        "at": "2026-11-10T11:11:18.421Z",
         "model": "e2e-fake-gpt",
         "stream": true,
         "behavior": "ok",
         "status": 200,
         "sseChunks": 6,
-        "ms": 53,
+        "ms": 62,
         "authorizationPresent": true,
         "promptHasTask": false,
         "promptPreview": "Current runtime context. This snapshot supersedes earlier runtime-context snapshots. Current working directory: \"D:\\\\App\\\\dsh-e2e-home-goal3\\\\project\". Current DSH file policy: wor"
       },
       {
         "seq": 2,
-        "at": "2026-11-10T10:51:58.639Z",
+        "at": "2026-11-10T11:11:30.226Z",
         "model": "e2e-fake-gpt",
         "stream": true,
         "behavior": "rate_limit",
@@ -70,13 +70,13 @@
     "backupRequests": [
       {
         "seq": 1,
-        "at": "2026-11-10T10:51:59.140Z",
+        "at": "2026-11-10T11:11:30.316Z",
         "model": "e2e-fake-backup-gpt",
         "stream": true,
         "behavior": "ok",
         "status": 200,
         "sseChunks": 6,
-        "ms": 50,
+        "ms": 62,
         "authorizationPresent": true,
         "promptHasTask": false,
         "promptPreview": "Current runtime context. This snapshot supersedes earlier runtime-context snapshots. Current working directory: \"D:\\\\App\\\\dsh-e2e-home-goal3\\\\project\". Current DSH file policy: wor"
@@ -111,16 +111,16 @@
     },
     "patchPath": "D:\\App\\dsh-e2e-home-goal3\\profiles\\e2e\\cordis.patch.yml",
     "patch": "D:\\App\\dsh-e2e-home-goal3\\profiles\\e2e\\cordis.patch.yml",
-    "origin": "http://127.0.0.1:49942",
-    "port": 49942,
-    "startupUrlRedacted": "http://127.0.0.1:49942/?token=[redacted]",
+    "origin": "http://127.0.0.1:52285",
+    "port": 52285,
+    "startupUrlRedacted": "http://127.0.0.1:52285/?token=[redacted]",
     "auth": {
       "exchangeStatus": 303,
       "cookieNames": [
-        "dsh-auth-BG6bUD5tHBjzY4lVxkONXLtwpMeW1ey83drVwVp44IU"
+        "dsh-auth-FXFo6JAB4Wjt0iS8gCN6e24axAOa6yT2QnrSSLoHibA"
       ]
     },
-    "pid": 6992,
+    "pid": 19744,
     "cwd": "D:\\App\\dsh-e2e-home-goal3\\project",
     "stateAtBoot": {
       "mode": "off",
@@ -339,26 +339,26 @@
             }
           }
         ],
-        "baseUrl": "http://127.0.0.1:59017"
+        "baseUrl": "http://127.0.0.1:52136"
       },
       "sync": null
     },
-    "startupUrl": "http://127.0.0.1:49942/?token=[redacted]"
+    "startupUrl": "http://127.0.0.1:52285/?token=[redacted]"
   },
   "scenarios": [
     {
       "id": "a-contract-model-turn",
       "title": "Autonomous tick leases a canonical execution, runs a real session turn on the fake provider, attaches, settles to in_review",
-      "startedAt": "2026-11-10T10:51:46.352Z",
+      "startedAt": "2026-11-10T11:11:18.140Z",
       "assertions": [],
       "observed": {
         "turnEnd": {
-          "at": 1794307907011,
+          "at": 1794309078630,
           "kind": "completed",
           "error": null
         },
         "assignment": {
-          "id": "asg-a13c85e9-d293-4684-a89b-0bab1cb6943d",
+          "id": "asg-baac8595-ebd0-464f-8e30-bdcb06c2e4e8",
           "idempotencyKey": "taskboard:tb-e2e-contract@1#0",
           "taskId": "tb-e2e-contract",
           "taskTitle": "E2E simulated card — contract happy path",
@@ -369,7 +369,7 @@
           "revision": 1,
           "attempt": 0,
           "workspaceId": "ws-e2e-1",
-          "sessionId": "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
+          "sessionId": "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
           "previousSessionId": null,
           "model": {
             "provider": "e2e-primary",
@@ -384,8 +384,8 @@
           "status": "done",
           "lease": null,
           "fencingToken": 1,
-          "startedAt": 1794307906400,
-          "endedAt": 1794307907013,
+          "startedAt": 1794309078195,
+          "endedAt": 1794309078631,
           "error": null,
           "checkpoint": null,
           "leaseId": "lease-1",
@@ -394,13 +394,14 @@
             "executionId": "exec-1",
             "attempt": 1,
             "previousExecutionId": null,
-            "leasedAt": 1794307906408
+            "leasedAt": 1794309078203
           },
           "reason": null,
           "recoveringAt": null,
           "outcome": "completed",
-          "settledAt": 1794307907085,
+          "settledAt": 1794309078668,
           "settleError": null,
+          "settlement": null,
           "primaryReturn": {
             "eligible": false,
             "reason": "already_primary"
@@ -430,7 +431,7 @@
               "id": "exec-1",
               "trigger": "manual",
               "outcome": "succeeded",
-              "startedAt": 1794307906406,
+              "startedAt": 1794309078202,
               "isolation": "none",
               "leaseId": "lease-1",
               "attempt": 1,
@@ -438,13 +439,13 @@
                 "provider": "e2e-primary",
                 "model": "e2e-fake-gpt"
               },
-              "sessionId": "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
-              "endedAt": 1794307907083,
+              "sessionId": "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
+              "endedAt": 1794309078668,
               "report": {
-                "summary": "Agent Board recorded the end of execution for task tb-e2e-contract (attempt 0, session session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
+                "summary": "Agent Board recorded the end of execution for task tb-e2e-contract (attempt 0, session session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
                 "changedFiles": [],
                 "checks": [
-                  "observed: session session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
+                  "observed: session session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
                   "observed: outcome completed"
                 ],
                 "artifacts": [],
@@ -452,14 +453,14 @@
               }
             }
           ],
-          "createdAt": 1794307906358,
-          "updatedAt": 1794307907083
+          "createdAt": 1794309078146,
+          "updatedAt": 1794309078668
         },
         "stateAfter": {
           "mode": "off",
           "stoppedAt": null,
           "lastTick": {
-            "at": 1794307906457,
+            "at": 1794309078254,
             "reason": "manual",
             "mode": "autonomous",
             "stoppedAt": null,
@@ -468,8 +469,8 @@
                 "kind": "launch",
                 "taskId": "tb-e2e-contract",
                 "ok": true,
-                "assignmentId": "asg-a13c85e9-d293-4684-a89b-0bab1cb6943d",
-                "sessionId": "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
+                "assignmentId": "asg-baac8595-ebd0-464f-8e30-bdcb06c2e4e8",
+                "sessionId": "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
                 "executionId": "exec-1",
                 "leaseId": "lease-1"
               }
@@ -480,7 +481,7 @@
           "health": {},
           "auditTail": [
             {
-              "at": 1794307906365,
+              "at": 1794309078154,
               "type": "policy_changed",
               "policy": {
                 "mode": "off",
@@ -518,11 +519,13 @@
                   "maxTasksPerHour": 6
                 },
                 "requestsPerHour": 120,
-                "contractBoardReport": true
+                "contractBoardReport": true,
+                "settlementRetryMs": 60000,
+                "allowUnverifiedHandoff": false
               }
             },
             {
-              "at": 1794307906385,
+              "at": 1794309078179,
               "type": "contract_negotiated",
               "ok": true,
               "writes": true,
@@ -530,17 +533,17 @@
               "version": 1
             },
             {
-              "at": 1794307906387,
+              "at": 1794309078181,
               "type": "mode_changed",
               "from": "autonomous",
               "to": "autonomous"
             },
             {
-              "at": 1794307906457,
+              "at": 1794309078254,
               "type": "launch",
               "taskId": "tb-e2e-contract",
-              "assignmentId": "asg-a13c85e9-d293-4684-a89b-0bab1cb6943d",
-              "sessionId": "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
+              "assignmentId": "asg-baac8595-ebd0-464f-8e30-bdcb06c2e4e8",
+              "sessionId": "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
               "executionId": "exec-1",
               "leaseId": "lease-1",
               "route": "e2e-primary/e2e-fake-gpt",
@@ -548,7 +551,7 @@
               "source": "launch"
             },
             {
-              "at": 1794307906457,
+              "at": 1794309078254,
               "type": "tick",
               "mode": "autonomous",
               "actions": [
@@ -556,30 +559,30 @@
                   "kind": "launch",
                   "taskId": "tb-e2e-contract",
                   "ok": true,
-                  "assignmentId": "asg-a13c85e9-d293-4684-a89b-0bab1cb6943d",
-                  "sessionId": "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
+                  "assignmentId": "asg-baac8595-ebd0-464f-8e30-bdcb06c2e4e8",
+                  "sessionId": "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
                   "executionId": "exec-1",
                   "leaseId": "lease-1"
                 }
               ]
             },
             {
-              "at": 1794307906461,
+              "at": 1794309078259,
               "type": "mode_changed",
               "from": "autonomous",
               "to": "off"
             },
             {
-              "at": 1794307907013,
+              "at": 1794309078631,
               "type": "turn_done",
               "taskId": "tb-e2e-contract",
-              "assignmentId": "asg-a13c85e9-d293-4684-a89b-0bab1cb6943d",
+              "assignmentId": "asg-baac8595-ebd0-464f-8e30-bdcb06c2e4e8",
               "kind": "completed"
             },
             {
-              "at": 1794307907085,
+              "at": 1794309078668,
               "type": "contract_settled",
-              "assignmentId": "asg-a13c85e9-d293-4684-a89b-0bab1cb6943d",
+              "assignmentId": "asg-baac8595-ebd0-464f-8e30-bdcb06c2e4e8",
               "leaseId": "lease-1",
               "outcome": "succeeded",
               "reviewed": true
@@ -587,9 +590,9 @@
           ],
           "assignments": [
             {
-              "id": "asg-a13c85e9-d293-4684-a89b-0bab1cb6943d",
+              "id": "asg-baac8595-ebd0-464f-8e30-bdcb06c2e4e8",
               "taskId": "tb-e2e-contract",
-              "sessionId": "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
+              "sessionId": "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
               "status": "done",
               "model": {
                 "provider": "e2e-primary",
@@ -605,8 +608,8 @@
             }
           ],
           "turnEnd": {
-            "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3": {
-              "at": 1794307907011,
+            "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5": {
+              "at": 1794309078630,
               "kind": "completed",
               "error": null
             }
@@ -616,18 +619,18 @@
           "frames": 3,
           "named": 3,
           "error": null,
-          "sample": "event: state\ndata: {\"schemaVersion\":1,\"mode\":\"off\",\"stoppedAt\":null,\"policy\":{\"mode\":\"off\",\"maxConcurrent\":2,\"maxRetries\":2,\"maxSwitches\":2,\"proposalTtlMs\":1800000,\"leaseTtlMs\":600000,\"retryCooldownMs\":300000,\"maxAttemptsPerRevision\":4,\"allowedWorkspaces\":[],\"allowedProviders\":[],\"allowedPermissions\":[\"read-only\",\"workspace-write\"],\"executionBackend\":\"board\",\"allowCloudFallback\":false,\"autoResumeOnRestart\":false,\"serializeSameWorkspace\":false,\"routeChain\":[],\"projectPolicies\":{},\"autonomyBudget\":{\"maxTasksPerHour\":6},\"requestsPerHour\":120,\"contractBoardReport\":true},\"acks\":{},\"previews\":{},\"turnEnd\":{},\"proposals\":[],\"recentProposals\":[],\"assignments\":[],\"routeEvents\":[],\"health\":{},\"lastTick\":null,\"sync\":null,\"adapters\":{\"adapters\":[{\"id\":\"dsh-taskboard\",\"kind\":\"work-source\",\"title\":\"DSH Task Board\",\"status\":\"available\",\"validatedLive\":false,\"capabilities\":{\"list\":true,\"get\":true,\"subscribe\":false,\"create\":false,\"update\":false,\"comment\":false,\"transition\":false,\"run\":true},\"declaredCapabilities\":[\"list\",\"get\",\"run\"],\"notes\":\"Read-only ledger. `run` delegates execution to the Task Board executor (session/execution/worktree created by it); claim/in_review are performed by the sessio"
+          "sample": "event: state\ndata: {\"schemaVersion\":1,\"mode\":\"off\",\"stoppedAt\":null,\"policy\":{\"mode\":\"off\",\"maxConcurrent\":2,\"maxRetries\":2,\"maxSwitches\":2,\"proposalTtlMs\":1800000,\"leaseTtlMs\":600000,\"retryCooldownMs\":300000,\"maxAttemptsPerRevision\":4,\"allowedWorkspaces\":[],\"allowedProviders\":[],\"allowedPermissions\":[\"read-only\",\"workspace-write\"],\"executionBackend\":\"board\",\"allowCloudFallback\":false,\"autoResumeOnRestart\":false,\"serializeSameWorkspace\":false,\"routeChain\":[],\"projectPolicies\":{},\"autonomyBudget\":{\"maxTasksPerHour\":6},\"requestsPerHour\":120,\"contractBoardReport\":true,\"settlementRetryMs\":60000,\"allowUnverifiedHandoff\":false},\"acks\":{},\"previews\":{},\"turnEnd\":{},\"proposals\":[],\"recentProposals\":[],\"assignments\":[],\"routeEvents\":[],\"health\":{},\"lastTick\":null,\"sync\":null,\"adapters\":{\"adapters\":[{\"id\":\"dsh-taskboard\",\"kind\":\"work-source\",\"title\":\"DSH Task Board\",\"status\":\"available\",\"validatedLive\":false,\"capabilities\":{\"list\":true,\"get\":true,\"subscribe\":false,\"create\":false,\"update\":false,\"comment\":false,\"transition\":false,\"run\":true},\"declaredCapabilities\":[\"list\",\"get\",\"run\"],\"notes\":\"Read-only ledger. `run` delegates execution to the Task Board executor (session/execution/worktree cr"
         },
         "primaryRequests": [
           {
             "seq": 1,
-            "at": "2026-11-10T10:51:46.644Z",
+            "at": "2026-11-10T11:11:18.421Z",
             "model": "e2e-fake-gpt",
             "stream": true,
             "behavior": "ok",
             "status": 200,
             "sseChunks": 6,
-            "ms": 53,
+            "ms": 62,
             "authorizationPresent": true,
             "promptHasTask": false,
             "promptPreview": "Current runtime context. This snapshot supersedes earlier runtime-context snapshots. Current working directory: \"D:\\\\App\\\\dsh-e2e-home-goal3\\\\project\". Current DSH file policy: wor"
@@ -678,7 +681,7 @@
                   "id": "exec-1",
                   "trigger": "manual",
                   "outcome": "succeeded",
-                  "startedAt": 1794307906406,
+                  "startedAt": 1794309078202,
                   "isolation": "none",
                   "leaseId": "lease-1",
                   "attempt": 1,
@@ -686,13 +689,13 @@
                     "provider": "e2e-primary",
                     "model": "e2e-fake-gpt"
                   },
-                  "sessionId": "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
-                  "endedAt": 1794307907083,
+                  "sessionId": "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
+                  "endedAt": 1794309078668,
                   "report": {
-                    "summary": "Agent Board recorded the end of execution for task tb-e2e-contract (attempt 0, session session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
+                    "summary": "Agent Board recorded the end of execution for task tb-e2e-contract (attempt 0, session session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
                     "changedFiles": [],
                     "checks": [
-                      "observed: session session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
+                      "observed: session session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
                       "observed: outcome completed"
                     ],
                     "artifacts": [],
@@ -700,8 +703,8 @@
                   }
                 }
               ],
-              "createdAt": 1794307906358,
-              "updatedAt": 1794307907083
+              "createdAt": 1794309078146,
+              "updatedAt": 1794309078668
             }
           ],
           "doneCount": 0,
@@ -742,7 +745,7 @@
         ],
         "missing": [],
         "missingWrite": [],
-        "at": 1794307906385
+        "at": 1794309078179
       },
       "tick": {
         "ok": true,
@@ -751,8 +754,8 @@
             "kind": "launch",
             "taskId": "tb-e2e-contract",
             "ok": true,
-            "assignmentId": "asg-a13c85e9-d293-4684-a89b-0bab1cb6943d",
-            "sessionId": "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
+            "assignmentId": "asg-baac8595-ebd0-464f-8e30-bdcb06c2e4e8",
+            "sessionId": "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
             "executionId": "exec-1",
             "leaseId": "lease-1"
           }
@@ -763,24 +766,24 @@
           "kind": "launch",
           "taskId": "tb-e2e-contract",
           "ok": true,
-          "assignmentId": "asg-a13c85e9-d293-4684-a89b-0bab1cb6943d",
-          "sessionId": "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
+          "assignmentId": "asg-baac8595-ebd0-464f-8e30-bdcb06c2e4e8",
+          "sessionId": "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
           "executionId": "exec-1",
           "leaseId": "lease-1"
         },
-        "sessionId": "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3"
+        "sessionId": "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5"
       },
-      "endedAt": "2026-11-10T10:51:58.384Z"
+      "endedAt": "2026-11-10T11:11:30.165Z"
     },
     {
       "id": "b-contract-failover",
       "title": "A scripted 429 on the primary provider makes the board release attempt 1 and lease a SECOND execution with previousExecutionId on the backup route",
-      "startedAt": "2026-11-10T10:51:58.385Z",
+      "startedAt": "2026-11-10T11:11:30.165Z",
       "assertions": [],
       "observed": {
         "assignments": [
           {
-            "id": "asg-5c6809ac-f65e-450d-a3a0-b629e4db5c10",
+            "id": "asg-339dac9c-5eb3-49b7-a6cb-a4e7d4cebe31",
             "attempt": 0,
             "status": "superseded",
             "backend": "contract",
@@ -792,7 +795,7 @@
             "error": "rate_limit: 429: {\"message\":\"Rate limit reached for requests. Please retry after a short delay.\",\"type\":\"rate_limit_error\",\"param\":null,\"code\":\"rate_limit_exceeded\"}"
           },
           {
-            "id": "asg-ebedb6c2-b472-40ea-913f-e7ff4bbadfac",
+            "id": "asg-8c1cab3d-d016-45af-8413-d32ec3ac8680",
             "attempt": 1,
             "status": "done",
             "backend": "contract",
@@ -802,11 +805,11 @@
             "executionId": "exec-3",
             "routeHistory": [
               {
-                "at": 1794307919064,
+                "at": 1794309090281,
                 "from": "e2e-primary/e2e-fake-gpt",
                 "to": "e2e-backup/e2e-fake-backup-gpt",
                 "reason": "switch_after_rate_limit",
-                "checkpointId": "ckpt-73ab889d-1821-402d-b478-3923ec5cb771",
+                "checkpointId": "ckpt-907d0882-0253-4d09-b740-cd9a8249e9d3",
                 "kind": "rate_limit"
               }
             ],
@@ -816,9 +819,9 @@
         ],
         "routeEvents": [
           {
-            "at": 1794307918647,
+            "at": 1794309090233,
             "taskId": "tb-e2e-failover",
-            "assignmentId": "asg-5c6809ac-f65e-450d-a3a0-b629e4db5c10",
+            "assignmentId": "asg-339dac9c-5eb3-49b7-a6cb-a4e7d4cebe31",
             "from": "e2e-primary/e2e-fake-gpt",
             "to": "e2e-backup/e2e-fake-backup-gpt",
             "action": "switch",
@@ -828,11 +831,11 @@
         ],
         "audit": [
           {
-            "at": 1794307918443,
+            "at": 1794309090195,
             "type": "launch",
             "taskId": "tb-e2e-failover",
-            "assignmentId": "asg-5c6809ac-f65e-450d-a3a0-b629e4db5c10",
-            "sessionId": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a",
+            "assignmentId": "asg-339dac9c-5eb3-49b7-a6cb-a4e7d4cebe31",
+            "sessionId": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7",
             "executionId": "exec-2",
             "leaseId": "lease-2",
             "route": "e2e-primary/e2e-fake-gpt",
@@ -840,7 +843,7 @@
             "source": "launch"
           },
           {
-            "at": 1794307918443,
+            "at": 1794309090195,
             "type": "tick",
             "mode": "autonomous",
             "actions": [
@@ -848,40 +851,40 @@
                 "kind": "launch",
                 "taskId": "tb-e2e-failover",
                 "ok": true,
-                "assignmentId": "asg-5c6809ac-f65e-450d-a3a0-b629e4db5c10",
-                "sessionId": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a",
+                "assignmentId": "asg-339dac9c-5eb3-49b7-a6cb-a4e7d4cebe31",
+                "sessionId": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7",
                 "executionId": "exec-2",
                 "leaseId": "lease-2"
               }
             ]
           },
           {
-            "at": 1794307919082,
+            "at": 1794309090297,
             "type": "handoff",
             "taskId": "tb-e2e-failover",
-            "assignmentId": "asg-ebedb6c2-b472-40ea-913f-e7ff4bbadfac",
-            "sessionId": "session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc",
+            "assignmentId": "asg-8c1cab3d-d016-45af-8413-d32ec3ac8680",
+            "sessionId": "session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8",
             "executionId": "exec-3",
             "leaseId": "lease-3",
             "route": "e2e-backup/e2e-fake-backup-gpt",
             "backend": "contract",
             "source": "handoff",
-            "to": "session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc",
-            "from": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a",
+            "to": "session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8",
+            "from": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7",
             "switches": 1
           },
           {
-            "at": 1794307920348,
+            "at": 1794309090523,
             "type": "turn_done",
             "taskId": "tb-e2e-failover",
-            "assignmentId": "asg-ebedb6c2-b472-40ea-913f-e7ff4bbadfac",
+            "assignmentId": "asg-8c1cab3d-d016-45af-8413-d32ec3ac8680",
             "kind": "completed"
           }
         ],
         "primaryRequests": [
           {
             "seq": 2,
-            "at": "2026-11-10T10:51:58.639Z",
+            "at": "2026-11-10T11:11:30.226Z",
             "model": "e2e-fake-gpt",
             "stream": true,
             "behavior": "rate_limit",
@@ -896,13 +899,13 @@
         "backupRequests": [
           {
             "seq": 1,
-            "at": "2026-11-10T10:51:59.140Z",
+            "at": "2026-11-10T11:11:30.316Z",
             "model": "e2e-fake-backup-gpt",
             "stream": true,
             "behavior": "ok",
             "status": 200,
             "sseChunks": 6,
-            "ms": 50,
+            "ms": 62,
             "authorizationPresent": true,
             "promptHasTask": false,
             "promptPreview": "Current runtime context. This snapshot supersedes earlier runtime-context snapshots. Current working directory: \"D:\\\\App\\\\dsh-e2e-home-goal3\\\\project\". Current DSH file policy: wor"
@@ -979,7 +982,7 @@
               "id": "exec-2",
               "trigger": "manual",
               "outcome": "cancelled",
-              "startedAt": 1794307918421,
+              "startedAt": 1794309090175,
               "isolation": "none",
               "leaseId": "lease-2",
               "attempt": 1,
@@ -987,15 +990,15 @@
                 "provider": "e2e-primary",
                 "model": "e2e-fake-gpt"
               },
-              "sessionId": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a",
-              "endedAt": 1794307919063,
+              "sessionId": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7",
+              "endedAt": 1794309090281,
               "error": "failover_handoff"
             },
             {
               "id": "exec-3",
               "trigger": "manual",
               "outcome": "succeeded",
-              "startedAt": 1794307919065,
+              "startedAt": 1794309090282,
               "isolation": "none",
               "leaseId": "lease-3",
               "attempt": 2,
@@ -1004,13 +1007,13 @@
                 "provider": "e2e-backup",
                 "model": "e2e-fake-backup-gpt"
               },
-              "sessionId": "session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc",
-              "endedAt": 1794307920493,
+              "sessionId": "session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8",
+              "endedAt": 1794309090569,
               "report": {
-                "summary": "Agent Board recorded the end of execution for task tb-e2e-failover (attempt 1, session session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
+                "summary": "Agent Board recorded the end of execution for task tb-e2e-failover (attempt 1, session session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
                 "changedFiles": [],
                 "checks": [
-                  "observed: session session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc",
+                  "observed: session session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8",
                   "observed: outcome completed"
                 ],
                 "artifacts": [],
@@ -1018,8 +1021,8 @@
               }
             }
           ],
-          "createdAt": 1794307918402,
-          "updatedAt": 1794307920493
+          "createdAt": 1794309090166,
+          "updatedAt": 1794309090569
         },
         "simulatedBoardState": {
           "revision": 111,
@@ -1048,7 +1051,7 @@
                   "id": "exec-1",
                   "trigger": "manual",
                   "outcome": "succeeded",
-                  "startedAt": 1794307906406,
+                  "startedAt": 1794309078202,
                   "isolation": "none",
                   "leaseId": "lease-1",
                   "attempt": 1,
@@ -1056,13 +1059,13 @@
                     "provider": "e2e-primary",
                     "model": "e2e-fake-gpt"
                   },
-                  "sessionId": "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
-                  "endedAt": 1794307907083,
+                  "sessionId": "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
+                  "endedAt": 1794309078668,
                   "report": {
-                    "summary": "Agent Board recorded the end of execution for task tb-e2e-contract (attempt 0, session session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
+                    "summary": "Agent Board recorded the end of execution for task tb-e2e-contract (attempt 0, session session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
                     "changedFiles": [],
                     "checks": [
-                      "observed: session session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
+                      "observed: session session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
                       "observed: outcome completed"
                     ],
                     "artifacts": [],
@@ -1070,8 +1073,8 @@
                   }
                 }
               ],
-              "createdAt": 1794307906358,
-              "updatedAt": 1794307907083
+              "createdAt": 1794309078146,
+              "updatedAt": 1794309078668
             },
             {
               "id": "tb-e2e-failover",
@@ -1097,7 +1100,7 @@
                   "id": "exec-2",
                   "trigger": "manual",
                   "outcome": "cancelled",
-                  "startedAt": 1794307918421,
+                  "startedAt": 1794309090175,
                   "isolation": "none",
                   "leaseId": "lease-2",
                   "attempt": 1,
@@ -1105,15 +1108,15 @@
                     "provider": "e2e-primary",
                     "model": "e2e-fake-gpt"
                   },
-                  "sessionId": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a",
-                  "endedAt": 1794307919063,
+                  "sessionId": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7",
+                  "endedAt": 1794309090281,
                   "error": "failover_handoff"
                 },
                 {
                   "id": "exec-3",
                   "trigger": "manual",
                   "outcome": "succeeded",
-                  "startedAt": 1794307919065,
+                  "startedAt": 1794309090282,
                   "isolation": "none",
                   "leaseId": "lease-3",
                   "attempt": 2,
@@ -1122,13 +1125,13 @@
                     "provider": "e2e-backup",
                     "model": "e2e-fake-backup-gpt"
                   },
-                  "sessionId": "session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc",
-                  "endedAt": 1794307920493,
+                  "sessionId": "session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8",
+                  "endedAt": 1794309090569,
                   "report": {
-                    "summary": "Agent Board recorded the end of execution for task tb-e2e-failover (attempt 1, session session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
+                    "summary": "Agent Board recorded the end of execution for task tb-e2e-failover (attempt 1, session session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
                     "changedFiles": [],
                     "checks": [
-                      "observed: session session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc",
+                      "observed: session session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8",
                       "observed: outcome completed"
                     ],
                     "artifacts": [],
@@ -1136,8 +1139,8 @@
                   }
                 }
               ],
-              "createdAt": 1794307918402,
-              "updatedAt": 1794307920493
+              "createdAt": 1794309090166,
+              "updatedAt": 1794309090569
             }
           ],
           "doneCount": 0,
@@ -1153,7 +1156,7 @@
           }
         },
         "backupTurnEnd": {
-          "at": 1794307920347,
+          "at": 1794309090523,
           "kind": "completed",
           "error": null
         }
@@ -1187,7 +1190,7 @@
         ],
         "missing": [],
         "missingWrite": [],
-        "at": 1794307906385
+        "at": 1794309078179
       },
       "tick": {
         "ok": true,
@@ -1196,8 +1199,8 @@
             "kind": "launch",
             "taskId": "tb-e2e-failover",
             "ok": true,
-            "assignmentId": "asg-5c6809ac-f65e-450d-a3a0-b629e4db5c10",
-            "sessionId": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a",
+            "assignmentId": "asg-339dac9c-5eb3-49b7-a6cb-a4e7d4cebe31",
+            "sessionId": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7",
             "executionId": "exec-2",
             "leaseId": "lease-2"
           }
@@ -1208,14 +1211,14 @@
           "kind": "launch",
           "taskId": "tb-e2e-failover",
           "ok": true,
-          "assignmentId": "asg-5c6809ac-f65e-450d-a3a0-b629e4db5c10",
-          "sessionId": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a",
+          "assignmentId": "asg-339dac9c-5eb3-49b7-a6cb-a4e7d4cebe31",
+          "sessionId": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7",
           "executionId": "exec-2",
           "leaseId": "lease-2"
         },
-        "sessionId": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a"
+        "sessionId": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7"
       },
-      "endedAt": "2026-11-10T10:52:02.128Z"
+      "endedAt": "2026-11-10T11:11:32.232Z"
     }
   ],
   "board": {
@@ -1223,7 +1226,7 @@
       "mode": "off",
       "stoppedAt": null,
       "lastTick": {
-        "at": 1794307918443,
+        "at": 1794309090195,
         "reason": "manual",
         "mode": "autonomous",
         "stoppedAt": null,
@@ -1232,8 +1235,8 @@
             "kind": "launch",
             "taskId": "tb-e2e-failover",
             "ok": true,
-            "assignmentId": "asg-5c6809ac-f65e-450d-a3a0-b629e4db5c10",
-            "sessionId": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a",
+            "assignmentId": "asg-339dac9c-5eb3-49b7-a6cb-a4e7d4cebe31",
+            "sessionId": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7",
             "executionId": "exec-2",
             "leaseId": "lease-2"
           }
@@ -1242,9 +1245,9 @@
       },
       "routeEvents": [
         {
-          "at": 1794307918647,
+          "at": 1794309090233,
           "taskId": "tb-e2e-failover",
-          "assignmentId": "asg-5c6809ac-f65e-450d-a3a0-b629e4db5c10",
+          "assignmentId": "asg-339dac9c-5eb3-49b7-a6cb-a4e7d4cebe31",
           "from": "e2e-primary/e2e-fake-gpt",
           "to": "e2e-backup/e2e-fake-backup-gpt",
           "action": "switch",
@@ -1256,17 +1259,17 @@
         "e2e-primary": {
           "failures": 1,
           "lastFailureKind": "rate_limit",
-          "lastFailureAt": 1794307918647,
+          "lastFailureAt": 1794309090233,
           "cooldownUntil": null
         }
       },
       "auditTail": [
         {
-          "at": 1794307918443,
+          "at": 1794309090195,
           "type": "launch",
           "taskId": "tb-e2e-failover",
-          "assignmentId": "asg-5c6809ac-f65e-450d-a3a0-b629e4db5c10",
-          "sessionId": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a",
+          "assignmentId": "asg-339dac9c-5eb3-49b7-a6cb-a4e7d4cebe31",
+          "sessionId": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7",
           "executionId": "exec-2",
           "leaseId": "lease-2",
           "route": "e2e-primary/e2e-fake-gpt",
@@ -1274,7 +1277,7 @@
           "source": "launch"
         },
         {
-          "at": 1794307918443,
+          "at": 1794309090195,
           "type": "tick",
           "mode": "autonomous",
           "actions": [
@@ -1282,60 +1285,60 @@
               "kind": "launch",
               "taskId": "tb-e2e-failover",
               "ok": true,
-              "assignmentId": "asg-5c6809ac-f65e-450d-a3a0-b629e4db5c10",
-              "sessionId": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a",
+              "assignmentId": "asg-339dac9c-5eb3-49b7-a6cb-a4e7d4cebe31",
+              "sessionId": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7",
               "executionId": "exec-2",
               "leaseId": "lease-2"
             }
           ]
         },
         {
-          "at": 1794307918647,
+          "at": 1794309090233,
           "type": "route_decision",
-          "assignmentId": "asg-5c6809ac-f65e-450d-a3a0-b629e4db5c10",
+          "assignmentId": "asg-339dac9c-5eb3-49b7-a6cb-a4e7d4cebe31",
           "action": "switch",
           "reason": "switch_after_rate_limit",
           "kind": "rate_limit"
         },
         {
-          "at": 1794307919064,
+          "at": 1794309090281,
           "type": "contract_released",
-          "assignmentId": "asg-5c6809ac-f65e-450d-a3a0-b629e4db5c10",
+          "assignmentId": "asg-339dac9c-5eb3-49b7-a6cb-a4e7d4cebe31",
           "leaseId": "lease-2",
           "reason": "failover_handoff"
         },
         {
-          "at": 1794307919082,
+          "at": 1794309090297,
           "type": "handoff",
           "taskId": "tb-e2e-failover",
-          "assignmentId": "asg-ebedb6c2-b472-40ea-913f-e7ff4bbadfac",
-          "sessionId": "session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc",
+          "assignmentId": "asg-8c1cab3d-d016-45af-8413-d32ec3ac8680",
+          "sessionId": "session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8",
           "executionId": "exec-3",
           "leaseId": "lease-3",
           "route": "e2e-backup/e2e-fake-backup-gpt",
           "backend": "contract",
           "source": "handoff",
-          "to": "session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc",
-          "from": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a",
+          "to": "session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8",
+          "from": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7",
           "switches": 1
         },
         {
-          "at": 1794307920348,
+          "at": 1794309090523,
           "type": "turn_done",
           "taskId": "tb-e2e-failover",
-          "assignmentId": "asg-ebedb6c2-b472-40ea-913f-e7ff4bbadfac",
+          "assignmentId": "asg-8c1cab3d-d016-45af-8413-d32ec3ac8680",
           "kind": "completed"
         },
         {
-          "at": 1794307920494,
+          "at": 1794309090570,
           "type": "contract_settled",
-          "assignmentId": "asg-ebedb6c2-b472-40ea-913f-e7ff4bbadfac",
+          "assignmentId": "asg-8c1cab3d-d016-45af-8413-d32ec3ac8680",
           "leaseId": "lease-3",
           "outcome": "succeeded",
           "reviewed": true
         },
         {
-          "at": 1794307922127,
+          "at": 1794309092231,
           "type": "mode_changed",
           "from": "autonomous",
           "to": "off"
@@ -1343,9 +1346,9 @@
       ],
       "assignments": [
         {
-          "id": "asg-a13c85e9-d293-4684-a89b-0bab1cb6943d",
+          "id": "asg-baac8595-ebd0-464f-8e30-bdcb06c2e4e8",
           "taskId": "tb-e2e-contract",
-          "sessionId": "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
+          "sessionId": "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
           "status": "done",
           "model": {
             "provider": "e2e-primary",
@@ -1360,9 +1363,9 @@
           "error": null
         },
         {
-          "id": "asg-5c6809ac-f65e-450d-a3a0-b629e4db5c10",
+          "id": "asg-339dac9c-5eb3-49b7-a6cb-a4e7d4cebe31",
           "taskId": "tb-e2e-failover",
-          "sessionId": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a",
+          "sessionId": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7",
           "status": "superseded",
           "model": {
             "provider": "e2e-primary",
@@ -1376,9 +1379,9 @@
           "error": "rate_limit: 429: {\"message\":\"Rate limit reached for requests. Please retry after a short delay.\",\"type\":\"rate_limit_error\",\"param\":null,\"code\":\"rate_limit_exceeded\"}"
         },
         {
-          "id": "asg-ebedb6c2-b472-40ea-913f-e7ff4bbadfac",
+          "id": "asg-8c1cab3d-d016-45af-8413-d32ec3ac8680",
           "taskId": "tb-e2e-failover",
-          "sessionId": "session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc",
+          "sessionId": "session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8",
           "status": "done",
           "model": {
             "provider": "e2e-backup",
@@ -1391,11 +1394,11 @@
           "outcome": "completed",
           "routeHistory": [
             {
-              "at": 1794307919064,
+              "at": 1794309090281,
               "from": "e2e-primary/e2e-fake-gpt",
               "to": "e2e-backup/e2e-fake-backup-gpt",
               "reason": "switch_after_rate_limit",
-              "checkpointId": "ckpt-73ab889d-1821-402d-b478-3923ec5cb771",
+              "checkpointId": "ckpt-907d0882-0253-4d09-b740-cd9a8249e9d3",
               "kind": "rate_limit"
             }
           ],
@@ -1403,18 +1406,18 @@
         }
       ],
       "turnEnd": {
-        "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3": {
-          "at": 1794307907011,
+        "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5": {
+          "at": 1794309078630,
           "kind": "completed",
           "error": null
         },
-        "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a": {
-          "at": 1794307918645,
+        "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7": {
+          "at": 1794309090231,
           "kind": "error",
           "error": "429: {\"message\":\"Rate limit reached for requests. Please retry after a short delay.\",\"type\":\"rate_limit_error\",\"param\":null,\"code\":\"rate_limit_exceeded\"}"
         },
-        "session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc": {
-          "at": 1794307920347,
+        "session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8": {
+          "at": 1794309090523,
           "kind": "completed",
           "error": null
         }
@@ -1430,17 +1433,17 @@
     {
       "name": "a1. the execution contract negotiated with writes=true",
       "ok": true,
-      "detail": "{\"version\":1,\"ok\":true,\"writes\":true,\"degraded\":false,\"absent\":false,\"simulated\":true,\"reason\":\"contract_ok\",\"features\":[\"execution.lease\",\"execution.attach\",\"execution.report\",\"execution.release\",\"execution.settle\",\"execution.fencing\",\"execution.idempotency\",\"execution.reroute\"],\"missing\":[],\"missingWrite\":[],\"at\":1794307906385}"
+      "detail": "{\"version\":1,\"ok\":true,\"writes\":true,\"degraded\":false,\"absent\":false,\"simulated\":true,\"reason\":\"contract_ok\",\"features\":[\"execution.lease\",\"execution.attach\",\"execution.report\",\"execution.release\",\"execution.settle\",\"execution.fencing\",\"execution.idempotency\",\"execution.reroute\"],\"missing\":[],\"missingWrite\":[],\"at\":1794309078179}"
     },
     {
       "name": "a2. POST /tick launched a real board session on the contract backend",
       "ok": true,
-      "detail": "{\"action\":{\"kind\":\"launch\",\"taskId\":\"tb-e2e-contract\",\"ok\":true,\"assignmentId\":\"asg-a13c85e9-d293-4684-a89b-0bab1cb6943d\",\"sessionId\":\"session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3\",\"executionId\":\"exec-1\",\"leaseId\":\"lease-1\"},\"backend\":\"contract\",\"sessionId\":\"session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3\"}"
+      "detail": "{\"action\":{\"kind\":\"launch\",\"taskId\":\"tb-e2e-contract\",\"ok\":true,\"assignmentId\":\"asg-baac8595-ebd0-464f-8e30-bdcb06c2e4e8\",\"sessionId\":\"session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5\",\"executionId\":\"exec-1\",\"leaseId\":\"lease-1\"},\"backend\":\"contract\",\"sessionId\":\"session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5\"}"
     },
     {
       "name": "a3. the model turn completed on the fake provider",
       "ok": true,
-      "detail": "{\"turnEnd\":{\"at\":1794307907011,\"kind\":\"completed\",\"error\":null},\"primary\":[{\"status\":200,\"chunks\":6}]}"
+      "detail": "{\"turnEnd\":{\"at\":1794309078630,\"kind\":\"completed\",\"error\":null},\"primary\":[{\"status\":200,\"chunks\":6}]}"
     },
     {
       "name": "a4. the simulated Task Board received lease -> attach -> settle",
@@ -1470,7 +1473,7 @@
     {
       "name": "b2. the board switched to the backup provider route",
       "ok": true,
-      "detail": "{\"at\":1794307918647,\"taskId\":\"tb-e2e-failover\",\"assignmentId\":\"asg-5c6809ac-f65e-450d-a3a0-b629e4db5c10\",\"from\":\"e2e-primary/e2e-fake-gpt\",\"to\":\"e2e-backup/e2e-fake-backup-gpt\",\"action\":\"switch\",\"reason\":\"switch_after_rate_limit\",\"kind\":\"rate_limit\"}"
+      "detail": "{\"at\":1794309090233,\"taskId\":\"tb-e2e-failover\",\"assignmentId\":\"asg-339dac9c-5eb3-49b7-a6cb-a4e7d4cebe31\",\"from\":\"e2e-primary/e2e-fake-gpt\",\"to\":\"e2e-backup/e2e-fake-backup-gpt\",\"action\":\"switch\",\"reason\":\"switch_after_rate_limit\",\"kind\":\"rate_limit\"}"
     },
     {
       "name": "b3. attempt 1 execution was released and executed on the primary provider",
@@ -1485,7 +1488,7 @@
     {
       "name": "b5. the second session ran on the backup route and completed",
       "ok": true,
-      "detail": "{\"backupTurnEnd\":{\"at\":1794307920347,\"kind\":\"completed\",\"error\":null},\"backup200\":true}"
+      "detail": "{\"backupTurnEnd\":{\"at\":1794309090523,\"kind\":\"completed\",\"error\":null},\"backup200\":true}"
     },
     {
       "name": "b6. the card ended in_review with the second execution report, never done",
@@ -1515,12 +1518,12 @@
       {
         "step": "install link plugin",
         "code": 0,
-        "stdoutTail": "[WARN] The store at C:\\Users\\barat\\AppData\\Local\\pnpm\\store\\v11 is not used because packages cannot be hard linked from it into this project. Using the store at D:\\.pnpm-store\\v11 instead. Set storeDir to choose the store.\nAlready up to date\n\ndependencies:\n+ dsh-agent-board 0.1.0 <- ..\\..\\..\\DSH-agent-board\n\nDone in 595ms using pnpm v11.28.5\n",
+        "stdoutTail": "[WARN] The store at C:\\Users\\barat\\AppData\\Local\\pnpm\\store\\v11 is not used because packages cannot be hard linked from it into this project. Using the store at D:\\.pnpm-store\\v11 instead. Set storeDir to choose the store.\nAlready up to date\n\ndependencies:\n+ dsh-agent-board 0.1.0 <- ..\\..\\..\\DSH-agent-board\n\nDone in 354ms using pnpm v11.28.5\n",
         "stderrTail": ""
       }
     ],
     "server": [
-      "[exit 1]\ndsh web: http://127.0.0.1:49942/?token=[redacted]\n\n"
+      "[exit 1]\ndsh web: http://127.0.0.1:52285/?token=[redacted]\n\n"
     ]
   },
   "cleanup": {
@@ -1535,7 +1538,7 @@
       "goal3-ux-390x844-light.png"
     ],
     "desktopProfileTouched": false,
-    "finishedAt": "2026-11-10T10:52:02.422Z"
+    "finishedAt": "2026-11-10T11:11:32.342Z"
   },
   "gaps": [
     "The real `dsh-taskboard` plugin (0.10/0.11) does NOT implement the execution-ownership extension. The contract path is proven against a SIMULATED Task Board (clearly headed `x-simulated-taskboard: true`), so it proves the board side of the contract, not a live Task Board integration.",
@@ -1572,7 +1575,7 @@
           "connection": "keep-alive",
           "content-length": "358",
           "content-type": "application/json; charset=utf-8",
-          "date": "Tue, 10 Nov 2026 10:52:02 GMT",
+          "date": "Tue, 10 Nov 2026 11:11:32 GMT",
           "keep-alive": "timeout=5",
           "x-simulated-note": "SIMULATION of the dsh-taskboard read contract + proposed execution contract; NOT the real plugin",
           "x-simulated-taskboard": "true"
@@ -1610,7 +1613,7 @@
             "route": null,
             "attempt": 1,
             "fence": 4,
-            "expiresAt": 1794308042133,
+            "expiresAt": 1794309212234,
             "state": "leased"
           }
         }
@@ -1627,7 +1630,7 @@
             "route": null,
             "attempt": 1,
             "fence": 4,
-            "expiresAt": 1794308042133,
+            "expiresAt": 1794309212234,
             "state": "leased"
           }
         }
@@ -1653,7 +1656,7 @@
             "sessionId": "session-e2e-contract",
             "executionId": "exec-4",
             "state": "attached",
-            "attachedAt": 1794307922137
+            "attachedAt": 1794309092236
           }
         }
       },
@@ -1666,7 +1669,7 @@
             "sessionId": "session-e2e-contract",
             "executionId": "exec-4",
             "state": "attached",
-            "attachedAt": 1794307922137
+            "attachedAt": 1794309092236
           }
         }
       },
@@ -1677,7 +1680,7 @@
           "value": {
             "leaseId": "lease-4",
             "reportRevision": 1,
-            "acceptedAt": 1794307922139
+            "acceptedAt": 1794309092237
           }
         }
       },
@@ -1728,7 +1731,7 @@
               "id": "exec-1",
               "trigger": "manual",
               "outcome": "succeeded",
-              "startedAt": 1794307906406,
+              "startedAt": 1794309078202,
               "isolation": "none",
               "leaseId": "lease-1",
               "attempt": 1,
@@ -1736,13 +1739,13 @@
                 "provider": "e2e-primary",
                 "model": "e2e-fake-gpt"
               },
-              "sessionId": "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
-              "endedAt": 1794307907083,
+              "sessionId": "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
+              "endedAt": 1794309078668,
               "report": {
-                "summary": "Agent Board recorded the end of execution for task tb-e2e-contract (attempt 0, session session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
+                "summary": "Agent Board recorded the end of execution for task tb-e2e-contract (attempt 0, session session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
                 "changedFiles": [],
                 "checks": [
-                  "observed: session session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
+                  "observed: session session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
                   "observed: outcome completed"
                 ],
                 "artifacts": [],
@@ -1750,8 +1753,8 @@
               }
             }
           ],
-          "createdAt": 1794307906358,
-          "updatedAt": 1794307907083
+          "createdAt": 1794309078146,
+          "updatedAt": 1794309078668
         },
         {
           "id": "tb-e2e-failover",
@@ -1777,7 +1780,7 @@
               "id": "exec-2",
               "trigger": "manual",
               "outcome": "cancelled",
-              "startedAt": 1794307918421,
+              "startedAt": 1794309090175,
               "isolation": "none",
               "leaseId": "lease-2",
               "attempt": 1,
@@ -1785,15 +1788,15 @@
                 "provider": "e2e-primary",
                 "model": "e2e-fake-gpt"
               },
-              "sessionId": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a",
-              "endedAt": 1794307919063,
+              "sessionId": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7",
+              "endedAt": 1794309090281,
               "error": "failover_handoff"
             },
             {
               "id": "exec-3",
               "trigger": "manual",
               "outcome": "succeeded",
-              "startedAt": 1794307919065,
+              "startedAt": 1794309090282,
               "isolation": "none",
               "leaseId": "lease-3",
               "attempt": 2,
@@ -1802,13 +1805,13 @@
                 "provider": "e2e-backup",
                 "model": "e2e-fake-backup-gpt"
               },
-              "sessionId": "session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc",
-              "endedAt": 1794307920493,
+              "sessionId": "session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8",
+              "endedAt": 1794309090569,
               "report": {
-                "summary": "Agent Board recorded the end of execution for task tb-e2e-failover (attempt 1, session session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
+                "summary": "Agent Board recorded the end of execution for task tb-e2e-failover (attempt 1, session session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
                 "changedFiles": [],
                 "checks": [
-                  "observed: session session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc",
+                  "observed: session session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8",
                   "observed: outcome completed"
                 ],
                 "artifacts": [],
@@ -1816,8 +1819,8 @@
               }
             }
           ],
-          "createdAt": 1794307918402,
-          "updatedAt": 1794307920493
+          "createdAt": 1794309090166,
+          "updatedAt": 1794309090569
         },
         {
           "id": "tb-e2e-contract-direct",
@@ -1843,7 +1846,7 @@
               "id": "exec-4",
               "trigger": "manual",
               "outcome": "succeeded",
-              "startedAt": 1794307922133,
+              "startedAt": 1794309092234,
               "isolation": "none",
               "leaseId": "lease-4",
               "attempt": 1,
@@ -1855,11 +1858,11 @@
                 "artifacts": [],
                 "risk": ""
               },
-              "endedAt": 1794307922141
+              "endedAt": 1794309092238
             }
           ],
-          "createdAt": 1794307922132,
-          "updatedAt": 1794307922141
+          "createdAt": 1794309092234,
+          "updatedAt": 1794309092238
         }
       ],
       "doneCount": 0,
@@ -1891,19 +1894,19 @@
             }
           }
         },
-        "at": 1794307906358
+        "at": 1794309078146
       },
       {
         "method": "GET",
         "path": "/dsh-taskboard/contract",
         "body": {},
-        "at": 1794307906376
+        "at": 1794309078170
       },
       {
         "method": "GET",
         "path": "/dsh-taskboard/state",
         "body": {},
-        "at": 1794307906395
+        "at": 1794309078191
       },
       {
         "method": "POST",
@@ -1917,21 +1920,21 @@
           "previousExecutionId": null,
           "expectedVersion": 1,
           "idempotencyKey": "taskboard:tb-e2e-contract@1#0",
-          "requestedAt": 1794307906401
+          "requestedAt": 1794309078197
         },
-        "at": 1794307906406
+        "at": 1794309078202
       },
       {
         "method": "POST",
         "path": "/dsh-taskboard/executions/lease-1/attach",
         "body": {
-          "sessionId": "session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
+          "sessionId": "session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
           "route": {
             "provider": "e2e-primary",
             "model": "e2e-fake-gpt"
           }
         },
-        "at": 1794307906455
+        "at": 1794309078251
       },
       {
         "method": "POST",
@@ -1939,10 +1942,10 @@
         "body": {
           "outcome": "succeeded",
           "report": {
-            "summary": "Agent Board recorded the end of execution for task tb-e2e-contract (attempt 0, session session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
+            "summary": "Agent Board recorded the end of execution for task tb-e2e-contract (attempt 0, session session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
             "changedFiles": [],
             "checks": [
-              "observed: session session-agentboard-5d1354a1-8306-41f6-965a-022dc4063cb3",
+              "observed: session session-agentboard-f932d7a9-d309-41d5-92b0-1457c36196a5",
               "observed: outcome completed"
             ],
             "artifacts": [],
@@ -1950,13 +1953,13 @@
           },
           "requestReview": true
         },
-        "at": 1794307907083
+        "at": 1794309078668
       },
       {
         "method": "GET",
         "path": "/_control/state",
         "body": {},
-        "at": 1794307907088
+        "at": 1794309078891
       },
       {
         "method": "POST",
@@ -1974,13 +1977,13 @@
             }
           }
         },
-        "at": 1794307918402
+        "at": 1794309090166
       },
       {
         "method": "GET",
         "path": "/dsh-taskboard/state",
         "body": {},
-        "at": 1794307918416
+        "at": 1794309090173
       },
       {
         "method": "POST",
@@ -1994,45 +1997,33 @@
           "previousExecutionId": null,
           "expectedVersion": 1,
           "idempotencyKey": "taskboard:tb-e2e-failover@1#0",
-          "requestedAt": 1794307918419
+          "requestedAt": 1794309090174
         },
-        "at": 1794307918421
+        "at": 1794309090175
       },
       {
         "method": "POST",
         "path": "/dsh-taskboard/executions/lease-2/attach",
         "body": {
-          "sessionId": "session-agentboard-c6241287-c87d-4b5e-9fee-823e4e71d38a",
+          "sessionId": "session-agentboard-3c5a345b-a733-4e57-bec1-efe6c8b52af7",
           "route": {
             "provider": "e2e-primary",
             "model": "e2e-fake-gpt"
           }
         },
-        "at": 1794307918441
+        "at": 1794309090194
       },
       {
         "method": "GET",
         "path": "/_control/state",
         "body": {},
-        "at": 1794307918446
-      },
-      {
-        "method": "GET",
-        "path": "/_control/state",
-        "body": {},
-        "at": 1794307918710
-      },
-      {
-        "method": "GET",
-        "path": "/_control/state",
-        "body": {},
-        "at": 1794307919004
+        "at": 1794309090203
       },
       {
         "method": "GET",
         "path": "/dsh-taskboard/state",
         "body": {},
-        "at": 1794307919061
+        "at": 1794309090280
       },
       {
         "method": "POST",
@@ -2040,7 +2031,7 @@
         "body": {
           "reason": "failover_handoff"
         },
-        "at": 1794307919063
+        "at": 1794309090281
       },
       {
         "method": "POST",
@@ -2054,51 +2045,27 @@
           "previousExecutionId": "exec-2",
           "expectedVersion": null,
           "idempotencyKey": "taskboard:tb-e2e-failover@1#1",
-          "requestedAt": 1794307919065
+          "requestedAt": 1794309090281
         },
-        "at": 1794307919065
+        "at": 1794309090282
       },
       {
         "method": "POST",
         "path": "/dsh-taskboard/executions/lease-3/attach",
         "body": {
-          "sessionId": "session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc",
+          "sessionId": "session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8",
           "route": {
             "provider": "e2e-backup",
             "model": "e2e-fake-backup-gpt"
           }
         },
-        "at": 1794307919081
+        "at": 1794309090296
       },
       {
         "method": "GET",
         "path": "/_control/state",
         "body": {},
-        "at": 1794307919268
-      },
-      {
-        "method": "GET",
-        "path": "/_control/state",
-        "body": {},
-        "at": 1794307919546
-      },
-      {
-        "method": "GET",
-        "path": "/_control/state",
-        "body": {},
-        "at": 1794307919822
-      },
-      {
-        "method": "GET",
-        "path": "/_control/state",
-        "body": {},
-        "at": 1794307920078
-      },
-      {
-        "method": "GET",
-        "path": "/_control/state",
-        "body": {},
-        "at": 1794307920347
+        "at": 1794309090461
       },
       {
         "method": "POST",
@@ -2106,10 +2073,10 @@
         "body": {
           "outcome": "succeeded",
           "report": {
-            "summary": "Agent Board recorded the end of execution for task tb-e2e-failover (attempt 1, session session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
+            "summary": "Agent Board recorded the end of execution for task tb-e2e-failover (attempt 1, session session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8). This report is composed by the orchestrator from OBSERVED facts (session identity, turn outcome, route). It does not replace a richer report the agent may have submitted itself.",
             "changedFiles": [],
             "checks": [
-              "observed: session session-agentboard-5f76cc48-85e3-491c-8e44-056c73fcdedc",
+              "observed: session session-agentboard-f3d45cdc-1152-4346-a0f2-c6977589d1c8",
               "observed: outcome completed"
             ],
             "artifacts": [],
@@ -2117,19 +2084,19 @@
           },
           "requestReview": true
         },
-        "at": 1794307920493
+        "at": 1794309090569
       },
       {
         "method": "GET",
         "path": "/_control/state",
         "body": {},
-        "at": 1794307920606
+        "at": 1794309090723
       },
       {
         "method": "GET",
         "path": "/dsh-taskboard/contract",
         "body": {},
-        "at": 1794307922129
+        "at": 1794309092233
       },
       {
         "method": "POST",
@@ -2142,7 +2109,7 @@
             "isolation": "none"
           }
         },
-        "at": 1794307922132
+        "at": 1794309092234
       },
       {
         "method": "POST",
@@ -2151,7 +2118,7 @@
           "idempotencyKey": "e2e:tb-e2e-contract-direct:1",
           "expectedVersion": 1
         },
-        "at": 1794307922133
+        "at": 1794309092234
       },
       {
         "method": "POST",
@@ -2160,7 +2127,7 @@
           "idempotencyKey": "e2e:tb-e2e-contract-direct:1",
           "expectedVersion": 1
         },
-        "at": 1794307922135
+        "at": 1794309092235
       },
       {
         "method": "POST",
@@ -2169,7 +2136,7 @@
           "idempotencyKey": "e2e:tb-e2e-contract-direct:2",
           "expectedVersion": 1
         },
-        "at": 1794307922136
+        "at": 1794309092236
       },
       {
         "method": "POST",
@@ -2177,7 +2144,7 @@
         "body": {
           "sessionId": "session-e2e-contract"
         },
-        "at": 1794307922137
+        "at": 1794309092236
       },
       {
         "method": "POST",
@@ -2185,7 +2152,7 @@
         "body": {
           "sessionId": "session-e2e-contract"
         },
-        "at": 1794307922138
+        "at": 1794309092237
       },
       {
         "method": "POST",
@@ -2199,7 +2166,7 @@
           "artifacts": [],
           "risk": ""
         },
-        "at": 1794307922139
+        "at": 1794309092237
       },
       {
         "method": "POST",
@@ -2211,11 +2178,11 @@
             "summary": "simulated settle report"
           }
         },
-        "at": 1794307922141
+        "at": 1794309092238
       }
     ]
   },
-  "finishedAt": "2026-11-10T10:52:02.422Z",
+  "finishedAt": "2026-11-10T11:11:32.342Z",
   "screenshots": [
     "goal3-ux-1366x768-dark-card-preview.png",
     "goal3-ux-1366x768-dark.png",

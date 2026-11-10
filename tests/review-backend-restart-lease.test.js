@@ -162,10 +162,11 @@ test('FINDING R3: a contract lease that survives a restart is released', async (
     assert.ok(restored !== undefined, 'the contract leaseId must survive the restart')
     assert.equal(restored.status, 'interrupted')
     // Give the release attempt (and the contract probe) time to settle.
-    const released = await waitFor(() => board.state().leases.every(lease => lease.state === 'released'), 3000)
+    const audited = await waitFor(async () => (await second.state()).audit.some(entry => entry.type === 'contract_released'), 3000)
     const view = await second.state()
+    const released = board.state().leases.every(lease => lease.state === 'released')
     assert.equal(released, true, `the lease must be released after restart, leases=${JSON.stringify(board.state().leases.map(lease => lease.state))} audit=${JSON.stringify(view.audit.filter(entry => /contract_release/.test(entry.type)))}`)
-    assert.ok(view.audit.some(entry => entry.type === 'contract_released'), 'the release must be recorded as done, not as a local refusal')
+    assert.equal(audited, true, 'the release must be recorded as done, not as a local refusal')
   } finally {
     try { first?.dispose() } catch { /* already disposed */ }
     try { second?.dispose() } catch { /* already disposed */ }

@@ -132,6 +132,12 @@ const DEFAULT_POLICY = Object.freeze({
   // The board may attach a settlement report composed from OBSERVED facts when
   // the agent did not submit one. Set to false to never write a report.
   contractBoardReport: true,
+  // Delay before the bounded settle/release retry sweep runs again (ms).
+  settlementRetryMs: 60000,
+  // A handoff normally requires a FRESH Task Board read proving ownership. When
+  // that read fails (network), the default is to suppress the recovery; an
+  // operator may opt into the optimistic path explicitly.
+  allowUnverifiedHandoff: false,
 })
 
 const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
@@ -169,6 +175,10 @@ function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     contractBoardReport: input.contractBoardReport === undefined
       ? fallback.contractBoardReport !== false
       : input.contractBoardReport === true,
+    settlementRetryMs: clampInt(input.settlementRetryMs, 0, 3600000, fallback.settlementRetryMs ?? 60000),
+    allowUnverifiedHandoff: input.allowUnverifiedHandoff === undefined
+      ? fallback.allowUnverifiedHandoff === true
+      : input.allowUnverifiedHandoff === true,
   }
 }
 
@@ -508,8 +518,9 @@ function classifyStatusDetailed({ row, live, turnEnd, ack, assignment, gone = fa
         source: 'assignment',
         at: assignmentEnd,
         // An interrupted assignment can be acknowledged (read in the board or in
-        // the native view): the status stays interrupted, the attention flag clears.
-        _seen: hasSeen && assignmentEnd !== null && seenAt >= assignmentEnd,
+        // the native view): the status stays interrupted, the attention flag
+        // clears. Without any timestamp the persisted ack is the only evidence.
+        _seen: hasSeen && (assignmentEnd === null || seenAt >= assignmentEnd),
       }
     }
   }
@@ -519,42 +530,63 @@ function classifyStatusDetailed({ row, live, turnEnd, ack, assignment, gone = fa
     return { status: STATUS.UNKNOWN, reason: 'no_row_for_session', source: 'none', at: null }
   }
   // Failure truth: the host-recorded turn end wins, then the native lifecycle
-  // fact. A recovered failure (a later turn started) is no longer a failure.
-  if (end !== null && ERROR_TURN_KINDS.includes(end.kind) && end.recoveredAt === undefined) {
+  // fact. A recovered failure (a later turn started) is no longer a failure, and
+  // a native failure the host missed must not be hidden by a stale completed end.
+  const hostKind = typeof end?.kind === 'string' ? end.kind : null
+  const hostFailed = hostKind !== null && ERROR_TURN_KINDS.includes(hostKind) && end?.recoveredAt === undefined
+  const hostTurn = Number(end?.turn)
+  const nativeFailed = nativeEnd !== null && ERROR_TURN_KINDS.includes(nativeEnd.reason)
+  // The host end is a NEWER fact when it explicitly recovered the failure or
+  // when it names a later turn; otherwise the native failure wins.
+  const hostIsNewer = end !== null && (end.recoveredAt !== undefined
+    || (Number.isFinite(hostTurn) && nativeEnd !== null && Number.isFinite(Number(nativeEnd.turn)) && Number(nativeEnd.turn) < hostTurn))
+  if (hostFailed) {
     const covered = hasSeen && Number.isFinite(endAt) && seenAt >= endAt
-    return failed(`turn_end:${end.kind}`, 'host_turn_end', Number.isFinite(endAt) ? endAt : null, { _seen: covered })
+    return failed(`turn_end:${hostKind}`, 'host_turn_end', Number.isFinite(endAt) ? endAt : null, { _seen: covered })
   }
-  if ((end === null || end.recoveredAt !== undefined) && nativeEnd !== null && ERROR_TURN_KINDS.includes(nativeEnd.reason)) {
-    // Native-only failure: the host may have missed the event (restart). There
-    // is no board ack that could have covered it, so it stays unread/visible.
-    return failed(`native_turn_end:${nativeEnd.reason}`, 'session_projection', null, { _seen: false })
+  if (nativeFailed && !hostIsNewer) {
+    // Native-only failure: the host may have missed the event (restart). The
+    // persisted ack is the only read cursor available (a native turn end has no
+    // timestamp), so an explicit ack is what clears the attention flag.
+    return failed(`native_turn_end:${nativeEnd.reason}`, 'session_projection', null, { _seen: hasSeen })
   }
   // Session truth: an agent the runtime reports as gone is `unavailable`, even
   // when a turn end was recorded earlier. It is never "finished".
   if (row?.agentAvailable === false) {
     return { status: STATUS.UNAVAILABLE, reason: 'agent_not_available', source: 'session_row', at: null }
   }
+  if (nativeEnd !== null && nativeEnd.reason !== COMPLETED_TURN_KIND && !nativeFailed && !hostIsNewer) {
+    // Same rule for a native non-completion the host missed (aborted, blocked,
+    // interrupted, forked, max-tokens): the stale completed end must not turn it
+    // into a fresh result.
+    return { status: STATUS.IDLE, reason: `native_turn_ended:${nativeEnd.reason}`, source: 'session_projection', at: null }
+  }
   if (end !== null && Number.isFinite(endAt)) {
-    if (INTERRUPTED_TURN_KINDS.includes(end.kind)) {
-      return { status: STATUS.IDLE, reason: `turn_ended:${end.kind}`, source: 'host_turn_end', at: endAt }
+    if (hostKind === COMPLETED_TURN_KIND) {
+      if (hasSeen && seenAt >= endAt) {
+        return { status: STATUS.FINISHED_READ, reason: `ack_after_turn:${hostKind}`, source: 'host_turn_end', at: endAt }
+      }
+      return { status: STATUS.FINISHED_UNREAD, reason: `turn_end:${hostKind}_not_acknowledged`, source: 'host_turn_end', at: endAt }
     }
-    if (hasSeen && seenAt >= endAt) {
-      return { status: STATUS.FINISHED_READ, reason: `ack_after_turn:${end.kind}`, source: 'host_turn_end', at: endAt }
-    }
-    return { status: STATUS.FINISHED_UNREAD, reason: `turn_end:${end.kind}_not_acknowledged`, source: 'host_turn_end', at: endAt }
+    // aborted / blocked / unknown / max-tokens / a recovered error: the turn did
+    // NOT complete, so it is never a green "result" (idle with a reason).
+    const recovered = end.recoveredAt !== undefined ? ':recovered' : ''
+    return { status: STATUS.IDLE, reason: `turn_ended:${hostKind ?? 'unknown'}${recovered}`, source: 'host_turn_end', at: endAt }
   }
   if (live?.completionUnread === true) {
     // The native runtime also tracks unread completions. An explicit board ack
-    // that is newer than the session's last activity covers it; otherwise the
-    // pill would be impossible to clear.
-    if (hasSeen && Number.isFinite(updatedAt) && seenAt >= updatedAt) {
+    // that is newer than the session's last activity covers it; when the row
+    // carries no activity timestamp the ack is the only evidence available.
+    const activityKnown = Number.isFinite(updatedAt) && updatedAt > 0
+    if (hasSeen && (!activityKnown || seenAt >= updatedAt)) {
       return { status: STATUS.FINISHED_READ, reason: 'ack_after_native_activity', source: 'host_status', at: seenAt }
     }
     return { status: STATUS.FINISHED_UNREAD, reason: 'native_completion_unread', source: 'host_status', at: null }
   }
   if (nativeEnd !== null) {
-    // A turn that completed before the board observed it is history, not "new".
-    // A native-only turn end has no timestamp, so it can never be "recent".
+    // Only a `completed` native turn end reaches this point (any other reason
+    // returned `idle` above): it is history, not "new", and it has no timestamp
+    // so it can never be "recent".
     return { status: STATUS.FINISHED_READ, reason: `native_history:${nativeEnd.reason}`, source: 'session_projection', at: null }
   }
   return { status: STATUS.IDLE, reason: 'no_activity', source: 'session_row', at: null }
@@ -639,14 +671,16 @@ function nativeModelOf(row) {
  *
  * Contract the host may inject as `modelOf`:
  *   `modelOf(sessionId: string, row: object|undefined) -> {provider, model, reasoningEffort?} | "provider/model" | null | undefined`
- * The injected resolver is authoritative: when it is supplied, its `null`
- * result means "unknown" and no other field is used as a fallback. A throw is
- * treated as unknown (the panel must never crash on a resolver).
+ * The injected resolver is the NATIVE source (it replaces the `modelSelection`
+ * read, not the assignment): when it is supplied, its `null` result means
+ * "native model unknown" and no other native field is used as a fallback. A
+ * throw is treated as unknown (the panel must never crash on a resolver).
  *
- * Precedence: injected/native `modelSelection` projection, then the board
- * assignment that launched the card (a real fact about that launch). An
- * assignment route is NEVER copied onto a native session: an assignment only
- * exists for a card the board launched.
+ * Precedence (chosen on purpose): the board assignment that launched the card
+ * wins, because it is the route the board itself created and may have switched;
+ * otherwise the native `modelSelection` projection is shown. An assignment route
+ * is NEVER copied onto a native session: an assignment only exists for a card
+ * the board launched.
  */
 function resolveNodeModel({ sessionId, row, assignment = null, modelOf, projectionsBySession = null }) {
   const id = String(sessionId ?? row?.id ?? '')
@@ -682,9 +716,16 @@ function modelLabelOf(model) {
  * appended when it CHANGED (or null). The memory map is owned by the caller
  * (the client store) and bounded, so a long-lived panel cannot grow forever.
  * Identity stays the session id: a model change never creates a second card.
+ *
+ * Provenance: an assignment route is NOT a native model/selection change. The
+ * host already owns that fact in `assignment.routeHistory` (with the real
+ * switch reason), so an assignment-sourced value returns null and does not
+ * touch the native memory. Only native `modelSelection` transitions are kept
+ * here, with `source:'native'`.
  */
 function trackModelChange(memory, sessionId, model, now = Date.now(), { limit = MODEL_HISTORY_LIMIT, maxSessions = 512 } = {}) {
   if (memory === null || typeof memory?.get !== 'function' || typeof memory.set !== 'function') return null
+  if (model?.source === MODEL_SOURCE.ASSIGNMENT) return null
   const label = modelLabelOf(model)
   if (label === null) return null
   const id = String(sessionId)
@@ -698,7 +739,7 @@ function trackModelChange(memory, sessionId, model, now = Date.now(), { limit = 
     return null
   }
   if (current.last === label) return null
-  const entry = { from: current.last, to: label, at: Number(now) || null, reason: 'model_change', source: 'native' }
+  const entry = { from: current.last, to: label, at: Number(now) || null, reason: 'model_change', source: MODEL_SOURCE.NATIVE }
   current.last = label
   current.entries = [...current.entries, entry].slice(-limit)
   return entry
@@ -771,30 +812,53 @@ function providerOutageOf(health, provider, { now = Date.now(), sessionAt = null
   }
 }
 
+/** The only turn-end kind that delivered a complete answer. */
+const COMPLETED_TURN_KIND = 'completed'
+
 /**
- * The final answer excerpt. Only an answer that closed a turn is "final":
+ * The fact that closed the most recent turn, or null.
+ *
+ * A host-recorded failure wins when it is not recovered (the native projection
+ * may have missed it); otherwise the native fact wins because it carries the
+ * turn number needed to attribute an outline response to its own turn.
+ */
+function closingTurnOf(row, end) {
+  const hostKind = end !== null && typeof end === 'object' && end.recoveredAt === undefined && typeof end.kind === 'string' ? end.kind : null
+  const native = nativeTurnEndOf(row)
+  if (hostKind !== null && hostKind !== COMPLETED_TURN_KIND) {
+    return { kind: hostKind, turn: native !== null ? native.turn : null, source: 'host_turn_end' }
+  }
+  if (native !== null) return { kind: native.reason, turn: native.turn, source: 'session_projection' }
+  return hostKind !== null ? { kind: hostKind, turn: null, source: 'host_turn_end' } : null
+}
+
+/**
+ * The final answer excerpt. Only an answer that closed a COMPLETED turn is
+ * "final":
  *   1. host-captured last assistant message when the session is not running
  *      and a turn end was recorded at/after it;
  *   2. the native turn outline `response` of the latest answered turn;
- *   3. a board checkpoint text.
+ *   3. a board checkpoint text, only when its assignment completed.
  * A mid-turn assistant segment (between tool calls) is never presented as the
  * final answer; it is exposed separately as `interim` only for activity.
  */
 function previewOf(hostState, sessionId, assignment, row, running = false) {
   const preview = hostState?.previews?.[sessionId]
   const end = hostState?.turnEnd?.[sessionId]
+  const hasEnd = end !== null && end !== undefined && typeof end === 'object'
+  const closing = closingTurnOf(row, hasEnd ? end : null)
+  const closedWell = closing !== null && closing.kind === COMPLETED_TURN_KIND
   const hostText = preview !== undefined && typeof preview.text === 'string' ? preview.text.trim() : ''
-  if (hostText !== '' && !running && end !== undefined && Number(end.at) >= Number(preview.at)) {
+  if (hostText !== '' && !running && hasEnd && Number(end.at) >= Number(preview.at)) {
     // The captured segment is only a FINAL answer when the turn that closed it
     // actually completed. An error/aborted/unknown turn ends with a partial
     // segment, and an intermediate segment must never be labelled final.
     const kind = typeof end.kind === 'string' ? end.kind : 'unknown'
-    const completed = !ERROR_TURN_KINDS.includes(kind) && !INTERRUPTED_TURN_KINDS.includes(kind) && kind !== 'unknown'
     return {
       text: truncate(hostText, 600),
       at: Number(preview.at) || null,
-      final: completed,
-      partial: !completed,
+      final: closedWell,
+      partial: !closedWell,
       turnEndKind: kind,
       source: 'host',
     }
@@ -804,14 +868,42 @@ function previewOf(hostState, sessionId, assignment, row, running = false) {
     for (let index = outline.length - 1; index >= 0; index -= 1) {
       const entry = outline[index]
       const isOpenTurn = running && index === outline.length - 1
-      if (!isOpenTurn && typeof entry?.response === 'string' && entry.response.trim() !== '') {
-        return { text: truncate(entry.response.trim(), 600), at: null, final: true, partial: false, source: 'outline', turn: Number(entry.turn) || null }
+      if (isOpenTurn) continue
+      if (typeof entry?.response !== 'string' || entry.response.trim() === '') continue
+      const turn = Number(entry.turn)
+      // Which turn produced this response? Use the turn number when the closing
+      // fact carries one; otherwise the newest entry is the only candidate.
+      const belongsToClosingTurn = closing !== null && !closedWell && (Number.isFinite(closing.turn) && Number.isFinite(turn)
+        ? turn === closing.turn
+        : index === outline.length - 1)
+      if (belongsToClosingTurn) {
+        return {
+          text: truncate(entry.response.trim(), 600),
+          at: null,
+          final: false,
+          partial: true,
+          source: 'outline',
+          turn: Number.isFinite(turn) ? turn : null,
+          turnEndKind: closing.kind,
+        }
       }
+      return { text: truncate(entry.response.trim(), 600), at: null, final: true, partial: false, source: 'outline', turn: Number.isFinite(turn) ? turn : null }
     }
   }
   const checkpointText = assignment?.checkpoint?.lastText
   if (!running && typeof checkpointText === 'string' && checkpointText !== '') {
-    return { text: truncate(checkpointText, 600), at: Number(assignment?.checkpoint?.at) || null, final: true, partial: false, source: 'checkpoint' }
+    // A board checkpoint describes an attempt in progress: it is only a final
+    // answer when that assignment actually completed (`done`) and no negative
+    // turn end closed after it.
+    const finalized = assignment?.status === 'done' && (closing === null || closedWell)
+    return {
+      text: truncate(checkpointText, 600),
+      at: Number(assignment?.checkpoint?.at) || null,
+      final: finalized,
+      partial: !finalized,
+      source: 'checkpoint',
+      turnEndKind: closing !== null ? closing.kind : null,
+    }
   }
   return { text: '', at: null, final: false, partial: false, source: null }
 }
@@ -928,7 +1020,9 @@ function indexGone(hostState) {
 function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now = Date.now(), modelOf, modelHistory = null, health, recentWindowMs = RECENT_FINISHED_MS }) {
   const normalized = normalizeSessions(list)
   const assignmentsBySession = new Map()
-  for (const assignment of hostState.assignments ?? []) {
+  // Tolerant read: a malformed host frame (or an older host) must degrade to an
+  // empty assignment list instead of breaking the whole projection.
+  for (const assignment of Array.isArray(hostState.assignments) ? hostState.assignments : []) {
     if (typeof assignment?.sessionId === 'string') assignmentsBySession.set(assignment.sessionId, assignment)
   }
   const archived = new Set(Array.isArray(workspaces.archivedSessionIds) ? workspaces.archivedSessionIds.map(String) : [])
@@ -994,14 +1088,21 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
     const ack = hostState.acks?.[node.id] ?? null
     const assignment = assignmentsBySession.get(node.id) ?? null
     const model = resolveNodeModel({ sessionId: node.id, row, assignment, modelOf, projectionsBySession: normalized.projectionsBySession })
+    // A removal tombstone only wins while the runtime does not publish a live
+    // row for the session: a resurrected session (row updated at/after the
+    // removal) is live evidence and beats the stale fact.
+    const goneAt = goneIndex.get(node.id)
+    const rowUpdatedAt = Number(row?.updatedAt)
+    const resurrected = row !== undefined && (goneAt === null || (Number.isFinite(rowUpdatedAt) && rowUpdatedAt >= goneAt))
+    const gone = goneIndex.has(node.id) && !resurrected
     const detail = classifyStatusDetailed({
       row,
       live,
       turnEnd,
       ack,
       assignment,
-      gone: goneIndex.has(node.id),
-      goneAt: goneIndex.get(node.id),
+      gone,
+      goneAt,
       provider: model.provider,
       health: healthTable,
       now,
@@ -1021,7 +1122,11 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
     const stats = row?.projectionValues?.sessionStats
     const endAt = Number(turnEnd?.at)
     const endKind = typeof turnEnd?.kind === 'string' ? turnEnd.kind : null
-    const completedTurnEnd = endKind !== null && !ERROR_TURN_KINDS.includes(endKind) && !INTERRUPTED_TURN_KINDS.includes(endKind) && endKind !== 'unknown'
+    // Only a turn end kind `completed` delivered a finished answer, and only when
+    // the newest turn-end fact (host OR native) is that completion: a stale
+    // completed host end must not make a later native failure/abort "recent".
+    const closing = closingTurnOf(row, turnEnd !== null && turnEnd !== undefined && typeof turnEnd === 'object' ? turnEnd : null)
+    const completedTurnEnd = endKind === COMPLETED_TURN_KIND && (closing === null || closing.kind === COMPLETED_TURN_KIND)
     // A real finish timestamp inside a bounded window. A future timestamp (host
     // and panel clocks differ) still counts: the flag must not flicker.
     const recentlyFinished = completedTurnEnd && Number.isFinite(endAt) && now - endAt <= windowMs
@@ -1080,7 +1185,7 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
       recentlyFinished,
       finishedAt: completedTurnEnd && Number.isFinite(endAt) ? endAt : null,
       healthUntil: Number(detail.healthUntil) || null,
-      gone: goneIndex.has(node.id),
+      gone,
       assignmentId: assignment?.id ?? null,
       taskId: assignment?.taskId ?? null,
       assignmentStatus: assignment?.status ?? null,
@@ -1273,6 +1378,10 @@ const DEFAULT_TREE_LIMIT = 8
 /** Does this node by itself demand to be on the home view? */
 function isAttention(node) {
   if (node === undefined || node === null) return false
+  // An archived session is history whatever its status: the operator archived
+  // it, so it is neither attention nor a fresh result (still reachable through
+  // "all", the search and the history drawer).
+  if (node.archived === true) return false
   if (node.status === STATUS.WAITING_USER) return true
   if (node.status === STATUS.RUNNING) return true
   if (node.status === STATUS.RECOVERING) return true
@@ -1669,6 +1778,36 @@ function emptyHostState() {
   }
 }
 
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+const HOST_STATE_OBJECT_KEYS = ['acks', 'previews', 'turnEnd', 'health', 'gone', 'policy', 'instance', 'sync', 'adapters']
+const HOST_STATE_ARRAY_KEYS = ['assignments', 'proposals', 'routeEvents', 'audit', 'reconcileNotes']
+
+/**
+ * Is this object a host state frame? The event stream is shared, so a valid
+ * JSON object that is not the board contract must never replace the state the
+ * projection reads. A frame is accepted only when it carries a known top-level
+ * field AND every present known field has its expected container type (arrays
+ * stay arrays, tables stay plain objects; null is tolerated for optional
+ * objects so a partially populated state is still accepted).
+ */
+function looksLikeHostState(value) {
+  if (!isPlainObject(value)) return false
+  const known = typeof value.mode === 'string'
+    || HOST_STATE_ARRAY_KEYS.some(key => Array.isArray(value[key]))
+    || HOST_STATE_OBJECT_KEYS.some(key => isPlainObject(value[key]))
+  if (!known) return false
+  for (const key of HOST_STATE_ARRAY_KEYS) {
+    if (value[key] !== undefined && !Array.isArray(value[key])) return false
+  }
+  for (const key of HOST_STATE_OBJECT_KEYS) {
+    if (value[key] !== undefined && value[key] !== null && !isPlainObject(value[key])) return false
+  }
+  return true
+}
+
 /** Every session id the projection can create a node for (rows + catalogs). */
 function knownSessionIds(list) {
   const ids = new Set()
@@ -1823,7 +1962,7 @@ function createBoardStore(ctx, options = {}) {
       const response = await fetchImpl(`${apiBase}/state`, { headers: { accept: 'application/json' } })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const body = await response.json()
-      if (body?.ok !== true || body.value === null || typeof body.value !== 'object') throw new Error('invalid host state')
+      if (body?.ok !== true || !looksLikeHostState(body.value)) throw new Error('invalid host state')
       host = body.value
       hostError = null
       bump()
@@ -1841,7 +1980,11 @@ function createBoardStore(ctx, options = {}) {
   function applyStreamFrame(event) {
     try {
       const parsed = JSON.parse(event?.data)
-      if (parsed !== null && typeof parsed === 'object') {
+      // Any valid JSON object is NOT a host state: an unrelated object (or a
+      // partially shaped one) would replace the board state and make the
+      // projection iterate garbage. Only a frame that looks like the host state
+      // contract is applied; the previous state is kept otherwise.
+      if (looksLikeHostState(parsed)) {
         host = parsed
         hostError = null
         bump()

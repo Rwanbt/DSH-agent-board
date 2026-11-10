@@ -125,6 +125,12 @@ export const DEFAULT_POLICY = Object.freeze({
   // The board may attach a settlement report composed from OBSERVED facts when
   // the agent did not submit one. Set to false to never write a report.
   contractBoardReport: true,
+  // Delay before the bounded settle/release retry sweep runs again (ms).
+  settlementRetryMs: 60000,
+  // A handoff normally requires a FRESH Task Board read proving ownership. When
+  // that read fails (network), the default is to suppress the recovery; an
+  // operator may opt into the optimistic path explicitly.
+  allowUnverifiedHandoff: false,
 })
 
 const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
@@ -162,6 +168,10 @@ export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     contractBoardReport: input.contractBoardReport === undefined
       ? fallback.contractBoardReport !== false
       : input.contractBoardReport === true,
+    settlementRetryMs: clampInt(input.settlementRetryMs, 0, 3600000, fallback.settlementRetryMs ?? 60000),
+    allowUnverifiedHandoff: input.allowUnverifiedHandoff === undefined
+      ? fallback.allowUnverifiedHandoff === true
+      : input.allowUnverifiedHandoff === true,
   }
 }
 
