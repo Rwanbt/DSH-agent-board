@@ -13,6 +13,7 @@
 import { createAdapterRegistry, createSkeletonAdapter } from '../contracts/adapters.js'
 import { createTaskboardAdapter } from './taskboard.js'
 import { createGithubAdapter } from './github.js'
+import { createExecutors } from '../executors/index.js'
 
 const SKELETONS = [
   { id: 'gitlab', kind: 'forge', title: 'GitLab', reason: 'Contract defined; no live API call or E2E validated in this build.' },
@@ -24,11 +25,40 @@ const SKELETONS = [
 ]
 
 /**
+ * Static executor matrix, used when no host context is supplied (unit tests,
+ * documentation). It states capabilities only, never live validation.
+ */
+const STATIC_EXECUTORS = Object.freeze([
+  {
+    id: 'dsh',
+    kind: 'executor',
+    title: 'DeepSeek Harness',
+    status: 'available',
+    validatedLive: false,
+    notes: 'Native ctx.agents.create + agent.inject/followup. The host orchestrator is the executor binding; the adapter registry describes what is implemented.',
+    capabilities: { create: true, observe: true, cancel: true },
+  },
+  {
+    id: 'claude-code', kind: 'executor', title: 'Claude Code', status: 'unavailable', validatedLive: false,
+    notes: 'Adapter contract only; no live supervision or launch validated in this build.', capabilities: { create: false, observe: false, cancel: false },
+  },
+  {
+    id: 'codex', kind: 'executor', title: 'Codex', status: 'unavailable', validatedLive: false,
+    notes: 'Adapter contract only; no live supervision or launch validated in this build.', capabilities: { create: false, observe: false, cancel: false },
+  },
+  {
+    id: 'opencode', kind: 'executor', title: 'OpenCode', status: 'unavailable', validatedLive: false,
+    notes: 'Adapter contract only; no live supervision or launch validated in this build.', capabilities: { create: false, observe: false, cancel: false },
+  },
+])
+
+/**
  * @param {object} options
  * @param {string} options.baseUrl
  * @param {string} [options.githubRepository]
+ * @param {object} [options.ctx]  cordis host context, enables the real executor matrix
  */
-export function createConnectors({ baseUrl, githubRepository }) {
+export function createConnectors({ baseUrl, githubRepository, ctx } = {}) {
   const registry = createAdapterRegistry()
   registry.register(createTaskboardAdapter({ baseUrl }))
   registry.register(createGithubAdapter({ repository: githubRepository }))
@@ -36,44 +66,17 @@ export function createConnectors({ baseUrl, githubRepository }) {
     registry.register(createSkeletonAdapter({ ...skeleton, validatedLive: false }))
   }
 
-  const executors = [
-    {
-      id: 'dsh',
-      kind: 'executor',
-      title: 'DeepSeek Harness',
-      status: 'available',
-      validatedLive: true,
-      notes: 'Native ctx.agents.create + agent.inject/followup. The host orchestrator is the executor binding.',
-      capabilities: { create: true, observe: true, cancel: true },
-    },
-    {
-      id: 'claude-code',
-      kind: 'executor',
-      title: 'Claude Code',
-      status: 'unavailable',
-      validatedLive: false,
-      notes: 'Adapter contract only; not wired in this build.',
-      capabilities: { create: false, observe: false, cancel: false },
-    },
-    {
-      id: 'codex',
-      kind: 'executor',
-      title: 'Codex',
-      status: 'unavailable',
-      validatedLive: false,
-      notes: 'Adapter contract only; not wired in this build.',
-      capabilities: { create: false, observe: false, cancel: false },
-    },
-    {
-      id: 'opencode',
-      kind: 'executor',
-      title: 'OpenCode',
-      status: 'unavailable',
-      validatedLive: false,
-      notes: 'Adapter contract only; not wired in this build.',
-      capabilities: { create: false, observe: false, cancel: false },
-    },
-  ]
+  // The executor matrix is derived from the live ctx when the host provides one:
+  // a capability is declared only when the matching service method exists. The
+  // static matrix keeps unit tests and docs deterministic.
+  const executors = (() => {
+    if (ctx === undefined || ctx === null) return [...STATIC_EXECUTORS]
+    try {
+      return createExecutors({ ctx }).describe().executors
+    } catch {
+      return [...STATIC_EXECUTORS]
+    }
+  })()
 
   return {
     get: id => registry.get(id),

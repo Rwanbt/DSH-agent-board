@@ -24,27 +24,53 @@ launches alive. The panel is a pure projection of native + host state.
 
 `src/supervisor/projection.js` is the only place that decides a status. It also
 returns `statusReason`, `statusSource` and `statusAt`: a status without
-provenance is not allowed to be invented. Five different facts are kept apart
-(session, turn, agent, task, user read-state).
+provenance is not allowed to be invented. Six different facts are kept apart
+(session, turn, agent, assignment, provider, task, user read-state).
 
 | Priority | Signal | Status |
 |---|---|---|
-| 1 | `sessionStatus.pendingInteraction` (approval / plan-review / question) | `waiting_user` |
-| 2 | `row.running` or `sessionStatus.running` | `running` |
-| 3 | assignment in route recovery | `recovering` |
-| 4 | last durable `turn/end` reason kind ∈ {error, failed}, not acknowledged | `failed` |
-| 5 | native-only failure (`mobilePushLifecycle.lastTurnEnd`), no board ack possible | `failed` (visible, `seen:false`) |
-| 6 | turn ended, ack cursor at/after it | `finished_read` |
-| 7 | turn ended, ack cursor before it | `finished_unread` |
-| 8 | native `completionUnread` and the ack is older than the session activity | `finished_unread` |
-| 9 | native turn end observed after the fact | `finished_read` (history) |
-| 10 | `agentAvailable:false` | `unavailable` |
-| 11 | no signal | `idle` |
-| 12 | row missing / catalog-only | `unknown` |
+| 1 | host fact: the session left the runtime (`hostState.gone`), even with a stale turn end | `unknown` (`session_gone`) |
+| 2 | no row, no native status and no assignment | `unknown` |
+| 3 | `sessionStatus.pendingInteraction` (approval / plan-review / question) | `waiting_user` |
+| 4 | `row.running` or `sessionStatus.running` | `running` |
+| 5 | assignment in route recovery | `recovering` |
+| 6 | assignment status ∈ {interrupted, failed, stopped, superseded}, no turn end newer than it | `interrupted` |
+| 7 | no live session row (catalog-only, deleted) | `unknown` (`no_row_for_session`) |
+| 8 | recorded turn-end error whose provider is inside an injected health cooldown | `provider_unavailable` |
+| 9 | last durable `turn/end` reason kind ∈ {error, failed}, not acknowledged | `failed` |
+| 10 | native-only failure (`mobilePushLifecycle.lastTurnEnd`), no board ack possible | `failed` (visible, `seen:false`) |
+| 11 | `agentAvailable:false` | `unavailable` |
+| 12 | turn ended, ack cursor at/after it | `finished_read` |
+| 13 | turn ended, ack cursor before it | `finished_unread` |
+| 14 | native `completionUnread` and the ack is older than the session activity | `finished_unread` |
+| 15 | native turn end observed after the fact | `finished_read` (history) |
+| 16 | no signal | `idle` |
+
+`interrupted` and `provider_unavailable` never replace a real signal: the first
+only applies when no later turn proves the session moved on, the second needs an
+injected health table whose `cooldownUntil` is still in the future and whose
+failure the session has not passed. No injected health table means the status
+never appears (a failed turn stays `failed`). Both `failed` and `interrupted`
+cards are acknowledged by the persisted read cursor: the status never changes,
+only the attention flag (`seen`).
+
+There is deliberately no `waiting_agent` status. The candidate native sources
+were checked: `agent/status` only carries idle/running, `subagents` exposes
+awaited helpers (`waitForChildren`, `drainChildren`) plus child lifecycle events
+(`subagent/start`, `subagent/end`) but no per-parent "blocked on a child"
+projection value, and `uiSession.sessionStatus` only carries running /
+pendingInteraction / completionUnread. A parent awaiting a child stays
+`running: true`, so that state cannot be told apart from work without inventing
+a signal.
+
+`recentlyFinished` (with `finishedAt`) is a VIEW flag, not a status: it is true
+only for a real turn end whose timestamp is inside a bounded window. Age never
+changes a status, and a native-only turn end (no timestamp) is never "recent".
 
 `updatedAt` is displayed but never used to infer a status. A sub-agent whose row
-disappears is `unknown`, not “finished”. `aborted` and `blocked` turns are
-`idle` with an explicit reason, never `finished`.
+disappears is `unknown`, not “finished”; a deleted session keeps an explicit
+`session_gone` reason. `aborted` and `blocked` turns are `idle` with an explicit
+reason, never `finished`.
 
 The preview follows the same honesty rule: only a segment that closed a
 completed turn is `final`. A segment from an errored, aborted or unknown turn is
@@ -87,7 +113,7 @@ rules, plus a FRESH Task Board read: a trashed, terminal or differently-claimed
 card suppresses the recovery) and re-checks the stop epoch after
 `ctx.agents.create` returns, so a Stop that lands during the handoff wins.
 
-Two execution backends exist (`policy.executionBackend`):
+Three execution backends exist (`policy.executionBackend`):
 
 - `board` (default) — the host creates the session with `ctx.agents`, so a
   failure can switch model/provider and hand the task off. The Task Board gets
@@ -97,6 +123,42 @@ Two execution backends exist (`policy.executionBackend`):
   worktree, and the host only observes the returned session. The model is pinned
   on the card, so failover is refused with `backend_no_failover` instead of
   faked. Worktree-isolated cards are only runnable this way.
+- `contract` — the **unified** backend. It needs the negotiated execution
+  contract (`docs/TASKBOARD-CONTRACT.md`): the Task Board leases the canonical
+  execution (`POST /tasks/:id/executions/lease`), the board creates the session
+  itself (so a model/provider switch stays possible) and attaches it
+  (`POST /executions/:leaseId/attach`), then closes the execution with
+  `settle {outcome, report, requestReview}`. The card moves to `in_review`
+  through the Task Board's own settle path; `done` is refused locally by the
+  client and server-side. A failover handoff releases the current lease and
+  leases a **new attempt** carrying `previousExecutionId`, so the attempt chain
+  stays canonical. When the extension is absent the launch is refused with
+  `contract_unavailable` and **no POST is made**: the board never emulates an
+  execution it does not own. A worktree-isolated card is accepted only when the
+  lease returns a prepared directory; otherwise the card is refused
+  (`worktree_isolation_unavailable`) rather than run in the shared workspace.
+
+The contract backend is proved against a **simulated** Task Board extension
+(`tests/fixtures/fake-taskboard-server.mjs`, every response stamped
+`x-simulated-contract: true`); the real Task Board does not implement those
+routes yet. That simulation is never presented as a live integration.
+
+### Routing, budgets and fencing
+
+`routing/policy.js` resolves the effective route policy from the operator's
+global layer and the per-project layer (`policy.projectPolicies[workspaceId]`)
+with most-restrictive-wins semantics; a conflicting provider set
+(`providersConflict`) authorizes **no** route and is a pre-launch refusal
+(`route_policy_conflict`), never an empty allow-list read as "everything
+allowed". `routing/budget.js` enforces concurrency, tasks/hour, requests/hour,
+retries, switches and cooldown; token and cost metrics are reported as
+`{available:false, reason:'provider_metering_unavailable'}` because the provider
+supplies no data. `planPrimaryReturn()` brings an attempt back to the primary
+route at a safe boundary (a finished attempt, provider not cooling down,
+allow-list permissive); the decision is recorded on the assignment
+(`primaryReturn`) and in the audit, never applied silently mid-stream.
+`checkFencing()` refuses a write from a stale token or an ended lease, and a
+`turn/end` from a superseded owner is ignored (`takeoverRefusal`).
 
 An assignment is created once per `(task, revision, attempt)` idempotency key,
 with a lease (`leaseTtlMs`). One LIVE assignment per task, but a finished,

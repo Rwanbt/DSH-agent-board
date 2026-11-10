@@ -180,6 +180,9 @@ export function classifyStatusDetailed({ row, live, turnEnd, ack, assignment, go
         reason: `assignment:${assignment.status}${detail !== null ? `:${truncate(detail, 120)}` : ''}`,
         source: 'assignment',
         at: assignmentEnd,
+        // An interrupted assignment can be acknowledged (read in the board or in
+        // the native view): the status stays interrupted, the attention flag clears.
+        _seen: hasSeen && assignmentEnd !== null && seenAt >= assignmentEnd,
       }
     }
   }
@@ -695,10 +698,13 @@ export function buildProjection({ list, statusMap, hostState = {}, workspaces = 
     // A real finish timestamp inside a bounded window. A future timestamp (host
     // and panel clocks differ) still counts: the flag must not flicker.
     const recentlyFinished = completedTurnEnd && Number.isFinite(endAt) && now - endAt <= windowMs
-    // Explicit acknowledgement covers a failure only when a cursor exists and
-    // it is at/after the recorded failure. A native-only failure has no such
-    // cursor: it stays visible instead of silently leaving the home view.
-    const seen = status === STATUS.FAILED ? detail._seen === true : status !== STATUS.FINISHED_UNREAD
+    // Explicit acknowledgement covers a failure or an interrupted launch only
+    // when a cursor exists and it is at/after the recorded fact. A native-only
+    // failure has no such cursor: it stays visible instead of silently leaving
+    // the home view.
+    const seen = status === STATUS.FAILED || status === STATUS.INTERRUPTED
+      ? detail._seen === true
+      : status !== STATUS.FINISHED_UNREAD
     out.push({
       id: node.id,
       parentId: resolvedParent,

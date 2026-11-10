@@ -21,14 +21,14 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
   }
   fact('project', dabT('project'), node.projectId === 'unassigned' ? dabT('unassigned') : node.projectTitle)
   fact('provider', dabT('provider'), node.model?.provider, true)
-  fact('model', dabT('model'), node.model?.source === 'unknown' ? null : dabModelTitle(node.model), true)
+  fact('model', dabT('model'), dabModelChipText(node.model), true)
   fact('modelSource', dabT('modelSource'), node.model?.source === 'unknown' ? null : (node.model.source === 'assignment' ? dabT('modelAssignment') : dabT('modelNative')))
   fact('task', dabT('task'), node.taskId, true)
   fact('goal', dabT('goal'), node.goal)
   if (parent !== null && parent !== undefined) {
     facts.push(h('dt', { key: 'parent-t' }, dabT('parent')), h('dd', { key: 'parent-d' },
       h('button', { type: 'button', className: 'dab-linkish', onClick: () => onSelect(parent.id) }, parent.title)))
-  if (node.orphan) {
+  } else if (node.orphan) {
     fact('parent', dabT('parent'), `${dabT('orphan')} (${String(node.parentId).slice(-12)})`, true)
   } else if (node.parentCycle) {
     fact('parent', dabT('parent'), dabT('cycle'))

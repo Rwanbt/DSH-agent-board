@@ -288,7 +288,7 @@ export function apply(ctx, config = {}) {
     ready = true
   })
 
-  connectors = createConnectors({ baseUrl: configuredOrigin(), githubRepository })
+  connectors = createConnectors({ baseUrl: configuredOrigin(), githubRepository, ctx })
 
   // ------------------------------------------------------ execution contract
   // The Task Board owns the canonical execution record. This client speaks the

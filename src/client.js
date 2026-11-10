@@ -121,6 +121,10 @@ const DEFAULT_POLICY = Object.freeze({
   autoResumeOnRestart: false,
   serializeSameWorkspace: false,
   routeChain: [],
+  // Per-project route overrides, keyed by DSH workspace id. Only the documented
+  // route keys are kept; the pure resolver (`routing/policy.js`) applies the
+  // most-restrictive-wins layering. Unknown keys are dropped, never trusted.
+  projectPolicies: {},
   autonomyBudget: { maxTasksPerHour: 6 },
   // Bounded request budget for the sliding hour. Only metrics the board can
   // substantiate are enforced; token/cost stay explicitly unavailable.
@@ -157,6 +161,7 @@ function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     autoResumeOnRestart: input.autoResumeOnRestart === true,
     serializeSameWorkspace: input.serializeSameWorkspace === true,
     routeChain: normalizeRouteChain(input.routeChain ?? fallback.routeChain),
+    projectPolicies: normalizeProjectPolicies(input.projectPolicies ?? fallback.projectPolicies),
     autonomyBudget: {
       maxTasksPerHour: clampInt(input.autonomyBudget?.maxTasksPerHour, 0, 100, fallback.autonomyBudget.maxTasksPerHour),
     },
@@ -283,6 +288,34 @@ function normalizeRouteChain(chain) {
 function uniqueStrings(value) {
   if (!Array.isArray(value)) return []
   return [...new Set(value.filter(entry => typeof entry === 'string' && entry !== ''))]
+}
+
+/**
+ * Sanitize the per-project route overrides. A project layer carries a subset of
+ * the documented route keys; anything else is dropped so a hand-edited policy
+ * file cannot smuggle an unrelated limit into the resolver.
+ */
+function normalizeProjectPolicies(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {}
+  const out = {}
+  let kept = 0
+  for (const [workspaceId, layer] of Object.entries(value)) {
+    if (kept >= 20) break
+    if (typeof workspaceId !== 'string' || workspaceId === '') continue
+    if (layer === null || typeof layer !== 'object' || Array.isArray(layer)) continue
+    const entry = {}
+    if (Array.isArray(layer.allowedProviders)) entry.allowedProviders = uniqueStrings(layer.allowedProviders)
+    if (Array.isArray(layer.deniedProviders)) entry.deniedProviders = uniqueStrings(layer.deniedProviders)
+    if (typeof layer.allowCloudFallback === 'boolean') entry.allowCloudFallback = layer.allowCloudFallback
+    if (layer.locality === 'local' || layer.localOnly === true) entry.locality = 'local'
+    for (const key of ['maxRetries', 'maxSwitches', 'cooldownMs']) {
+      if (Number.isFinite(Number(layer[key]))) entry[key] = Math.trunc(Number(layer[key]))
+    }
+    if (Array.isArray(layer.routeChain)) entry.routeChain = normalizeRouteChain(layer.routeChain)
+    out[workspaceId] = entry
+    kept += 1
+  }
+  return out
 }
 
 function clampInt(value, min, max, fallback) {
@@ -474,6 +507,9 @@ function classifyStatusDetailed({ row, live, turnEnd, ack, assignment, gone = fa
         reason: `assignment:${assignment.status}${detail !== null ? `:${truncate(detail, 120)}` : ''}`,
         source: 'assignment',
         at: assignmentEnd,
+        // An interrupted assignment can be acknowledged (read in the board or in
+        // the native view): the status stays interrupted, the attention flag clears.
+        _seen: hasSeen && assignmentEnd !== null && seenAt >= assignmentEnd,
       }
     }
   }
@@ -989,10 +1025,13 @@ function buildProjection({ list, statusMap, hostState = {}, workspaces = {}, now
     // A real finish timestamp inside a bounded window. A future timestamp (host
     // and panel clocks differ) still counts: the flag must not flicker.
     const recentlyFinished = completedTurnEnd && Number.isFinite(endAt) && now - endAt <= windowMs
-    // Explicit acknowledgement covers a failure only when a cursor exists and
-    // it is at/after the recorded failure. A native-only failure has no such
-    // cursor: it stays visible instead of silently leaving the home view.
-    const seen = status === STATUS.FAILED ? detail._seen === true : status !== STATUS.FINISHED_UNREAD
+    // Explicit acknowledgement covers a failure or an interrupted launch only
+    // when a cursor exists and it is at/after the recorded fact. A native-only
+    // failure has no such cursor: it stays visible instead of silently leaving
+    // the home view.
+    const seen = status === STATUS.FAILED || status === STATUS.INTERRUPTED
+      ? detail._seen === true
+      : status !== STATUS.FINISHED_UNREAD
     out.push({
       id: node.id,
       parentId: resolvedParent,
@@ -1237,8 +1276,9 @@ function isAttention(node) {
   if (node.status === STATUS.WAITING_USER) return true
   if (node.status === STATUS.RUNNING) return true
   if (node.status === STATUS.RECOVERING) return true
-  // A stopped/superseded launch is unfinished work: never hidden as history.
-  if (node.status === STATUS.INTERRUPTED) return true
+  // A stopped/superseded launch is unfinished work: hidden only once the user
+  // has read it (the status stays `interrupted`, the attention flag clears).
+  if (node.status === STATUS.INTERRUPTED) return node.seen !== true
   // The model's provider is inside an injected cooldown: the card is blocked
   // on something outside its own turn and needs a decision.
   if (node.status === STATUS.PROVIDER_UNAVAILABLE) return true
@@ -1982,7 +2022,6 @@ const DAB_STRINGS = {
     provider: 'Fournisseur',
     modelNative: 'natif',
     modelAssignment: 'board',
-    modelUnknown: 'inconnu',
     modelSource: 'Source du modèle',
     proposals: 'Proposition en attente',
     approve: 'Approuver',
@@ -2098,7 +2137,6 @@ const DAB_STRINGS = {
     provider: 'Provider',
     modelNative: 'native',
     modelAssignment: 'board',
-    modelUnknown: 'unknown',
     modelSource: 'Model source',
     proposals: 'Pending proposal',
     approve: 'Approve',
@@ -2803,14 +2841,14 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
   }
   fact('project', dabT('project'), node.projectId === 'unassigned' ? dabT('unassigned') : node.projectTitle)
   fact('provider', dabT('provider'), node.model?.provider, true)
-  fact('model', dabT('model'), node.model?.source === 'unknown' ? null : dabModelTitle(node.model), true)
+  fact('model', dabT('model'), dabModelChipText(node.model), true)
   fact('modelSource', dabT('modelSource'), node.model?.source === 'unknown' ? null : (node.model.source === 'assignment' ? dabT('modelAssignment') : dabT('modelNative')))
   fact('task', dabT('task'), node.taskId, true)
   fact('goal', dabT('goal'), node.goal)
   if (parent !== null && parent !== undefined) {
     facts.push(h('dt', { key: 'parent-t' }, dabT('parent')), h('dd', { key: 'parent-d' },
       h('button', { type: 'button', className: 'dab-linkish', onClick: () => onSelect(parent.id) }, parent.title)))
-  if (node.orphan) {
+  } else if (node.orphan) {
     fact('parent', dabT('parent'), `${dabT('orphan')} (${String(node.parentId).slice(-12)})`, true)
   } else if (node.parentCycle) {
     fact('parent', dabT('parent'), dabT('cycle'))
@@ -3259,7 +3297,7 @@ function dabMakePage(store, ctx) {
 
     const acknowledge = React.useCallback(id => {
       const node = nodeRef.current.byId.get(id)
-      if (node && (node.status === 'finished_unread' || node.status === 'recovering' || (node.status === 'failed' && node.seen !== true))) void store.ack(id, { source: 'board_click' })
+      if (node && (node.status === 'finished_unread' || node.status === 'recovering' || ((node.status === 'failed' || node.status === 'interrupted') && node.seen !== true))) void store.ack(id, { source: 'board_click' })
     }, [])
 
     // Reading a session OUTSIDE the board (native main view) is still reading.
@@ -3274,7 +3312,7 @@ function dabMakePage(store, ctx) {
         viewing.add(node.id)
         const activityKey = String(Number(node.updatedAt) || 0)
         if (nativeAcked.current.get(node.id) === activityKey) continue
-        if (node.status === 'finished_unread' || (node.status === 'failed' && node.seen !== true)) {
+        if (node.status === 'finished_unread' || ((node.status === 'failed' || node.status === 'interrupted') && node.seen !== true)) {
           nativeAcked.current.set(node.id, activityKey)
           void store.ack(node.id, { source: 'native_view' })
         }

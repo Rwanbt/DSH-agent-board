@@ -142,7 +142,7 @@ export function createDshExecutor(ctx) {
         for (const session of sessions.list()) {
           const fact = sessionFactOf(session)
           if (fact.sessionId === '') continue
-          byId.set(fact.sessionId, { ...fact, status: 'unknown', running: null, agentAvailable: false, statusSource: 'none' })
+          byId.set(fact.sessionId, { ...fact, status: 'unknown', running: null, agentAvailable: false, statusSource: 'session' })
         }
       }
       if (canListAgents) {

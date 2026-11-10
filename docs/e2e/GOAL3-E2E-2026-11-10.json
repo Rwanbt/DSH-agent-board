@@ -1,0 +1,71 @@
+{
+  "goal": "GOAL 3 §13.5 §16.17 — isolated real DSH host + fake OpenAI-compatible provider + fake Task Board",
+  "date": "2026-11-10",
+  "startedAt": "2026-11-10T10:41:31.343Z",
+  "environment": {
+    "platform": "win32",
+    "release": "v26.13.0",
+    "repoRoot": "D:\\App\\DSH-agent-board",
+    "dshCli": "C:\\Users\\barat\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
+    "dshVersion": null,
+    "home": "D:\\App\\dsh-e2e-home-goal3",
+    "profile": "e2e",
+    "credentialPolicy": "no real credential: DSH_E2E_FAKE_KEY carries an invented value generated for this run"
+  },
+  "simulation": {
+    "primaryProvider": {
+      "url": "http://127.0.0.1:62419/v1",
+      "model": "e2e-fake-gpt"
+    },
+    "backupProvider": {
+      "url": "http://127.0.0.1:62420/v1",
+      "model": "e2e-fake-backup-gpt"
+    },
+    "taskBoard": {
+      "url": "http://127.0.0.1:62421",
+      "simulatedHeader": "x-simulated-taskboard: true"
+    }
+  },
+  "host": {
+    "home": "D:\\App\\dsh-e2e-home-goal3",
+    "workspace": {
+      "id": "ws-e2e-1",
+      "path": "D:\\App\\dsh-e2e-home-goal3\\project",
+      "seededStore": "storages/workspace.json"
+    }
+  },
+  "scenarios": [],
+  "board": {
+    "finalState": null
+  },
+  "assertions": [],
+  "processOutput": {
+    "cli": [
+      {
+        "step": "dsh --version",
+        "code": 1,
+        "stdout": "",
+        "stderr": "'C:\\Users\\barat\\AppData\\Local\\Programs\\DeepSeek' n'est pas reconnu en tant que commande interne\r\nou externe, un programme ex�cutable ou un fichier de commandes.\r\n"
+      },
+      {
+        "step": "create profile",
+        "code": 1,
+        "stdoutTail": "",
+        "stderrTail": "'C:\\Users\\barat\\AppData\\Local\\Programs\\DeepSeek' n'est pas reconnu en tant que commande interne\r\nou externe, un programme ex�cutable ou un fichier de commandes.\r\n"
+      }
+    ],
+    "server": [
+      ""
+    ]
+  },
+  "cleanup": {
+    "serversClosed": true,
+    "homeRemoved": "D:\\App\\dsh-e2e-home-goal3",
+    "screenshots": [],
+    "desktopProfileTouched": false
+  },
+  "gaps": [],
+  "fatalError": "Error: profile creation failed (exit 1): 'C:\\Users\\barat\\AppData\\Local\\Programs\\DeepSeek' n'est pas reconnu en tant que commande interne\r\nou externe, un programme ex�cutable ou un fichier de commandes.\r\n\n    at createProfileAndInstall (file:///D:/App/DSH-agent-board/scripts/e2e/run-e2e.mjs:392:33)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async main (file:///D:/App/DSH-agent-board/scripts/e2e/run-e2e.mjs:945:3)",
+  "screenshots": [],
+  "finishedAt": null
+}

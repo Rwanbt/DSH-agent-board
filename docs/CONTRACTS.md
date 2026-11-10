@@ -56,8 +56,15 @@ so the matrix reports all `false` for it.
 | `github` | forge | ✅ | ✅ | ❌ | ❌ (fake-API contract only, no live repo/token) |
 | `gitlab`, `forgejo`, `gitea`, `bitbucket` | forge | ❌ | ❌ | ❌ | ❌ (skeleton) |
 | `jira`, `linear` | work source | ❌ | ❌ | ❌ | ❌ (skeleton) |
-| executor `dsh` | executor | — | — | create/observe/cancel via `ctx.agents` | ✅ |
-| executor `claude-code`, `codex`, `opencode` | executor | — | — | ❌ | ❌ (skeleton) |
+| executor `dsh` | executor | — | — | declared from the live `ctx.agents`/`ctx.sessions`/`ctx.subagents` methods only | ❌ as an adapter (unit-tested against a fake ctx; the host launch path is separate) |
+| executor `claude-code`, `codex`, `opencode` | executor | — | — | ❌ (skeletons declare nothing) | ❌ |
+
+The executor capability vocabulary is `discover, observe, getSession,
+getChildren, launch, cancel, resume, openSession, readLastOutput, getModel,
+getStatus` (`src/contracts/adapters.js`). A declared capability without a
+callable method throws at registration, and the DSH adapter declares a
+capability only when the matching service method exists on the given `ctx`. See
+`docs/ADAPTERS.md` for the full matrix and the promotion requirements.
 
 ### Task Board bridge
 
@@ -79,7 +86,7 @@ Board tool. That gap is tracked as P0 in `docs/LIMITATIONS.md`; the honest fix i
 to run through the Task Board’s own `POST /dsh-taskboard/tasks/:id/run` path, not
 to fake an execution.
 
-This build has two execution backends, chosen by `policy.executionBackend`:
+This build has three execution backends, chosen by `policy.executionBackend`:
 
 - **`board`** (default): the board creates the session itself. It can switch
   model/provider on failure, but the Task Board gets no execution record, so
@@ -89,7 +96,24 @@ This build has two execution backends, chosen by `policy.executionBackend`:
   permission/preset and worktree. The board records `executionId` + `sessionId`
   and observes the session. The model is pinned on the card, so model-level
   failover is explicitly unavailable on this backend (`backend_no_failover`).
-  `task.isolation:'worktree'` cards are only runnable on this backend.
+  `task.isolation:'worktree'` cards are only runnable on this backend or the
+  next one.
+- **`contract`** (unified): requires the negotiated execution contract
+  (`docs/TASKBOARD-CONTRACT.md`, currently **simulated**). The board leases the
+  canonical execution, creates the session (so failover stays possible),
+  attaches it, and settles it with a board-observed report + `requestReview`.
+  The Task Board keeps task identity, execution identity, reservation, claim,
+  dependencies, permissions, worktree and the validation status; the board keeps
+  the agent identity, technical sessions, sub-agent tree, model history,
+  delegation decisions, activity statuses, recovery attempts and the routing
+  policy. One execution can be linked to several successive sessions through
+  `previousExecutionId` when a handoff happens. Settling never requests `done`.
+
+The contract client exposes `contract()`, `leaseExecution()`, `attachSession()`,
+`submitReport()`, `releaseLease()`, `settleExecution()`; every call resolves to
+`{ok:true,status,value}` or `{ok:false,code,status,message}` and never throws.
+Writes are refused wholesale unless the complete mandatory feature set was
+negotiated (a partial extension is more dangerous than an absent one).
 
 ## Non-negotiable rules encoded in code
 

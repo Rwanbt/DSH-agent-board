@@ -213,6 +213,21 @@ test('waiting_agent is impossible by construction: the native sources carry no s
   }
 })
 
+test('an acknowledged interrupted launch leaves the home view but keeps its status', () => {
+  const list = { ids: ['s'], byId: { s: session('s') }, projectionsBySession: {} }
+  const assignments = [{ id: 'a1', sessionId: 's', status: 'stopped', reason: 'stopped_by_operator', endedAt: NOW - 1000 }]
+  const unread = project({ list, statusMap: new Map(), hostState: { assignments } }).byId.get('s')
+  assert.equal(unread.status, STATUS.INTERRUPTED)
+  assert.equal(unread.seen, false)
+  assert.equal(isAttention(unread), true)
+  const acked = project({ list, statusMap: new Map(), hostState: { assignments, acks: { s: { seenAt: NOW - 500 } } } })
+  assert.equal(acked.byId.get('s').status, STATUS.INTERRUPTED, 'reading is not finishing')
+  assert.equal(acked.byId.get('s').seen, true)
+  assert.equal(isAttention(acked.byId.get('s')), false)
+  const view = buildBoardView(acked, { now: NOW })
+  assert.equal(view.projects.length, 0, 'nothing left to treat on the home view')
+})
+
 test('the new statuses are attention, counted apart from history, and ordered deterministically', () => {
   const byId = {
     interrupted: session('interrupted'),

@@ -153,6 +153,19 @@ export function createFakeTaskBoard({ workspaceId = 'w-e2e', leaseTtlMs = 120_00
     return clone(task)
   }
 
+  function updateTask(id, patch = {}) {
+    const task = taskById(id)
+    if (task === null) return null
+    Object.assign(task, {
+      ...clone(patch),
+      id: task.id,
+      version: Number.isInteger(patch?.version) ? patch.version : task.version + 1,
+      updatedAt: now(),
+    })
+    state.revision += 1
+    return clone(task)
+  }
+
   function activeLeaseFor(taskId) {
     for (const lease of leases.values()) {
       expire(lease)
@@ -251,6 +264,12 @@ export function createFakeTaskBoard({ workspaceId = 'w-e2e', leaseTtlMs = 120_00
       ok(res, 201, created)
       return
     }
+    const updateMatch = path.match(/^\/_control\/tasks\/([^/]+)$/)
+    if (method === 'POST' && updateMatch !== null) {
+      const updated = updateTask(decodeURIComponent(updateMatch[1]), body?.patch ?? {})
+      if (updated === null) return refuse(res, 404, 'not_found', `no such task: ${decodeURIComponent(updateMatch[1])}`)
+      return ok(res, 200, updated)
+    }
     if (method === 'POST' && path === '/_control/reset') {
       leases.clear()
       if (body?.clearTasks === true) {
@@ -323,6 +342,7 @@ export function createFakeTaskBoard({ workspaceId = 'w-e2e', leaseTtlMs = 120_00
         isolation: task.isolation ?? 'none',
         leaseId: lease.id,
         attempt: lease.attempt,
+        ...(lease.previousExecutionId !== null ? { previousExecutionId: lease.previousExecutionId } : {}),
         ...(lease.route !== null ? { route: clone(lease.route) } : {}),
       }]
       task.status = 'in_progress'
@@ -477,6 +497,7 @@ export function createFakeTaskBoard({ workspaceId = 'w-e2e', leaseTtlMs = 120_00
     get tasks() { return state.tasks },
     task: id => clone(taskById(id)),
     createTask,
+    updateTask,
     handle,
   }
 }
@@ -503,6 +524,7 @@ export async function startFakeTaskBoard(options = {}) {
     port,
     board,
     createTask: board.createTask,
+    updateTask: board.updateTask,
     state: board.state,
     get tasks() { return board.tasks },
     calls: board.calls,
