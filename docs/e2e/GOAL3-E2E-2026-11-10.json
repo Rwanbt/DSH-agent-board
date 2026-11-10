@@ -1,7 +1,7 @@
 {
   "goal": "GOAL 3 §13.5 §16.17 — isolated real DSH host + fake OpenAI-compatible provider + fake Task Board",
   "date": "2026-11-10",
-  "startedAt": "2026-11-10T10:41:31.343Z",
+  "startedAt": "2026-11-10T10:42:47.455Z",
   "environment": {
     "platform": "win32",
     "release": "v26.13.0",
@@ -14,15 +14,15 @@
   },
   "simulation": {
     "primaryProvider": {
-      "url": "http://127.0.0.1:62419/v1",
+      "url": "http://127.0.0.1:54371/v1",
       "model": "e2e-fake-gpt"
     },
     "backupProvider": {
-      "url": "http://127.0.0.1:62420/v1",
+      "url": "http://127.0.0.1:54372/v1",
       "model": "e2e-fake-backup-gpt"
     },
     "taskBoard": {
-      "url": "http://127.0.0.1:62421",
+      "url": "http://127.0.0.1:54373",
       "simulatedHeader": "x-simulated-taskboard: true"
     }
   },
@@ -45,13 +45,7 @@
         "step": "dsh --version",
         "code": 1,
         "stdout": "",
-        "stderr": "'C:\\Users\\barat\\AppData\\Local\\Programs\\DeepSeek' n'est pas reconnu en tant que commande interne\r\nou externe, un programme ex�cutable ou un fichier de commandes.\r\n"
-      },
-      {
-        "step": "create profile",
-        "code": 1,
-        "stdoutTail": "",
-        "stderrTail": "'C:\\Users\\barat\\AppData\\Local\\Programs\\DeepSeek' n'est pas reconnu en tant que commande interne\r\nou externe, un programme ex�cutable ou un fichier de commandes.\r\n"
+        "stderr": "'\\\"C:\\Users\\barat\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd\\\"' n'est pas reconnu en tant que commande interne\r\nou externe, un programme ex�cutable ou un fichier de commandes.\r\n"
       }
     ],
     "server": [
@@ -65,7 +59,7 @@
     "desktopProfileTouched": false
   },
   "gaps": [],
-  "fatalError": "Error: profile creation failed (exit 1): 'C:\\Users\\barat\\AppData\\Local\\Programs\\DeepSeek' n'est pas reconnu en tant que commande interne\r\nou externe, un programme ex�cutable ou un fichier de commandes.\r\n\n    at createProfileAndInstall (file:///D:/App/DSH-agent-board/scripts/e2e/run-e2e.mjs:392:33)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async main (file:///D:/App/DSH-agent-board/scripts/e2e/run-e2e.mjs:945:3)",
+  "fatalError": "Error: dsh --version failed (exit 1): '\\\"C:\\Users\\barat\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd\\\"' n'est pas reconnu en tant que commande interne\r\nou externe, un programme ex�cutable ou un fichier de commandes.\n    at createProfileAndInstall (file:///D:/App/DSH-agent-board/scripts/e2e/run-e2e.mjs:409:11)\n    at async main (file:///D:/App/DSH-agent-board/scripts/e2e/run-e2e.mjs:975:3)",
   "screenshots": [],
   "finishedAt": null
 }
