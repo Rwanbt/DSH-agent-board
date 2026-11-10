@@ -23,7 +23,7 @@ const DAB_UI_KEY = 'dsh-agent-board:ui:v2'
 const DAB_MEMORY = { scrollTop: 0, selectedId: null }
 
 function dabDefaultUi() {
-  return { filter: 'attention', query: '', project: null, compact: false, folded: [], expanded: [], collapsed: [], treeLimit: {} }
+  return { filter: 'attention', query: '', project: null, compact: false, folded: [], expanded: [], collapsed: [], dismissed: [], treeLimit: {} }
 }
 
 function dabReadUi() {
@@ -40,6 +40,7 @@ function dabReadUi() {
       folded: Array.isArray(parsed.folded) ? parsed.folded.slice(0, 200) : [],
       expanded: Array.isArray(parsed.expanded) ? parsed.expanded.slice(0, 200) : [],
       collapsed: Array.isArray(parsed.collapsed) ? parsed.collapsed.slice(0, 200) : [],
+      dismissed: Array.isArray(parsed.dismissed) ? parsed.dismissed.slice(-500) : [],
     }
   } catch {
     return base
@@ -111,16 +112,17 @@ function dabMakePage(store, ctx) {
     const expandedSet = React.useMemo(() => new Set(ui.expanded), [ui.expanded])
     const collapsedSet = React.useMemo(() => new Set(ui.collapsed), [ui.collapsed])
     const foldedSet = React.useMemo(() => new Set(ui.folded), [ui.folded])
+    const dismissedSet = React.useMemo(() => new Set(ui.dismissed), [ui.dismissed])
 
     const view = React.useMemo(() => buildBoardView(projection, {
-      filter: ui.filter, query: ui.query, project: ui.project, expanded: expandedSet, collapsed: collapsedSet, now: nowBucket * 60000 + 60000, aggregates,
-    }), [projection, aggregates, ui.filter, ui.query, ui.project, expandedSet, collapsedSet, nowBucket])
+      filter: ui.filter, query: ui.query, project: ui.project, expanded: expandedSet, collapsed: collapsedSet, dismissed: dismissedSet, now: nowBucket * 60000 + 60000, aggregates,
+    }), [projection, aggregates, ui.filter, ui.query, ui.project, expandedSet, collapsedSet, dismissedSet, nowBucket])
+
     const counts = React.useMemo(() => boardCounts(projection), [projection])
     const projectList = React.useMemo(() => projectOptions(projection), [projection])
 
-    // Phone / narrow panel: one project at a time.
-    const activeProjectId = narrow && ui.project === null ? (view.projects[0]?.id ?? null) : ui.project
-    const shownProjects = narrow && activeProjectId !== null ? view.projects.filter(project => project.id === activeProjectId) : view.projects
+    // Every width keeps the overview: all projects, each foldable.
+    const shownProjects = view.projects
 
     const selectedNode = selectedId !== null ? projection.byId.get(selectedId) ?? null : null
     const parentNode = selectedNode && selectedNode.parentId && !selectedNode.orphan && !selectedNode.parentCycle
@@ -135,10 +137,10 @@ function dabMakePage(store, ctx) {
       if (node && (node.status === 'finished_unread' || node.status === 'recovering' || (node.status === 'failed' && node.seen !== true))) void store.ack(id, { source: 'board_click' })
     }, [])
 
-    // Reading a session OUTSIDE the board (native main view) is still reading:
+    // Reading a session OUTSIDE the board (native main view) is still reading.
     // The key includes the session activity timestamp: a LATER turn that
-    // completes while the same session is still open is acknowledged again, and
-    // leaving the view clears the entry.
+    // completes while the same session is still open is acknowledged again,
+    // and leaving the view clears the entry.
     const nativeAcked = React.useRef(new Map())
     React.useEffect(() => {
       const viewing = new Set()
@@ -177,6 +179,16 @@ function dabMakePage(store, ctx) {
       setOpenError('')
       setSelectedId(id)
       acknowledge(id)
+    }, [acknowledge])
+
+    const onDismiss = React.useCallback((id, on) => {
+      setUiState(current => {
+        const rest = current.dismissed.filter(entry => entry !== id)
+        const next = { ...current, dismissed: on ? [...rest, id] : rest }
+        dabWriteUi(next)
+        return next
+      })
+      if (on) { acknowledge(id); setSelectedId(null) }
     }, [acknowledge])
 
     const arbiter = React.useMemo(() => createClickArbiter({ onSelect: selectNode, onOpen: openSession }), [selectNode, openSession])
@@ -234,15 +246,7 @@ function dabMakePage(store, ctx) {
       ? h('div', { className: 'dab-empty' },
         h('div', null, ui.query !== '' ? dabT('emptySearch') : dabT('emptyAttention')),
         ui.query === '' ? h('div', { className: 'dab-muted' }, dabT('emptyHint')) : null,
-        ui.query === '' ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setHistoryOpen(true) }, `🕘 ${dabT('history')}`) : null)
-      : null
-
-    const tabs = narrow && view.projects.length > 1 && ui.project === null
-      ? h('div', { className: 'dab-tabs', role: 'tablist', 'aria-label': dabT('projects') },
-        view.projects.map(project => h('button', {
-          key: project.id, type: 'button', role: 'tab', className: 'dab-btn', 'aria-selected': project.id === activeProjectId, 'aria-pressed': project.id === activeProjectId,
-          onClick: () => setUi({ project: project.id }),
-        }, `${project.unassigned ? dabT('unassigned') : project.title} · ${project.visibleAgents}`)))
+        ui.query === '' ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setHistoryOpen(true) }, dabIcon('history'), ` ${dabT('history')}`) : null)
       : null
 
     return h('div', { className: 'dab-root', ref: rootRef, 'data-dsh-agent-board': '', 'data-narrow': narrow ? 'true' : 'false' },
@@ -255,12 +259,12 @@ function dabMakePage(store, ctx) {
         onResume: () => act('resume', () => store.resume()),
         onRefresh: () => { void store.refreshHost(); void act('refresh', () => store.refreshHost()) },
         onHistory: () => setHistoryOpen(true),
+        statePanel: h(DabOrchestratorState, { host, hostError: snapshot.hostError }),
       }),
       h('div', { className: 'dab-main' },
         h('div', { className: 'dab-scroll', ref: scrollRef, onScroll: event => { DAB_MEMORY.scrollTop = event.currentTarget.scrollTop } },
           notice !== '' ? h('div', { className: 'dab-alert', role: 'status', style: { marginBottom: '8px' } }, notice) : null,
           h(DabExecutionList, { host, onApprove: id => act('approve', () => store.decide(id, true)), onReject: id => act('reject', () => store.decide(id, false)) }),
-          tabs,
           empty,
           h('div', { className: 'dab-projects' }, shownProjects.map(project => h(DabProjectGroup, {
             key: project.id, project, ctx: ctxValue, compact: ui.compact,
@@ -271,10 +275,9 @@ function dabMakePage(store, ctx) {
             onFold: id => onFold(project.unassigned ? `open:${id}` : id),
             treeLimit: ui.treeLimit[project.id] ?? DEFAULT_TREE_LIMIT,
             onMoreTrees,
-          }))),
-          h(DabOrchestratorState, { host, hostError: snapshot.hostError })),
+          })))),
         selectedNode !== null
-          ? h(DabAgentPreview, { node: selectedNode, parent: parentNode, onOpen: openSession, onSelect: selectNode, onClose: () => setSelectedId(null), openError })
+          ? h(DabAgentPreview, { node: selectedNode, parent: parentNode, onOpen: openSession, onSelect: selectNode, onClose: () => setSelectedId(null), openError, onDismiss, dismissed: dismissedSet.has(selectedNode.id) })
           : null),
       historyOpen
         ? h(DabHistoryDrawer, { projection, project: ui.project, selectedId, arbiter, onClose: () => setHistoryOpen(false) })
@@ -283,37 +286,127 @@ function dabMakePage(store, ctx) {
   }
 }
 
+/** Tooltip matching the DSH shell bubble (same tokens as its native tooltips). */
+function dabTipHide() {
+  for (const node of document.querySelectorAll('[data-dab-tip]')) node.remove()
+  // Bubbles left by an earlier plugin build (no marker): unclassed body-level tooltip divs.
+  for (const node of document.querySelectorAll('body > div[role="tooltip"]:not([class])')) {
+    if (String(node.getAttribute('style') ?? '').includes('--dsw-alias-tooltip-bg')) node.remove()
+  }
+  document.removeEventListener('pointermove', dabTipGuard, true)
+  window.removeEventListener('blur', dabTipHide)
+  window.removeEventListener('scroll', dabTipHide, true)
+}
+let dabTipAnchor = null
+function dabTipGuard(event) {
+  const anchor = dabTipAnchor
+  if (anchor === null || !anchor.isConnected) return dabTipHide()
+  const r = anchor.getBoundingClientRect()
+  if (event.clientX < r.left - 2 || event.clientX > r.right + 2 || event.clientY < r.top - 2 || event.clientY > r.bottom + 2) dabTipHide()
+}
+function dabTipHandlers(text) {
+  const hide = dabTipHide
+  const show = event => {
+    hide()
+    const anchor = event.currentTarget
+    dabTipAnchor = anchor
+    const rect = anchor.getBoundingClientRect()
+    const row = (anchor.closest('button') ?? anchor).getBoundingClientRect()
+    const bubble = document.createElement('div')
+    bubble.setAttribute('role', 'tooltip')
+    bubble.setAttribute('data-dab-tip', '')
+    bubble.textContent = text
+    Object.assign(bubble.style, {
+      display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box', margin: '0', fontWeight: '400', fontFamily: 'inherit',
+      position: 'fixed', zIndex: '1100', left: `${Math.round(rect.right + 8)}px`, top: `${Math.round(row.top + row.height / 2)}px`, transform: 'translateY(-50%)',
+      width: 'max-content', maxWidth: 'min(50vw, calc(100vw - 24px))', padding: '3px 7px', borderRadius: 'var(--dsw-radius-sm)',
+      background: 'var(--dsw-alias-tooltip-bg)', color: 'var(--dsw-static-neutral-bluish-00)', fontSize: '13px', lineHeight: '20px',
+      whiteSpace: 'pre-line', pointerEvents: 'none',
+    })
+    document.body.appendChild(bubble)
+    document.addEventListener('pointermove', dabTipGuard, true)
+    window.addEventListener('blur', dabTipHide)
+    window.addEventListener('scroll', dabTipHide, true)
+  }
+  return { onPointerEnter: show, onPointerLeave: hide, onPointerDown: hide }
+}
+
 function dabMakeIcon(store) {
   return function AgentBoardIcon() {
     const h = React.createElement
     const snapshot = React.useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
     const counts = snapshot.projection?.counts ?? {}
-    const unread = counts.finished_unread ?? 0
+    const running = counts.running ?? 0
     const waiting = counts.waiting_user ?? 0
-    return h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '2px', position: 'relative' }, 'aria-hidden': 'true' },
-      h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' },
-        h('rect', { x: 2.5, y: 3, width: 7, height: 5.4, rx: 1.4 }),
-        h('rect', { x: 14.5, y: 15.6, width: 7, height: 5.4, rx: 1.4 }),
-        h('rect', { x: 2.5, y: 15.6, width: 7, height: 5.4, rx: 1.4 }),
-        h('path', { d: 'M6 8.4v3.1a1.5 1.5 0 0 0 1.5 1.5h10.5a1.5 1.5 0 0 1 1.5 1.5v1.1' }),
-        h('path', { d: 'M3.2 15.6v-2.1A1.5 1.5 0 0 1 4.7 12h2.1' })),
-      unread + waiting > 0
+    const unread = counts.finished_unread ?? 0
+    const [wide, setWide] = React.useState(true)
+    const ref = React.useRef(null)
+    const statsRef = React.useRef(null)
+    const placeRef = React.useRef(() => {})
+    React.useLayoutEffect(() => { placeRef.current() })
+    // Same pattern as the Task board entry: numbers at the row's right edge when
+    // the sidebar is expanded, a small badge on the icon when it is collapsed.
+    React.useLayoutEffect(() => {
+      const button = ref.current?.closest('button')
+      if (button == null || typeof ResizeObserver === 'undefined') return undefined
+      if (getComputedStyle(button).position === 'static') button.style.position = 'relative'
+      // Anchor the numbers on the ROW's vertical centre even when an inner
+      // positioned wrapper (icon box) is the containing block.
+      const place = () => {
+        const stats = statsRef.current
+        const parent = stats?.offsetParent
+        if (!stats || !parent) return
+        const b = button.getBoundingClientRect()
+        const p = parent.getBoundingClientRect()
+        stats.style.top = `${Math.round(b.top - p.top + b.height / 2)}px`
+        stats.style.right = `${Math.round(p.right - b.right + 9)}px`
+      }
+      const measure = () => { setWide(button.clientWidth > 44); place() }
+      measure()
+      placeRef.current = place
+      const observer = new ResizeObserver(measure)
+      observer.observe(button)
+      return () => observer.disconnect()
+    }, [])
+    const title = `${running} ${dabT('running')} | ${waiting} ${dabT('waiting')} | ${unread} ${dabT('unread')}`
+    const stat = (value, color) => h('span', { style: { color } }, String(value))
+    const sep = () => h('span', { style: { opacity: 0.5 } }, '|')
+    return h('span', { ref, style: { display: 'inline-flex', alignItems: 'center' } },
+      h('span', { style: { position: 'relative', display: 'inline-flex' }, 'aria-hidden': 'true' },
+        h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' },
+          h('rect', { x: 2.5, y: 3, width: 7, height: 5.4, rx: 1.4 }),
+          h('rect', { x: 14.5, y: 15.6, width: 7, height: 5.4, rx: 1.4 }),
+          h('rect', { x: 2.5, y: 15.6, width: 7, height: 5.4, rx: 1.4 }),
+          h('path', { d: 'M6 8.4v3.1a1.5 1.5 0 0 0 1.5 1.5h10.5a1.5 1.5 0 0 1 1.5 1.5v1.1' }),
+          h('path', { d: 'M3.2 15.6v-2.1A1.5 1.5 0 0 1 4.7 12h2.1' })),
+        !wide && unread + waiting > 0
+          ? h('span', {
+            style: {
+              position: 'absolute', top: '-5px', right: '-8px', minWidth: '13px', height: '13px', borderRadius: '7px', padding: '0 3px',
+              fontSize: '9px', fontWeight: 500, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              background: waiting > 0 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)', color: 'var(--dsw-alias-bg-base)',
+            },
+          }, String(unread + waiting))
+          : null),
+      wide && running + waiting + unread > 0
         ? h('span', {
+          ref: statsRef, 'aria-label': title, ...dabTipHandlers(title),
           style: {
-            position: 'absolute', top: '-6px', right: '-8px', minWidth: '13px', height: '13px', borderRadius: '999px',
-            fontSize: '9px', fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            background: waiting > 0 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)',
-            color: 'var(--dsw-alias-bg-base)', padding: '0 3px',
+            position: 'absolute', right: '9px', top: '50%', transform: 'translateY(-50%)', display: 'inline-flex', alignItems: 'center', gap: '3px',
+            fontSize: '11px', lineHeight: 1, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', color: 'var(--dsw-alias-label-secondary)', cursor: 'default',
           },
-        }, String(unread + waiting))
+        },
+          stat(running, 'var(--dsw-alias-state-info-primary, #3e63dd)'), sep(),
+          stat(waiting, 'var(--dsw-alias-state-warn-primary, #e69842)'), sep(),
+          stat(unread, 'var(--dsw-alias-state-success-primary, #2ea043)'))
         : null)
   }
 }
-
 /** Client plugin entry: styles + store + slot registrations. */
 export function apply(ctx) {
   const disposers = []
   DAB_LANG = dabResolveLocale(ctx)
+  try { dabTipHide() } catch { /* ignore */ }
   try {
     const locale = ctx.get?.('locale')
     if (typeof locale?.subscribe === 'function') disposers.push(locale.subscribe(() => { DAB_LANG = dabResolveLocale(ctx) }))
@@ -341,6 +434,7 @@ export function apply(ctx) {
       try { disposer?.() } catch { /* ignore */ }
     }
     store.destroy()
+    try { dabTipHide() } catch { /* ignore */ }
   }
   if (typeof ctx.effect === 'function') ctx.effect(() => dispose)
   return dispose
