@@ -15,9 +15,11 @@ The authoritative executor definitions live in `src/executors/`:
 | `src/executors/skeletons.js` | `claude-code`, `codex`, `opencode` — declare nothing |
 | `src/executors/index.js` | `createExecutors({ ctx })` registry facade |
 
-`src/connectors/registry.js` still carries the panel's older hand-built
-`executors` summary (`create`/`observe`/`cancel` keys). It predates the
-vocabulary below and is not the capability contract; `createExecutors()` is.
+`src/connectors/registry.js` builds its `describe().executors` from
+`createExecutors({ ctx })` whenever the host passes a context (the production
+path), and falls back to a static, capability-only summary for unit tests and
+docs. The authoritative per-engine matrix is the one above; the panel reads the
+runtime one.
 
 ## Capability vocabulary
 

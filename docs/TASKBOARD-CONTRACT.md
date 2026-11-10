@@ -97,7 +97,7 @@ Absent route: `404 { ok:false, error:{ code:"not_found", message:"…" } }`.
 The board treats a 404 as **absent** and stops there; it never probes a guessed
 alternative route and never infers write support from `/state`.
 
-### `GET /dsh-taskboard/state` (unchanged, real 0.10.2 shape)
+### `GET /dsh-taskboard/state` (unchanged, real 0.11.0 shape; same fields since 0.10)
 
 The extension adds **no** required change to the read contract. The board keeps
 reading `value.revision` (global ledger revision), per-task `version`,

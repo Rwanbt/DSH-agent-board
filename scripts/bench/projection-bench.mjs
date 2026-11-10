@@ -197,7 +197,8 @@ const results = timed.map(result => {
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(scriptDir, '../..')
-const outDir = resolve(repoRoot, optionString('out', 'docs/bench'))
+const outOption = optionString('out', 'docs/bench').trim()
+const outDir = resolve(repoRoot, outOption === '' ? 'docs/bench' : outOption)
 const jsonPath = resolve(outDir, 'projection-bench.json')
 const tablePath = resolve(outDir, 'projection-bench.txt')
 const toPosix = value => value.replaceAll('\\', '/')

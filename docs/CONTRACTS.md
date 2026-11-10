@@ -70,7 +70,8 @@ capability only when the matching service method exists on the given `ctx`. See
 
 `src/connectors/taskboard.js` talks only to `GET /dsh-taskboard/state` (the
 board’s own HTTP contract) and exposes **no write method**. It reads the REAL
-0.10.2 record fields: per-task `version` (never the global ledger `revision`),
+0.10/0.11 record fields (the profile installs 0.11.0; the fields are unchanged
+since 0.10): per-task `version` (never the global ledger `revision`),
 `claimedBy`, `execution.mode`, `isolation`, `executions[].outcome`. That
 deliberate mapping is what lets the orchestrator refuse a task the Task Board
 already runs, claims or schedules:
