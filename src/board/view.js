@@ -132,6 +132,7 @@ export function buildBoardView(projection, options = {}) {
   const now = Number(options.now) || Date.now()
   const expanded = options.expanded ?? new Set()
   const collapsed = options.collapsed ?? new Set()
+  const dismissed = options.dismissed ?? new Set()
   const childLimit = Number(options.childLimit) || DEFAULT_CHILD_LIMIT
   const agg = options.aggregates ?? aggregateSubtrees(projection)
 
@@ -141,7 +142,8 @@ export function buildBoardView(projection, options = {}) {
   const keeps = node => {
     if (keepMemo.has(node.id)) return keepMemo.get(node.id)
     keepMemo.set(node.id, false) // cycle guard
-    let keep = includedByFilter(node, filter, now, query)
+    // Dismissed nodes leave the attention/recent views (still searchable, still in "all").
+    let keep = dismissed.has(node.id) && query === '' && filter !== 'all' ? false : includedByFilter(node, filter, now, query)
     for (const childId of node.children) {
       const child = projection.byId.get(childId)
       if (child !== undefined && keeps(child)) keep = true

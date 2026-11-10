@@ -972,6 +972,7 @@ function buildBoardView(projection, options = {}) {
   const now = Number(options.now) || Date.now()
   const expanded = options.expanded ?? new Set()
   const collapsed = options.collapsed ?? new Set()
+  const dismissed = options.dismissed ?? new Set()
   const childLimit = Number(options.childLimit) || DEFAULT_CHILD_LIMIT
   const agg = options.aggregates ?? aggregateSubtrees(projection)
 
@@ -981,7 +982,8 @@ function buildBoardView(projection, options = {}) {
   const keeps = node => {
     if (keepMemo.has(node.id)) return keepMemo.get(node.id)
     keepMemo.set(node.id, false) // cycle guard
-    let keep = includedByFilter(node, filter, now, query)
+    // Dismissed nodes leave the attention/recent views (still searchable, still in "all").
+    let keep = dismissed.has(node.id) && query === '' && filter !== 'all' ? false : includedByFilter(node, filter, now, query)
     for (const childId of node.children) {
       const child = projection.byId.get(childId)
       if (child !== undefined && keeps(child)) keep = true
@@ -1556,6 +1558,14 @@ const DAB_STRINGS = {
     supervisedNotice: 'Les propositions attendent votre accord',
     autonomousNotice: 'Exécute dans le mandat configuré',
     orchestratorState: 'État orchestrateur et adaptateurs',
+    stateShort: 'État',
+    moreControls: 'Filtres et orchestrateur',
+    dismiss: 'Retirer du tableau',
+    undismiss: 'Remettre dans le tableau',
+    dismissHint: 'Masque cette session des vues « À traiter » et « Récents » (la session n’est pas supprimée ; visible via « Tout » ou la recherche)',
+    viewLabel: 'Vue',
+    filterLabel: 'Filtre',
+    orchestratorLabel: 'Orchestrateur',
     syncOk: 'Task Board synchronisé',
     syncError: 'Task Board injoignable',
     adapters: 'Adaptateurs',
@@ -1656,6 +1666,14 @@ const DAB_STRINGS = {
     supervisedNotice: 'Proposals wait for your approval',
     autonomousNotice: 'Runs inside the configured mandate',
     orchestratorState: 'Orchestrator and adapters status',
+    stateShort: 'Status',
+    moreControls: 'Filters and orchestrator',
+    dismiss: 'Remove from board',
+    undismiss: 'Put back on board',
+    dismissHint: 'Hides this session from the Attention and Recent views (the session is not deleted; still visible in All or search)',
+    viewLabel: 'View',
+    filterLabel: 'Filter',
+    orchestratorLabel: 'Orchestrator',
     syncOk: 'Task Board synced',
     syncError: 'Task Board unreachable',
     adapters: 'Adapters',
@@ -1739,10 +1757,10 @@ function dabModelTitle(model) {
 
 // ---- src/client/ui/styles.js ----
 /**
- * Panel CSS. Only DSH theme alias tokens (--dsw-alias-*) are used, so light,
- * dark and custom themes apply unchanged. Layout switches on the panel width
- * (container queries), not the window width, because the panel can be narrow
- * inside a wide window.
+ * Panel CSS. Only DSH theme tokens (--dsw-*) are used, so light, dark and
+ * custom themes apply unchanged. Borderless surfaces (fill contrast only),
+ * floating inspector, curved SVG connectors drawn by ui/tree.js.
+ * Layout switches on the panel width (container query), not the window width.
  *
  * @module dsh-agent-board/client/ui/styles
  */
@@ -1751,194 +1769,217 @@ const DAB_STYLE_ID = 'dsh-agent-board-style'
 
 const DAB_CSS = `
 .dab-root { container-type: inline-size; container-name: dab; position: relative; display: flex; flex-direction: column; min-height: 0; height: 100%;
-  background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 1.4; overflow: hidden; }
+  background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; overflow: hidden; }
 .dab-root *, .dab-root *::before, .dab-root *::after { box-sizing: border-box; }
-.dab-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* Borderless cards need a fill that differs from the page in BOTH themes (light layers are all #fff). */
+.dab-root { --dab-card-fill: color-mix(in srgb, var(--dsw-alias-label-primary) 5%, var(--dsw-alias-settings-card-fill, var(--dsw-alias-bg-layer-2))); --dab-panel-fill: var(--dsw-alias-bg-layer-1); --dab-chip-fill: color-mix(in srgb, var(--dsw-alias-label-primary) 9%, var(--dsw-alias-settings-card-fill, var(--dsw-alias-bg-layer-2))); }
+.dab-round, .dab-dot, .dab-mark::before, .dab-group-ring, .dab-pill { corner-shape: round; }
 
 /* ---------- toolbar */
-.dab-toolbar { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px 16px 9px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.dab-toolbar { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px 16px; position: relative; z-index: 4; }
 .dab-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-.dab-title { font-size: 15px; font-weight: 650; margin: 0 4px 0 0; white-space: nowrap; }
+.dab-title { font-size: 16px; line-height: 24px; font-weight: 500; margin: 0 4px 0 0; white-space: nowrap; }
 .dab-grow { flex: 1 1 0; min-width: 0; }
 .dab-counter { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
-.dab-counter b { color: var(--dsw-alias-label-primary); font-weight: 650; font-variant-numeric: tabular-nums; }
+.dab-counter b { color: var(--dsw-alias-label-primary); font-weight: 500; font-variant-numeric: tabular-nums; }
 .dab-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
 .dab-dot[data-tone="running"] { background: var(--dsw-alias-brand-primary); }
 .dab-dot[data-tone="waiting"] { background: var(--dsw-alias-state-warn-primary); }
 .dab-dot[data-tone="unread"] { background: var(--dsw-alias-state-success-primary); }
 .dab-dot[data-tone="failed"] { background: var(--dsw-alias-state-error-primary); }
 .dab-muted { color: var(--dsw-alias-label-secondary); font-size: 12px; }
-.dab-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 28px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l1);
-  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); padding: 3px 10px; font: inherit; font-size: 12px; font-weight: 550; cursor: pointer; white-space: nowrap; }
-.dab-btn:hover:not([disabled]) { border-color: var(--dsw-alias-border-l2); }
-.dab-btn:focus-visible, .dab-input:focus-visible, .dab-select:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
-.dab-btn[aria-pressed="true"] { border-color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, var(--dsw-alias-bg-layer-1)); }
-.dab-btn[disabled] { opacity: .5; cursor: not-allowed; }
-.dab-btn[data-danger="true"] { color: var(--dsw-alias-state-error-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, var(--dsw-alias-border-l1)); }
-.dab-btn[data-variant="ghost"] { border-color: transparent; background: transparent; }
-.dab-seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: 10px; background: var(--dsw-alias-bg-layer-2); }
-.dab-seg .dab-btn { border-color: transparent; background: transparent; min-height: 26px; }
-.dab-seg .dab-btn[aria-pressed="true"] { background: var(--dsw-alias-bg-layer-1); border-color: var(--dsw-alias-border-l2); }
-.dab-input, .dab-select { min-height: 28px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; font-size: 12px; padding: 3px 9px; min-width: 0; }
-.dab-input { flex: 1 1 200px; max-width: 340px; }
-.dab-select { max-width: 200px; }
-.dab-label { font-size: 11px; font-weight: 650; color: var(--dsw-alias-label-secondary); letter-spacing: .02em; }
+.dab-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 28px; border-radius: var(--dsw-radius-sm); border: 0;
+  background: var(--dab-card-fill); color: var(--dsw-alias-label-primary); padding: 4px 10px; font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+.dab-btn:focus-visible, .dab-input:focus-visible, .dab-select:focus-visible, .dab-pill:focus-visible, .dab-icon-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+.dab-btn[aria-pressed="true"] { background: var(--dsw-alias-button-ghost-active-fill, var(--dsw-alias-bg-layer-1)); }
+.dab-btn[disabled] { opacity: .45; cursor: not-allowed; }
+.dab-btn[data-danger="true"] { color: var(--dsw-alias-state-error-primary); }
+.dab-btn[data-variant="ghost"] { background: transparent; }
+@media (hover: hover) {
+  .dab-btn:hover:not([disabled]), .dab-pill:hover, .dab-icon-btn:hover { background: var(--dsw-alias-interactive-bg-hover); }
+  .dab-btn[data-danger="true"]:hover:not([disabled]) { background: var(--dsw-alias-interactive-bg-hover-danger); }
+  .dab-card:hover { background: var(--dsw-alias-interactive-bg-hover-solid, var(--dsw-alias-bg-layer-1)); }
+  .dab-hist:hover { background: var(--dsw-alias-interactive-bg-hover); }
+}
+.dab-seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--dsw-radius-md); background: var(--dab-card-fill); }
+.dab-seg .dab-btn { background: transparent; min-height: 26px; }
+.dab-seg .dab-btn[aria-pressed="true"] { background: var(--dsw-alias-bg-base); }
+.dab-input, .dab-select { min-height: 28px; border-radius: var(--dsw-radius-sm); border: 0; background: var(--dab-card-fill); color: var(--dsw-alias-label-primary);
+  font: inherit; font-size: 12px; padding: 4px 10px; min-width: 0; }
+.dab-input { flex: 1 1 200px; max-width: 320px; }
+.dab-select { max-width: 200px; flex: none; appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 26px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 8px center; background-size: 12px; text-overflow: ellipsis; }
+.dab-select:disabled { opacity: .55; cursor: default; }
+.dab-dd { position: relative; display: inline-flex; flex: none; min-width: 0; }
+.dab-dd > .dab-select { width: 100%; text-align: left; display: inline-flex; align-items: center; }
+.dab-dd-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.dab-dd-pop { position: absolute; left: 0; top: calc(100% + 6px); z-index: 8; min-width: max(100%, 180px); max-width: min(320px, 90vw); max-height: 50vh; overflow: auto;
+  margin: 0; padding: 4px; list-style: none; border-radius: var(--dsw-radius-md); background: var(--dab-panel-fill); box-shadow: var(--dsw-elevation-prominent); outline: none; }
+.dab-dd-opt { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 4px 10px; border-radius: var(--dsw-radius-sm); font-size: 12px; cursor: pointer; color: var(--dsw-alias-label-primary); }
+.dab-dd-opt[data-active="true"] { background: var(--dab-chip-fill); }
+.dab-dd-opt[aria-selected="true"] { font-weight: 500; }
+.dab-dd-check { margin-left: auto; color: var(--dsw-alias-label-secondary); }
+@media (pointer: coarse) { .dab-dd-opt { min-height: 40px; font-size: 15px; } }
+.dab-select option { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); }
+.dab-counters { display: inline-flex; align-items: center; gap: 10px; flex: none; }
+.dab-search-wrap { display: flex; flex: 1 1 160px; min-width: 120px; max-width: 320px; }
+.dab-search-wrap .dab-input { max-width: none; }
+.dab-ico { display: block; flex: none; }
+.dab-btn .dab-ico { display: inline-block; vertical-align: -3px; }
+.dab-icon-btn[data-danger="true"]:not([disabled]) { color: var(--dsw-alias-state-error-primary); }
+.dab-icon-btn[disabled] { opacity: .4; cursor: default; }
+@media (pointer: coarse) { .dab-input, .dab-select { font-size: 16px; } }
+.dab-label { font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-secondary); }
 .dab-notice { font-size: 12px; color: var(--dsw-alias-label-secondary); }
 .dab-alert { font-size: 12px; color: var(--dsw-alias-state-error-primary); }
+.dab-icon-btn { flex: none; width: 28px; height: 28px; border-radius: var(--dsw-radius-sm); border: 0; background: transparent; display: inline-flex; align-items: center; justify-content: center;
+  color: var(--dsw-alias-label-secondary); font: inherit; font-size: 13px; line-height: 1; cursor: pointer; padding: 0; }
+
+/* ---------- orchestrator status popover (small, in the toolbar) */
+.dab-state { position: relative; }
+.dab-state > summary { list-style: none; cursor: pointer; }
+.dab-state > summary::-webkit-details-marker { display: none; }
+.dab-state-pop { position: absolute; right: 0; top: calc(100% + 6px); width: min(360px, 90vw); max-height: 60vh; overflow: auto; padding: 10px 12px;
+  border-radius: var(--dsw-radius-lg); background: var(--dab-panel-fill); box-shadow: var(--dsw-elevation-prominent); z-index: 6; }
 
 /* ---------- layout */
-.dab-main { flex: 1; min-height: 0; display: flex; }
-.dab-scroll { flex: 1; min-width: 0; overflow: auto; padding: 12px 16px 40px; scroll-behavior: auto; }
-.dab-project { margin: 0 0 14px; }
-.dab-project-head { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; padding: 4px 2px; margin: 0 0 8px; color: var(--dsw-alias-label-primary);
-  font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; text-align: left; border-radius: 6px; }
-.dab-project-head:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); }
+.dab-main { flex: 1; min-height: 0; display: flex; position: relative; }
+.dab-scroll { flex: 1; min-width: 0; overflow: auto; padding: 6px 16px 40px; }
+.dab-projects { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: flex-start; }
+.dab-project { margin: 0 0 14px; min-width: 0; max-width: 100%; }
+.dab-project-head { display: flex; align-items: center; gap: 8px; border: 0; background: none; padding: 4px 6px 4px 2px; margin: 0 0 6px; color: var(--dsw-alias-label-primary);
+  font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; text-align: left; border-radius: var(--dsw-radius-sm); }
 .dab-project-head .dab-caret { color: var(--dsw-alias-label-secondary); width: 12px; flex: none; }
-.dab-project-count { font-weight: 550; font-size: 12px; color: var(--dsw-alias-label-secondary); }
-.dab-forest { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
-.dab-tile { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: 10px; border-radius: 12px; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); }
+.dab-project-count { font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dab-forest { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: flex-start; }
+.dab-tile { position: relative; max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: 2px; }
 .dab-more { margin-top: 8px; }
 
-/* ---------- tree (horizontal family tree: parent left, children right) */
+/* ---------- tree: layout only, connectors are an SVG overlay (.dab-links) */
+.dab-tree { list-style: none; margin: 0; padding: 0; position: relative; z-index: 1; }
 .dab-branch { display: flex; align-items: flex-start; list-style: none; margin: 0; padding: 0; }
-.dab-kids { list-style: none; margin: 0; padding: 0 0 0 22px; display: flex; flex-direction: column; gap: 8px; position: relative; }
-.dab-kids::before { content: ""; position: absolute; left: 0; top: 24px; width: 11px; height: 1px; background: var(--dsw-alias-border-l2); }
-.dab-kids > .dab-branch { position: relative; padding-left: 11px; }
-.dab-kids > .dab-branch::before { content: ""; position: absolute; left: 0; top: 0; bottom: -8px; width: 1px; background: var(--dsw-alias-border-l2); }
-.dab-kids > .dab-branch:first-child::before { top: 24px; }
-.dab-kids > .dab-branch:last-child::before { bottom: auto; height: 24px; }
-.dab-kids > .dab-branch:first-child:last-child::before { display: none; }
-.dab-kids > .dab-branch::after { content: ""; position: absolute; left: 0; top: 24px; width: 11px; height: 1px; background: var(--dsw-alias-border-l2); }
-.dab-kids > .dab-branch:first-child:last-child::after { left: -11px; width: 22px; }
-.dab-kids:has(> .dab-branch:only-child)::before { display: none; }
+.dab-kids { list-style: none; margin: 0; padding: 0 0 0 34px; display: flex; flex-direction: column; gap: 8px; }
+.dab-links { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; z-index: 0; }
+.dab-links path { fill: none; stroke: var(--dsw-alias-border-l3); stroke-width: 1.25; stroke-linecap: round; }
+.dab-links path[data-active="true"] { stroke: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
 
-/* ---------- card */
-.dab-card { position: relative; flex: none; width: 210px; min-height: 50px; display: flex; flex-direction: column; gap: 3px; padding: 8px 10px 8px 10px;
-  border-radius: 10px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); cursor: pointer; user-select: none;
-  transition: border-color .12s ease, box-shadow .12s ease; outline: none; }
-.dab-card[data-root="true"] { width: 250px; }
-.dab-card:hover { border-color: var(--dsw-alias-border-l2); }
-.dab-card:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
-.dab-card[data-selected="true"] { border-color: var(--dsw-alias-brand-primary); box-shadow: 0 0 0 1px var(--dsw-alias-brand-primary); }
-.dab-card[data-status="waiting_user"] { border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 60%, var(--dsw-alias-border-l1)); }
-.dab-card[data-status="failed"][data-seen="false"] { border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, var(--dsw-alias-border-l1)); }
-.dab-card[data-calm="true"] { opacity: .78; }
-.dab-card-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.dab-name { flex: 1; min-width: 0; font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dab-card[data-root="true"] .dab-name { font-size: 13px; }
-.dab-meta { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11px; color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; }
+/* ---------- card (borderless: fill contrast only) */
+.dab-card { position: relative; flex: none; width: 210px; min-height: 46px; display: flex; flex-direction: column; gap: 2px; padding: 8px 10px;
+  border-radius: var(--dsw-radius-md); border: 0; background: var(--dab-card-fill); cursor: pointer; user-select: none;
+  transition: background-color .12s ease, box-shadow .12s ease; outline: none; }
+.dab-card[data-root="true"] { width: 248px; border-radius: var(--dsw-radius-lg); padding: 10px 12px; }
+.dab-card:focus-visible { box-shadow: 0 0 0 2px var(--dsw-alias-brand-primary); }
+.dab-card[data-selected="true"] { box-shadow: 0 0 0 1.5px var(--dsw-alias-brand-primary); }
+.dab-card[data-status="waiting_user"] { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, var(--dab-card-fill)); }
+.dab-card[data-status="failed"][data-seen="false"] { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 9%, var(--dab-card-fill)); }
+.dab-card[data-calm="true"] .dab-name { color: var(--dsw-alias-label-secondary); }
+.dab-card-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.dab-name { flex: 1; min-width: 0; font-weight: 500; font-size: 13px; line-height: 18px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+.dab-meta { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; line-height: 16px; color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; padding-left: 22px; }
 .dab-meta > span { overflow: hidden; text-overflow: ellipsis; }
 .dab-meta .dab-sep::before { content: "·"; }
-.dab-role { font-weight: 600; color: var(--dsw-alias-label-secondary); }
-.dab-wait { font-size: 11px; font-weight: 600; color: var(--dsw-alias-state-warn-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dab-err { font-size: 11px; color: var(--dsw-alias-state-error-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dab-card-foot { display: flex; align-items: center; gap: 6px; margin-top: 1px; min-height: 0; }
-.dab-pill { display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 999px; background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-secondary); font: inherit; font-size: 11px; font-weight: 600; padding: 0 7px; min-height: 20px; cursor: pointer; }
-.dab-pill:hover { border-color: var(--dsw-alias-border-l2); color: var(--dsw-alias-label-primary); }
-.dab-pill:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); }
-.dab-pill[data-tone="running"] { color: var(--dsw-alias-brand-primary); }
-.dab-icon-btn { flex: none; width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; line-height: 1; cursor: pointer; padding: 0; }
-.dab-icon-btn:hover { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l2); }
-.dab-icon-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); opacity: 1; }
-.dab-projects { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr)); gap: 6px 22px; align-items: start; }
+.dab-wait { font-size: 12px; color: var(--dsw-alias-state-warn-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 22px; }
+.dab-err { font-size: 12px; color: var(--dsw-alias-state-error-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 22px; }
+.dab-card-foot { display: flex; align-items: center; gap: 6px; margin-top: 2px; padding-left: 22px; }
+.dab-pill { display: inline-flex; align-items: center; gap: 4px; border: 0; border-radius: 999px; background: var(--dab-chip-fill);
+  color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; padding: 0 8px; min-height: 22px; cursor: pointer; }
+.dab-pill[data-tone="running"] { color: var(--dsw-alias-label-primary); }
 .dab-quick { opacity: 0; }
-.dab-card:hover .dab-quick, .dab-card:focus-within .dab-quick, .dab-card[data-selected="true"] .dab-quick { opacity: 1; }
+.dab-card:focus-within .dab-quick, .dab-card[data-selected="true"] .dab-quick { opacity: 1; }
+@media (hover: hover) { .dab-card:hover .dab-quick { opacity: 1; } }
 @media (hover: none) { .dab-quick { opacity: 1; } }
 
-/* ---------- status mark */
+/* ---------- status mark (always a true circle) */
 .dab-mark { flex: none; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; }
-.dab-mark::before { content: ""; display: block; border-radius: 50%; }
-.dab-mark[data-status="running"]::before { width: 13px; height: 13px; border: 2px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 25%, transparent); border-top-color: var(--dsw-alias-brand-primary); animation: dab-spin .9s linear infinite; }
-.dab-mark[data-status="waiting_user"]::before { width: 10px; height: 10px; background: var(--dsw-alias-state-warn-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-warn-primary) 22%, transparent); }
-.dab-mark[data-status="finished_unread"]::before { width: 10px; height: 10px; background: var(--dsw-alias-state-success-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-success-primary) 20%, transparent); }
-.dab-mark[data-status="failed"]::before { width: 9px; height: 9px; border-radius: 2px; transform: rotate(45deg); background: var(--dsw-alias-state-error-primary); }
-.dab-mark[data-status="failed"][data-seen="true"]::before { background: transparent; border: 1.5px solid var(--dsw-alias-state-error-primary); }
-.dab-mark[data-status="finished_read"]::before { width: 8px; height: 8px; background: var(--dsw-alias-state-idle-primary, var(--dsw-alias-label-secondary)); opacity: .7; }
-.dab-mark[data-status="idle"]::before { width: 8px; height: 8px; border: 1.5px solid var(--dsw-alias-state-idle-primary, var(--dsw-alias-label-secondary)); }
+.dab-mark::before { content: ""; display: block; border-radius: 50%; corner-shape: round; }
+.dab-mark[data-status="running"]::before { animation: dab-spin .9s linear infinite; width: 13px; height: 13px; border: 2px solid color-mix(in srgb, var(--dsw-alias-label-primary) 18%, transparent); border-top-color: var(--dsw-alias-label-primary); }
+.dab-mark[data-status="waiting_user"]::before { width: 9px; height: 9px; background: var(--dsw-alias-state-warn-primary); }
+.dab-mark[data-status="finished_unread"]::before { width: 9px; height: 9px; background: var(--dsw-alias-state-success-primary); }
+.dab-mark[data-status="failed"]::before { width: 9px; height: 9px; background: var(--dsw-alias-state-error-primary); }
+.dab-mark[data-status="failed"][data-seen="true"]::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--dsw-alias-state-error-primary); }
+.dab-mark[data-status="finished_read"]::before { width: 8px; height: 8px; background: var(--dsw-alias-state-idle-primary, var(--dsw-alias-label-secondary)); }
+.dab-mark[data-status="idle"]::before { width: 8px; height: 8px; box-shadow: inset 0 0 0 1.5px var(--dsw-alias-state-idle-primary, var(--dsw-alias-label-secondary)); }
 .dab-mark[data-status="unknown"]::before { width: 8px; height: 8px; border: 1.5px dashed var(--dsw-alias-label-secondary); }
-.dab-group-ring { display: inline-block; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--dsw-alias-brand-primary); margin-right: 2px; }
+.dab-group-ring { display: inline-block; width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--dsw-alias-label-primary); margin-right: 2px; }
 @keyframes dab-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
-  .dab-mark[data-status="running"]::before { animation: none; border-color: var(--dsw-alias-brand-primary); border-right-color: transparent; }
-  .dab-card, .dab-scroll { transition: none; scroll-behavior: auto; }
+  .dab-mark[data-status="running"]::before { animation: none; border-right-color: var(--dsw-alias-label-primary); }
+  .dab-card, .dab-inspector { transition: none; }
 }
 
 /* ---------- compact grid */
 .dab-compact-group { margin: 0 0 10px; }
-.dab-compact-parent { font-size: 11px; color: var(--dsw-alias-label-secondary); margin: 0 0 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-compact-parent { font-size: 12px; color: var(--dsw-alias-label-secondary); margin: 0 0 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dab-compact-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 6px; }
 .dab-compact-grid .dab-card { width: auto; min-height: 0; padding: 6px 8px; }
-.dab-compact-grid .dab-card[data-depth]:not([data-depth="0"]) { border-left-width: 3px; }
 
-/* ---------- inspector */
-.dab-inspector { flex: none; width: 340px; max-width: 42%; border-left: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); overflow: auto; padding: 12px 14px 24px;
-  display: flex; flex-direction: column; gap: 10px; }
+/* ---------- inspector: floating panel */
+.dab-inspector { flex: none; width: 340px; max-width: 42%; margin: 4px 12px 12px 0; border-radius: var(--dsw-radius-xl); border: 0;
+  background: var(--dab-panel-fill); box-shadow: var(--dsw-elevation-panel); overflow: auto; padding: 14px 16px 20px;
+  display: flex; flex-direction: column; gap: 10px; align-self: stretch; }
 .dab-insp-head { display: flex; align-items: flex-start; gap: 8px; }
-.dab-insp-title { font-size: 14px; font-weight: 650; margin: 0; word-break: break-word; flex: 1; min-width: 0; }
-.dab-insp-status { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
-.dab-answer { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 8px; padding: 8px 10px; max-height: 320px; overflow: auto; }
+.dab-insp-title { font-size: 14px; line-height: 22px; font-weight: 500; margin: 0; word-break: break-word; flex: 1; min-width: 0; }
+.dab-insp-status { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.dab-answer { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 13px; background: var(--dab-card-fill);
+  border-radius: var(--dsw-radius-md); padding: 8px 10px; max-height: 320px; overflow: auto; }
 .dab-answer[data-empty="true"] { color: var(--dsw-alias-label-secondary); font-style: italic; }
 .dab-dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; font-size: 12px; }
 .dab-dl dt { color: var(--dsw-alias-label-secondary); }
 .dab-dl dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .dab-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
 .dab-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.dab-linkish { border: 0; background: none; padding: 0; color: var(--dsw-alias-brand-primary); font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
-.dab-linkish:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); }
+.dab-linkish { border: 0; background: none; padding: 0; color: var(--dsw-alias-link, var(--dsw-alias-brand-primary)); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; text-align: left; }
+.dab-tag { display: inline-flex; align-items: center; padding: 0 7px; border-radius: 999px; corner-shape: round; font-size: 12px; background: var(--dab-card-fill); color: var(--dsw-alias-label-secondary); white-space: nowrap; }
 
-/* ---------- drawer (history) */
-.dab-drawer { position: absolute; inset: 0 0 0 auto; width: min(460px, 100%); background: var(--dsw-alias-bg-base); border-left: 1px solid var(--dsw-alias-border-l2);
-  box-shadow: -8px 0 24px color-mix(in srgb, black 14%, transparent); display: flex; flex-direction: column; z-index: 3; }
-.dab-drawer-head { padding: 12px 14px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1); display: flex; flex-direction: column; gap: 8px; }
+/* ---------- drawer (history): floating */
+.dab-drawer { position: absolute; top: 8px; right: 12px; bottom: 12px; width: min(440px, calc(100% - 24px)); background: var(--dab-panel-fill);
+  border-radius: var(--dsw-radius-xl); box-shadow: var(--dsw-elevation-prominent); display: flex; flex-direction: column; z-index: 5; overflow: hidden; }
+.dab-drawer-head { padding: 12px 14px 10px; display: flex; flex-direction: column; gap: 8px; }
 .dab-drawer-head .dab-input { flex: none; max-width: none; width: 100%; }
-.dab-drawer-list { flex: 1; overflow: auto; list-style: none; margin: 0; padding: 6px 8px 20px; }
-.dab-hist { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
-.dab-hist:hover { background: var(--dsw-alias-bg-layer-1); }
+.dab-drawer-list { flex: 1; overflow: auto; list-style: none; margin: 0; padding: 0 8px 16px; }
+.dab-hist { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: var(--dsw-radius-md); cursor: pointer; }
 .dab-hist:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); }
-.dab-hist[data-selected="true"] { border-color: var(--dsw-alias-brand-primary); }
+.dab-hist[data-selected="true"] { background: var(--dab-card-fill); }
 .dab-hist-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.dab-hist-title { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-hist-title { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ---------- misc panels */
-.dab-panel { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; padding: 8px 12px; margin: 0 0 12px; background: var(--dsw-alias-bg-layer-1); }
-.dab-panel > summary { cursor: pointer; font-size: 12px; font-weight: 650; color: var(--dsw-alias-label-secondary); }
+/* ---------- misc */
+.dab-panel { border-radius: var(--dsw-radius-lg); padding: 8px 12px; margin: 0 0 12px; background: var(--dab-card-fill); }
 .dab-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .dab-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
-.dab-tag { display: inline-flex; align-items: center; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); white-space: nowrap; }
 .dab-empty { padding: 40px 12px; text-align: center; color: var(--dsw-alias-label-secondary); display: flex; flex-direction: column; gap: 6px; align-items: center; }
-.dab-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 0 0 2px; scrollbar-width: thin; }
+.dab-mobile-menu { display: none; }
+.dab-only-narrow { display: none; }
 
-/* ---------- narrow panel (phone, small window) */
+/* ---------- narrow panel (phone, small window): compact header + overview */
 @container dab (max-width: 720px) {
-  .dab-toolbar { padding: 8px 10px; gap: 6px; }
-  .dab-scroll { padding: 8px 10px 32px; }
-  .dab-input { max-width: none; flex-basis: 100%; }
-  .dab-inspector { position: absolute; left: 0; right: 0; bottom: 0; width: auto; max-width: none; max-height: 62%; border-left: 0; border-top: 1px solid var(--dsw-alias-border-l2);
-    border-radius: 14px 14px 0 0; box-shadow: 0 -8px 24px color-mix(in srgb, black 16%, transparent); z-index: 2; }
-  .dab-tile { padding: 8px; width: 100%; }
+  .dab-toolbar { padding: 8px 10px 6px; gap: 6px; }
+  .dab-only-wide { display: none !important; }
+  .dab-only-narrow { display: inline-flex; }
+  .dab-title { font-size: 15px; }
+  .dab-input { max-width: none; flex: 1 1 0; }
+  .dab-mobile-menu { display: flex; flex-direction: column; gap: 8px; padding: 8px 0 2px; }
+  .dab-mobile-menu .dab-bar { gap: 6px; }
+  .dab-scroll { padding: 4px 10px 32px; overflow-x: hidden; }
+  .dab-projects { display: block; }
+  .dab-project { margin-bottom: 10px; }
   .dab-forest { display: block; }
-  .dab-forest > .dab-tile + .dab-tile { margin-top: 10px; }
-  /* vertical compact tree */
+  .dab-forest > .dab-tile + .dab-tile { margin-top: 8px; }
+  .dab-tile { overflow: visible; padding: 0; }
   .dab-branch { flex-direction: column; align-items: stretch; }
-  .dab-card, .dab-card[data-root="true"] { width: 100%; }
-  .dab-kids { padding: 6px 0 0 14px; gap: 6px; }
-  .dab-kids::before { display: none; }
-  .dab-kids > .dab-branch { padding-left: 12px; }
-  .dab-kids > .dab-branch::before, .dab-kids > .dab-branch:first-child::before { top: -6px; bottom: -6px; height: auto; display: block; }
-  .dab-kids > .dab-branch:last-child::before { bottom: auto; height: 26px; }
-  .dab-kids > .dab-branch::after, .dab-kids > .dab-branch:first-child:last-child::after { left: 0; width: 12px; top: 20px; }
+  .dab-card, .dab-card[data-root="true"] { width: 100%; padding: 7px 10px; min-height: 0; }
+  .dab-name { -webkit-line-clamp: 1; }
+  .dab-kids { padding: 6px 0 0 22px; gap: 6px; }
+  .dab-inspector { position: absolute; left: 8px; right: 8px; bottom: 8px; width: auto; max-width: none; max-height: 64%; margin: 0; z-index: 5; box-shadow: var(--dsw-elevation-prominent); }
   .dab-pill, .dab-btn { min-height: 32px; }
   .dab-icon-btn { width: 32px; height: 32px; }
-  .dab-projects { display: block; }
-  .dab-quick { opacity: 1; }
 }
 `
 
-function dabInjectStyles() {
+function dabInjectStyles(ctxStyles) {
   try {
+    if (typeof ctxStyles?.insert === 'function') return ctxStyles.insert(DAB_CSS)
     const document = globalThis.document
     if (document === undefined || document === null) return () => {}
     const previous = document.getElementById(DAB_STYLE_ID)
@@ -2033,7 +2074,7 @@ function DabAgentCardImpl(props) {
       title: collapsed ? dabT('expand') : dabT('collapse'),
       onClick: event => { stop(event); onToggleBranch(node.id, collapsed, expanded) },
       onDoubleClick: stop, onKeyDown: stop,
-    }, collapsed ? `▸ ${totalChildren}` : (expanded ? '▾ −' : `▾ ${totalChildren}`)))
+    }, collapsed ? `▸ ${totalChildren}` : `▾ ${totalChildren}`))
   } else if (groupActive) {
     foot.push(h('span', { key: 'grp', className: 'dab-muted' }, h('span', { className: 'dab-group-ring', 'aria-hidden': 'true' }), dabT('groupActive')))
   }
@@ -2100,10 +2141,77 @@ function DabTreeBranch({ entry, ctx }) {
   )
 }
 
+/** Parent → child pairs of the visible tree (render order). */
+function dabEdgesOf(entry, out = []) {
+  for (const child of entry.children) {
+    out.push({ from: entry.node.id, to: child.node.id, active: child.aggregate?.running === true || child.node.status === 'running' })
+    dabEdgesOf(child, out)
+  }
+  return out
+}
+
+/**
+ * Smooth node-graph link between two card rectangles (tile coordinates).
+ * Horizontal layout: right-middle of the parent → left-middle of the child.
+ * Stacked (narrow) layout: below the parent's mark → left-middle of the child.
+ */
+function dabLinkPath(a, b) {
+  if (b.left >= a.right - 1) {
+    const x1 = a.right
+    const y1 = a.top + Math.min(24, a.height / 2)
+    const x2 = b.left
+    const y2 = b.top + Math.min(24, b.height / 2)
+    const dx = Math.max(12, (x2 - x1) * 0.55)
+    return `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`
+  }
+  const x1 = a.left + 16
+  const y1 = a.bottom
+  const x2 = b.left
+  const y2 = b.top + Math.min(18, b.height / 2)
+  return `M${x1},${y1} C${x1},${y2} ${x1},${y2} ${x2},${y2}`
+}
+
 function DabAgentTree({ entry, ctx }) {
   const h = React.createElement
-  return h('div', { className: 'dab-tile' },
-    h('ul', { className: 'dab-branch-root', role: 'tree', 'aria-label': entry.node.title, style: { listStyle: 'none', margin: 0, padding: 0 } },
+  const tileRef = React.useRef(null)
+  const [links, setLinks] = React.useState({ paths: [], width: 0, height: 0 })
+  const edges = dabEdgesOf(entry)
+  const edgeKey = edges.map(edge => `${edge.from}>${edge.to}:${edge.active ? 1 : 0}`).join('|')
+
+  React.useLayoutEffect(() => {
+    const tile = tileRef.current
+    if (tile === null) return undefined
+    const measure = () => {
+      const base = tile.getBoundingClientRect()
+      const rectOf = id => {
+        const element = tile.querySelector(`.dab-card[data-node-id="${CSS.escape(id)}"]`)
+        if (element === null) return null
+        const r = element.getBoundingClientRect()
+        const left = r.left - base.left + tile.scrollLeft
+        const top = r.top - base.top + tile.scrollTop
+        return { left, top, right: left + r.width, bottom: top + r.height, width: r.width, height: r.height }
+      }
+      const paths = []
+      for (const edge of edges) {
+        const a = rectOf(edge.from)
+        const b = rectOf(edge.to)
+        if (a !== null && b !== null) paths.push({ key: `${edge.from}>${edge.to}`, d: dabLinkPath(a, b), active: edge.active })
+      }
+      setLinks({ paths, width: tile.scrollWidth, height: tile.scrollHeight })
+    }
+    measure()
+    if (typeof ResizeObserver !== 'function') return undefined
+    const observer = new ResizeObserver(() => measure())
+    observer.observe(tile)
+    return () => observer.disconnect()
+  }, [edgeKey, ctx.selectedId])
+
+  return h('div', { className: 'dab-tile', ref: tileRef },
+    links.paths.length > 0
+      ? h('svg', { className: 'dab-links', width: links.width, height: links.height, 'aria-hidden': 'true' },
+        links.paths.map(link => h('path', { key: link.key, d: link.d, 'data-active': link.active ? 'true' : 'false' })))
+      : null,
+    h('ul', { className: 'dab-tree', role: 'tree', 'aria-label': entry.node.title },
       h(DabTreeBranch, { entry, ctx })))
 }
 
@@ -2190,7 +2298,7 @@ function DabProjectGroup({ project, ctx, folded, onFold, treeLimit, onMoreTrees,
  * @module dsh-agent-board/client/ui/preview
  */
 
-function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError }) {
+function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, onDismiss, dismissed }) {
   const h = React.createElement
   const [more, setMore] = React.useState(false)
   React.useEffect(() => { setMore(false) }, [node?.id])
@@ -2253,7 +2361,10 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError })
       : null,
     h('div', { className: 'dab-actions' },
       h('button', { type: 'button', className: 'dab-btn', 'aria-pressed': 'false', onClick: () => onOpen(node.id), 'data-testid': 'dab-open' }, `↗ ${dabT('openSession')}`),
-      parent ? h('button', { type: 'button', className: 'dab-btn', onClick: () => onOpen(parent.id) }, dabT('openParent')) : null),
+      parent ? h('button', { type: 'button', className: 'dab-btn', onClick: () => onOpen(parent.id) }, dabT('openParent')) : null,
+      node.status !== 'running' && typeof onDismiss === 'function'
+        ? h('button', { type: 'button', className: 'dab-btn', 'data-variant': 'ghost', title: dabT('dismissHint'), onClick: () => onDismiss(node.id, !dismissed) }, dismissed ? dabT('undismiss') : dabT('dismiss'))
+        : null),
     openError ? h('div', { className: 'dab-alert', role: 'status' }, openError) : null,
     h('dl', { className: 'dab-dl' }, facts),
   )
@@ -2324,56 +2435,128 @@ function DabHistoryDrawer({ projection, project, selectedId, arbiter, onClose })
  * @module dsh-agent-board/client/ui/toolbar
  */
 
+const DAB_ICONS = {
+  history: ['M3 12a9 9 0 1 0 3-6.7L3 8', 'M3 3v5h5', 'M12 7v5l3 2'],
+  refresh: ['M21 12a9 9 0 1 1-3-6.7L21 8', 'M21 3v5h-5'],
+  more: ['M5 12h.01', 'M12 12h.01', 'M19 12h.01'],
+  stop: ['M7 7h10v10H7z'],
+  play: ['M8 5l11 7-11 7z'],
+}
+
+function dabIcon(name) {
+  const h = React.createElement
+  return h('svg', { className: 'dab-ico', viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
+    (DAB_ICONS[name] ?? []).map((d, index) => h('path', { key: index, d })))
+}
+
+/** Themed dropdown (the native <select> popup cannot follow the plugin look). */
+function DabSelect({ label, value, options, onChange, title, disabled, style }) {
+  const h = React.createElement
+  const [open, setOpen] = React.useState(false)
+  const [active, setActive] = React.useState(0)
+  const rootRef = React.useRef(null)
+  const listRef = React.useRef(null)
+  const current = options.find(([optionValue]) => optionValue === value) ?? options[0]
+  React.useEffect(() => {
+    if (!open) return undefined
+    const close = event => { if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false) }
+    document.addEventListener('pointerdown', close)
+    listRef.current?.focus()
+    return () => document.removeEventListener('pointerdown', close)
+  }, [open])
+  const show = () => { setActive(Math.max(0, options.findIndex(([optionValue]) => optionValue === value))); setOpen(true) }
+  const pick = index => { const option = options[index]; setOpen(false); rootRef.current?.querySelector('button')?.focus(); if (option && option[0] !== value) onChange(option[0]) }
+  const onListKey = event => {
+    if (event.key === 'ArrowDown') { event.preventDefault(); setActive(index => Math.min(options.length - 1, index + 1)) }
+    else if (event.key === 'ArrowUp') { event.preventDefault(); setActive(index => Math.max(0, index - 1)) }
+    else if (event.key === 'Home') { event.preventDefault(); setActive(0) }
+    else if (event.key === 'End') { event.preventDefault(); setActive(options.length - 1) }
+    else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick(active) }
+    else if (event.key === 'Escape' || event.key === 'Tab') { setOpen(false); if (event.key === 'Escape') rootRef.current?.querySelector('button')?.focus() }
+  }
+  return h('div', { className: 'dab-dd', ref: rootRef, style },
+    h('button', {
+      type: 'button', className: 'dab-select', 'aria-haspopup': 'listbox', 'aria-expanded': open, 'aria-label': `${label} : ${current?.[1] ?? ''}`, title: title ?? label, disabled,
+      onClick: () => (open ? setOpen(false) : show()),
+      onKeyDown: event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show() } },
+    }, h('span', { className: 'dab-dd-text' }, current?.[1] ?? '')),
+    open
+      ? h('ul', { className: 'dab-dd-pop', role: 'listbox', 'aria-label': label, tabIndex: -1, ref: listRef, onKeyDown: onListKey, 'aria-activedescendant': `dab-opt-${label}-${active}` },
+        options.map(([optionValue, text], index) => h('li', {
+          key: optionValue, id: `dab-opt-${label}-${index}`, role: 'option', className: 'dab-dd-opt', 'aria-selected': optionValue === value, 'data-active': index === active,
+          onPointerEnter: () => setActive(index), onClick: () => pick(index),
+        }, h('span', { className: 'dab-dd-text' }, text), optionValue === value ? h('span', { className: 'dab-dd-check', 'aria-hidden': 'true' }, '✓') : null)))
+      : null)
+}
+
 function DabToolbar(props) {
   const h = React.createElement
   const { counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh, ui, setUi, projects, onHistory, narrow } = props
   const counter = (tone, value, label) => value > 0
-    ? h('span', { className: 'dab-counter', key: tone, title: `${value} ${label}` }, h('span', { className: 'dab-dot', 'data-tone': tone }), h('b', null, value), ` ${label}`)
+    ? h('span', { className: 'dab-counter', key: tone, title: `${value} ${label}`, 'aria-label': `${value} ${label}` }, h('span', { className: 'dab-dot', 'data-tone': tone }), h('b', null, value))
     : null
   const modeNotice = mode === 'off' ? dabT('offNotice') : mode === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice')
   const notice = secondary ? dabT('secondaryInstance') : stopped ? dabT('stoppedNotice') : modeNotice
-  return h('header', { className: 'dab-toolbar' },
-    h('div', { className: 'dab-bar' },
-      h('h1', { className: 'dab-title' }, dabT('title')),
-      counter('running', counts.running, dabT('running')),
-      counter('waiting', counts.waiting, dabT('waiting')),
-      counter('unread', counts.unread, dabT('unread')),
-      counter('failed', counts.failed, dabT('failed')),
-      h('span', { className: 'dab-muted', title: `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}` }, `${visibleCount}/${counts.total} ${dabT('shown')}`),
-      h('span', { className: 'dab-grow' }),
-      h('span', { className: 'dab-label' }, dabT('mode')),
-      h('div', { className: 'dab-seg', role: 'group', 'aria-label': dabT('mode'), title: hostDown ? dabT('orchestratorDown') : modeNotice },
-        ['off', 'supervised', 'autonomous'].map(value => h('button', {
-          key: value, type: 'button', className: 'dab-btn', 'aria-pressed': mode === value, disabled: busy || hostDown || secondary,
-          onClick: () => onMode(value),
-        }, dabT(value)))),
-      stopped && mode !== 'off' && !secondary
-        ? h('button', { type: 'button', className: 'dab-btn', 'data-tone': 'resume', disabled: busy || hostDown, onClick: onResume, title: dabT('stoppedNotice') }, `▶ ${dabT('resume')}`)
+  const [menuOpen, setMenuOpen] = React.useState(false)
+  const state = props.statePanel ?? null
+  const alert = secondary || stopped || hostDown
+  const iconBtn = (icon, label, onClick, extra = {}) => h('button', { type: 'button', className: 'dab-icon-btn', onClick, 'aria-label': label, title: label, ...extra }, dabIcon(icon))
+  const select = (label, value, options, onChange, extra = {}) => h(DabSelect, { label, value, options, onChange, title: extra.title, disabled: extra.disabled, style: extra.style })
+
+  const counters = h('span', { className: 'dab-counters' },
+    counter('running', counts.running, dabT('running')),
+    counter('waiting', counts.waiting, dabT('waiting')),
+    counter('unread', counts.unread, dabT('unread')),
+    counter('failed', counts.failed, dabT('failed')),
+    narrow ? null : h('span', { className: 'dab-muted', title: `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}` }, `${visibleCount}/${counts.total}`))
+
+  const projectSelect = select(dabT('projects'), ui.project ?? '',
+    [['', dabT('allProjects')], ...projects.map(project => [project.id, `${project.id === 'unassigned' ? dabT('unassigned') : project.title} (${project.agents})`])],
+    value => setUi({ project: value === '' ? null : value }), { style: narrow ? { flex: '1 1 auto', minWidth: 0 } : undefined })
+  const filterSelect = select(dabT('filterLabel'), ui.filter,
+    [['attention', dabT('filterAttention')], ['recent', dabT('filterRecent')], ['all', dabT('filterAll')]], value => setUi({ filter: value }))
+  const viewSelect = select(dabT('viewLabel'), ui.compact ? 'compact' : 'tree',
+    [['tree', dabT('treeView')], ['compact', dabT('compact')]], value => setUi({ compact: value === 'compact' }))
+  const modeSelect = select(dabT('orchestratorLabel'), mode,
+    ['off', 'supervised', 'autonomous'].map(value => [value, `${dabT('orchestratorLabel')} : ${dabT(value)}`]), onMode,
+    { disabled: busy || hostDown || secondary, title: hostDown ? dabT('orchestratorDown') : notice })
+  const stopOrResume = stopped && mode !== 'off' && !secondary
+    ? iconBtn('play', dabT('resume'), onResume, { disabled: busy || hostDown, 'data-tone': 'resume' })
+    : iconBtn('stop', canStop ? dabT('stop') : dabT('stopNone'), onStop, { disabled: busy || hostDown || !canStop || secondary, 'data-danger': 'true' })
+  const alertDot = alert ? h('span', { className: 'dab-dot', 'data-tone': 'failed', title: hostDown ? dabT('orchestratorDown') : notice, role: 'img', 'aria-label': hostDown ? dabT('orchestratorDown') : notice }) : null
+
+  const search = h('input', {
+    type: 'search', className: 'dab-input', placeholder: dabT('search'), 'aria-label': dabT('search'), value: ui.query,
+    onChange: event => setUi({ query: event.target.value }),
+    onKeyDown: event => { if (event.key === 'Escape') setUi({ query: '' }) },
+  })
+  const history = iconBtn('history', dabT('history'), onHistory, { 'aria-haspopup': 'dialog' })
+  const refresh = iconBtn('refresh', dabT('refresh'), onRefresh, { disabled: busy })
+
+  if (narrow) {
+    return h('header', { className: 'dab-toolbar' },
+      h('div', { className: 'dab-bar', style: { flexWrap: 'nowrap' } },
+        counters, projectSelect, alertDot, history, refresh,
+        iconBtn('more', dabT('moreControls'), () => setMenuOpen(value => !value), { 'aria-expanded': menuOpen })),
+      h('div', { className: 'dab-bar', style: { flexWrap: 'nowrap' } }, search),
+      menuOpen
+        ? h('div', { className: 'dab-mobile-menu' },
+          h('div', { className: 'dab-bar' }, filterSelect, viewSelect),
+          h('div', { className: 'dab-bar' }, modeSelect, stopOrResume, h('span', { className: 'dab-grow' }), state),
+          h('div', { className: alert ? 'dab-alert' : 'dab-notice' }, hostDown ? dabT('orchestratorDown') : notice))
         : null,
-      h('button', { type: 'button', className: 'dab-btn', 'data-danger': 'true', disabled: busy || hostDown || !canStop || secondary, onClick: onStop, title: hostDown ? dabT('orchestratorDown') : (canStop ? dabT('stop') : dabT('stopNone')) }, `■ ${dabT('stop')}`),
-      h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy, title: dabT('refresh'), 'aria-label': dabT('refresh') }, narrow ? '⟳' : `⟳ ${dabT('refresh')}`)),
-    h('div', { className: 'dab-bar' },
-      h('input', {
-        type: 'search', className: 'dab-input', placeholder: dabT('search'), 'aria-label': dabT('search'), value: ui.query,
-        onChange: event => setUi({ query: event.target.value }),
-        onKeyDown: event => { if (event.key === 'Escape') setUi({ query: '' }) },
-      }),
-      h('select', { className: 'dab-select', 'aria-label': dabT('projects'), value: ui.project ?? '', onChange: event => setUi({ project: event.target.value === '' ? null : event.target.value }) },
-        h('option', { value: '' }, dabT('allProjects')),
-        projects.map(project => h('option', { key: project.id, value: project.id }, `${project.id === 'unassigned' ? dabT('unassigned') : project.title} (${project.agents})`))),
-      h('div', { className: 'dab-seg', role: 'group', 'aria-label': 'Filtre' },
-        [['attention', 'filterAttention'], ['recent', 'filterRecent'], ['all', 'filterAll']].map(([value, key]) => h('button', {
-          key: value, type: 'button', className: 'dab-btn', 'aria-pressed': ui.filter === value, onClick: () => setUi({ filter: value }),
-        }, dabT(key)))),
-      h('div', { className: 'dab-seg', role: 'group', 'aria-label': 'Vue' },
-        h('button', { type: 'button', className: 'dab-btn', 'aria-pressed': !ui.compact, onClick: () => setUi({ compact: false }) }, dabT('treeView')),
-        h('button', { type: 'button', className: 'dab-btn', 'aria-pressed': ui.compact, onClick: () => setUi({ compact: true }) }, dabT('compact'))),
-      h('button', { type: 'button', className: 'dab-btn', onClick: onHistory, 'aria-haspopup': 'dialog' }, `🕘 ${dabT('history')}`),
+    )
+  }
+
+  return h('header', { className: 'dab-toolbar' },
+    h('div', { className: 'dab-bar', style: { flexWrap: 'nowrap' } },
+      counters,
+      h('div', { className: 'dab-search-wrap' }, search),
+      projectSelect, filterSelect, viewSelect,
       h('span', { className: 'dab-grow' }),
-      h('span', { className: 'dab-notice' }, secondary || stopped ? h('span', { className: 'dab-alert' }, notice) : (hostDown ? h('span', { className: 'dab-alert' }, dabT('orchestratorDown')) : modeNotice))),
+      alertDot, modeSelect, stopOrResume, state, history, refresh),
   )
 }
-
 function DabExecutionList({ host, onApprove, onReject }) {
   const h = React.createElement
   const proposals = Array.isArray(host.proposals) ? host.proposals : []
@@ -2405,8 +2588,12 @@ function DabOrchestratorState({ host, hostError }) {
   const h = React.createElement
   const sync = host.sync
   const adapters = host.adapters?.adapters ?? []
-  return h('details', { className: 'dab-panel' },
-    h('summary', null, dabT('orchestratorState')),
+  const healthy = sync?.ok === true && !hostError
+  return h('details', { className: 'dab-state' },
+    h('summary', { className: 'dab-btn', title: dabT('orchestratorState'), 'aria-label': dabT('orchestratorState') },
+      h('span', { className: 'dab-dot', 'data-tone': healthy ? 'unread' : 'failed' }), dabT('stateShort')),
+    h('div', { className: 'dab-state-pop' },
+    h('div', { className: 'dab-label' }, dabT('orchestratorState')),
     h('div', { className: 'dab-muted', style: { marginTop: '6px' } },
       sync === null || sync === undefined
         ? (hostError ? `${dabT('syncError')}: ${hostError}` : '…')
@@ -2423,6 +2610,7 @@ function DabOrchestratorState({ host, hostError }) {
       h('span', { className: 'dab-grow' }, adapter.title ?? adapter.id),
       h('span', { className: 'dab-tag' }, adapter.status ?? '?'),
       adapter.validatedLive === true ? null : h('span', { className: 'dab-tag' }, dabT('notLive'))))),
+    ),
   )
 }
 
@@ -2453,7 +2641,7 @@ const DAB_UI_KEY = 'dsh-agent-board:ui:v2'
 const DAB_MEMORY = { scrollTop: 0, selectedId: null }
 
 function dabDefaultUi() {
-  return { filter: 'attention', query: '', project: null, compact: false, folded: [], expanded: [], collapsed: [], treeLimit: {} }
+  return { filter: 'attention', query: '', project: null, compact: false, folded: [], expanded: [], collapsed: [], dismissed: [], treeLimit: {} }
 }
 
 function dabReadUi() {
@@ -2470,6 +2658,7 @@ function dabReadUi() {
       folded: Array.isArray(parsed.folded) ? parsed.folded.slice(0, 200) : [],
       expanded: Array.isArray(parsed.expanded) ? parsed.expanded.slice(0, 200) : [],
       collapsed: Array.isArray(parsed.collapsed) ? parsed.collapsed.slice(0, 200) : [],
+      dismissed: Array.isArray(parsed.dismissed) ? parsed.dismissed.slice(-500) : [],
     }
   } catch {
     return base
@@ -2541,16 +2730,17 @@ function dabMakePage(store, ctx) {
     const expandedSet = React.useMemo(() => new Set(ui.expanded), [ui.expanded])
     const collapsedSet = React.useMemo(() => new Set(ui.collapsed), [ui.collapsed])
     const foldedSet = React.useMemo(() => new Set(ui.folded), [ui.folded])
+    const dismissedSet = React.useMemo(() => new Set(ui.dismissed), [ui.dismissed])
 
     const view = React.useMemo(() => buildBoardView(projection, {
-      filter: ui.filter, query: ui.query, project: ui.project, expanded: expandedSet, collapsed: collapsedSet, now: nowBucket * 60000 + 60000, aggregates,
-    }), [projection, aggregates, ui.filter, ui.query, ui.project, expandedSet, collapsedSet, nowBucket])
+      filter: ui.filter, query: ui.query, project: ui.project, expanded: expandedSet, collapsed: collapsedSet, dismissed: dismissedSet, now: nowBucket * 60000 + 60000, aggregates,
+    }), [projection, aggregates, ui.filter, ui.query, ui.project, expandedSet, collapsedSet, dismissedSet, nowBucket])
+
     const counts = React.useMemo(() => boardCounts(projection), [projection])
     const projectList = React.useMemo(() => projectOptions(projection), [projection])
 
-    // Phone / narrow panel: one project at a time.
-    const activeProjectId = narrow && ui.project === null ? (view.projects[0]?.id ?? null) : ui.project
-    const shownProjects = narrow && activeProjectId !== null ? view.projects.filter(project => project.id === activeProjectId) : view.projects
+    // Every width keeps the overview: all projects, each foldable.
+    const shownProjects = view.projects
 
     const selectedNode = selectedId !== null ? projection.byId.get(selectedId) ?? null : null
     const parentNode = selectedNode && selectedNode.parentId && !selectedNode.orphan && !selectedNode.parentCycle
@@ -2565,10 +2755,10 @@ function dabMakePage(store, ctx) {
       if (node && (node.status === 'finished_unread' || node.status === 'recovering' || (node.status === 'failed' && node.seen !== true))) void store.ack(id, { source: 'board_click' })
     }, [])
 
-    // Reading a session OUTSIDE the board (native main view) is still reading:
+    // Reading a session OUTSIDE the board (native main view) is still reading.
     // The key includes the session activity timestamp: a LATER turn that
-    // completes while the same session is still open is acknowledged again, and
-    // leaving the view clears the entry.
+    // completes while the same session is still open is acknowledged again,
+    // and leaving the view clears the entry.
     const nativeAcked = React.useRef(new Map())
     React.useEffect(() => {
       const viewing = new Set()
@@ -2607,6 +2797,16 @@ function dabMakePage(store, ctx) {
       setOpenError('')
       setSelectedId(id)
       acknowledge(id)
+    }, [acknowledge])
+
+    const onDismiss = React.useCallback((id, on) => {
+      setUiState(current => {
+        const rest = current.dismissed.filter(entry => entry !== id)
+        const next = { ...current, dismissed: on ? [...rest, id] : rest }
+        dabWriteUi(next)
+        return next
+      })
+      if (on) { acknowledge(id); setSelectedId(null) }
     }, [acknowledge])
 
     const arbiter = React.useMemo(() => createClickArbiter({ onSelect: selectNode, onOpen: openSession }), [selectNode, openSession])
@@ -2664,15 +2864,7 @@ function dabMakePage(store, ctx) {
       ? h('div', { className: 'dab-empty' },
         h('div', null, ui.query !== '' ? dabT('emptySearch') : dabT('emptyAttention')),
         ui.query === '' ? h('div', { className: 'dab-muted' }, dabT('emptyHint')) : null,
-        ui.query === '' ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setHistoryOpen(true) }, `🕘 ${dabT('history')}`) : null)
-      : null
-
-    const tabs = narrow && view.projects.length > 1 && ui.project === null
-      ? h('div', { className: 'dab-tabs', role: 'tablist', 'aria-label': dabT('projects') },
-        view.projects.map(project => h('button', {
-          key: project.id, type: 'button', role: 'tab', className: 'dab-btn', 'aria-selected': project.id === activeProjectId, 'aria-pressed': project.id === activeProjectId,
-          onClick: () => setUi({ project: project.id }),
-        }, `${project.unassigned ? dabT('unassigned') : project.title} · ${project.visibleAgents}`)))
+        ui.query === '' ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setHistoryOpen(true) }, dabIcon('history'), ` ${dabT('history')}`) : null)
       : null
 
     return h('div', { className: 'dab-root', ref: rootRef, 'data-dsh-agent-board': '', 'data-narrow': narrow ? 'true' : 'false' },
@@ -2685,12 +2877,12 @@ function dabMakePage(store, ctx) {
         onResume: () => act('resume', () => store.resume()),
         onRefresh: () => { void store.refreshHost(); void act('refresh', () => store.refreshHost()) },
         onHistory: () => setHistoryOpen(true),
+        statePanel: h(DabOrchestratorState, { host, hostError: snapshot.hostError }),
       }),
       h('div', { className: 'dab-main' },
         h('div', { className: 'dab-scroll', ref: scrollRef, onScroll: event => { DAB_MEMORY.scrollTop = event.currentTarget.scrollTop } },
           notice !== '' ? h('div', { className: 'dab-alert', role: 'status', style: { marginBottom: '8px' } }, notice) : null,
           h(DabExecutionList, { host, onApprove: id => act('approve', () => store.decide(id, true)), onReject: id => act('reject', () => store.decide(id, false)) }),
-          tabs,
           empty,
           h('div', { className: 'dab-projects' }, shownProjects.map(project => h(DabProjectGroup, {
             key: project.id, project, ctx: ctxValue, compact: ui.compact,
@@ -2701,10 +2893,9 @@ function dabMakePage(store, ctx) {
             onFold: id => onFold(project.unassigned ? `open:${id}` : id),
             treeLimit: ui.treeLimit[project.id] ?? DEFAULT_TREE_LIMIT,
             onMoreTrees,
-          }))),
-          h(DabOrchestratorState, { host, hostError: snapshot.hostError })),
+          })))),
         selectedNode !== null
-          ? h(DabAgentPreview, { node: selectedNode, parent: parentNode, onOpen: openSession, onSelect: selectNode, onClose: () => setSelectedId(null), openError })
+          ? h(DabAgentPreview, { node: selectedNode, parent: parentNode, onOpen: openSession, onSelect: selectNode, onClose: () => setSelectedId(null), openError, onDismiss, dismissed: dismissedSet.has(selectedNode.id) })
           : null),
       historyOpen
         ? h(DabHistoryDrawer, { projection, project: ui.project, selectedId, arbiter, onClose: () => setHistoryOpen(false) })
@@ -2713,37 +2904,127 @@ function dabMakePage(store, ctx) {
   }
 }
 
+/** Tooltip matching the DSH shell bubble (same tokens as its native tooltips). */
+function dabTipHide() {
+  for (const node of document.querySelectorAll('[data-dab-tip]')) node.remove()
+  // Bubbles left by an earlier plugin build (no marker): unclassed body-level tooltip divs.
+  for (const node of document.querySelectorAll('body > div[role="tooltip"]:not([class])')) {
+    if (String(node.getAttribute('style') ?? '').includes('--dsw-alias-tooltip-bg')) node.remove()
+  }
+  document.removeEventListener('pointermove', dabTipGuard, true)
+  window.removeEventListener('blur', dabTipHide)
+  window.removeEventListener('scroll', dabTipHide, true)
+}
+let dabTipAnchor = null
+function dabTipGuard(event) {
+  const anchor = dabTipAnchor
+  if (anchor === null || !anchor.isConnected) return dabTipHide()
+  const r = anchor.getBoundingClientRect()
+  if (event.clientX < r.left - 2 || event.clientX > r.right + 2 || event.clientY < r.top - 2 || event.clientY > r.bottom + 2) dabTipHide()
+}
+function dabTipHandlers(text) {
+  const hide = dabTipHide
+  const show = event => {
+    hide()
+    const anchor = event.currentTarget
+    dabTipAnchor = anchor
+    const rect = anchor.getBoundingClientRect()
+    const row = (anchor.closest('button') ?? anchor).getBoundingClientRect()
+    const bubble = document.createElement('div')
+    bubble.setAttribute('role', 'tooltip')
+    bubble.setAttribute('data-dab-tip', '')
+    bubble.textContent = text
+    Object.assign(bubble.style, {
+      display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box', margin: '0', fontWeight: '400', fontFamily: 'inherit',
+      position: 'fixed', zIndex: '1100', left: `${Math.round(rect.right + 8)}px`, top: `${Math.round(row.top + row.height / 2)}px`, transform: 'translateY(-50%)',
+      width: 'max-content', maxWidth: 'min(50vw, calc(100vw - 24px))', padding: '3px 7px', borderRadius: 'var(--dsw-radius-sm)',
+      background: 'var(--dsw-alias-tooltip-bg)', color: 'var(--dsw-static-neutral-bluish-00)', fontSize: '13px', lineHeight: '20px',
+      whiteSpace: 'pre-line', pointerEvents: 'none',
+    })
+    document.body.appendChild(bubble)
+    document.addEventListener('pointermove', dabTipGuard, true)
+    window.addEventListener('blur', dabTipHide)
+    window.addEventListener('scroll', dabTipHide, true)
+  }
+  return { onPointerEnter: show, onPointerLeave: hide, onPointerDown: hide }
+}
+
 function dabMakeIcon(store) {
   return function AgentBoardIcon() {
     const h = React.createElement
     const snapshot = React.useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
     const counts = snapshot.projection?.counts ?? {}
-    const unread = counts.finished_unread ?? 0
+    const running = counts.running ?? 0
     const waiting = counts.waiting_user ?? 0
-    return h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '2px', position: 'relative' }, 'aria-hidden': 'true' },
-      h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' },
-        h('rect', { x: 2.5, y: 3, width: 7, height: 5.4, rx: 1.4 }),
-        h('rect', { x: 14.5, y: 15.6, width: 7, height: 5.4, rx: 1.4 }),
-        h('rect', { x: 2.5, y: 15.6, width: 7, height: 5.4, rx: 1.4 }),
-        h('path', { d: 'M6 8.4v3.1a1.5 1.5 0 0 0 1.5 1.5h10.5a1.5 1.5 0 0 1 1.5 1.5v1.1' }),
-        h('path', { d: 'M3.2 15.6v-2.1A1.5 1.5 0 0 1 4.7 12h2.1' })),
-      unread + waiting > 0
+    const unread = counts.finished_unread ?? 0
+    const [wide, setWide] = React.useState(true)
+    const ref = React.useRef(null)
+    const statsRef = React.useRef(null)
+    const placeRef = React.useRef(() => {})
+    React.useLayoutEffect(() => { placeRef.current() })
+    // Same pattern as the Task board entry: numbers at the row's right edge when
+    // the sidebar is expanded, a small badge on the icon when it is collapsed.
+    React.useLayoutEffect(() => {
+      const button = ref.current?.closest('button')
+      if (button == null || typeof ResizeObserver === 'undefined') return undefined
+      if (getComputedStyle(button).position === 'static') button.style.position = 'relative'
+      // Anchor the numbers on the ROW's vertical centre even when an inner
+      // positioned wrapper (icon box) is the containing block.
+      const place = () => {
+        const stats = statsRef.current
+        const parent = stats?.offsetParent
+        if (!stats || !parent) return
+        const b = button.getBoundingClientRect()
+        const p = parent.getBoundingClientRect()
+        stats.style.top = `${Math.round(b.top - p.top + b.height / 2)}px`
+        stats.style.right = `${Math.round(p.right - b.right + 9)}px`
+      }
+      const measure = () => { setWide(button.clientWidth > 44); place() }
+      measure()
+      placeRef.current = place
+      const observer = new ResizeObserver(measure)
+      observer.observe(button)
+      return () => observer.disconnect()
+    }, [])
+    const title = `${running} ${dabT('running')} | ${waiting} ${dabT('waiting')} | ${unread} ${dabT('unread')}`
+    const stat = (value, color) => h('span', { style: { color } }, String(value))
+    const sep = () => h('span', { style: { opacity: 0.5 } }, '|')
+    return h('span', { ref, style: { display: 'inline-flex', alignItems: 'center' } },
+      h('span', { style: { position: 'relative', display: 'inline-flex' }, 'aria-hidden': 'true' },
+        h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' },
+          h('rect', { x: 2.5, y: 3, width: 7, height: 5.4, rx: 1.4 }),
+          h('rect', { x: 14.5, y: 15.6, width: 7, height: 5.4, rx: 1.4 }),
+          h('rect', { x: 2.5, y: 15.6, width: 7, height: 5.4, rx: 1.4 }),
+          h('path', { d: 'M6 8.4v3.1a1.5 1.5 0 0 0 1.5 1.5h10.5a1.5 1.5 0 0 1 1.5 1.5v1.1' }),
+          h('path', { d: 'M3.2 15.6v-2.1A1.5 1.5 0 0 1 4.7 12h2.1' })),
+        !wide && unread + waiting > 0
+          ? h('span', {
+            style: {
+              position: 'absolute', top: '-5px', right: '-8px', minWidth: '13px', height: '13px', borderRadius: '7px', padding: '0 3px',
+              fontSize: '9px', fontWeight: 500, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              background: waiting > 0 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)', color: 'var(--dsw-alias-bg-base)',
+            },
+          }, String(unread + waiting))
+          : null),
+      wide && running + waiting + unread > 0
         ? h('span', {
+          ref: statsRef, 'aria-label': title, ...dabTipHandlers(title),
           style: {
-            position: 'absolute', top: '-6px', right: '-8px', minWidth: '13px', height: '13px', borderRadius: '999px',
-            fontSize: '9px', fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            background: waiting > 0 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)',
-            color: 'var(--dsw-alias-bg-base)', padding: '0 3px',
+            position: 'absolute', right: '9px', top: '50%', transform: 'translateY(-50%)', display: 'inline-flex', alignItems: 'center', gap: '3px',
+            fontSize: '11px', lineHeight: 1, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', color: 'var(--dsw-alias-label-secondary)', cursor: 'default',
           },
-        }, String(unread + waiting))
+        },
+          stat(running, 'var(--dsw-alias-state-info-primary, #3e63dd)'), sep(),
+          stat(waiting, 'var(--dsw-alias-state-warn-primary, #e69842)'), sep(),
+          stat(unread, 'var(--dsw-alias-state-success-primary, #2ea043)'))
         : null)
   }
 }
-
 /** Client plugin entry: styles + store + slot registrations. */
 function apply(ctx) {
   const disposers = []
   DAB_LANG = dabResolveLocale(ctx)
+  try { dabTipHide() } catch { /* ignore */ }
   try {
     const locale = ctx.get?.('locale')
     if (typeof locale?.subscribe === 'function') disposers.push(locale.subscribe(() => { DAB_LANG = dabResolveLocale(ctx) }))
@@ -2771,6 +3052,7 @@ function apply(ctx) {
       try { disposer?.() } catch { /* ignore */ }
     }
     store.destroy()
+    try { dabTipHide() } catch { /* ignore */ }
   }
   if (typeof ctx.effect === 'function') ctx.effect(() => dispose)
   return dispose
