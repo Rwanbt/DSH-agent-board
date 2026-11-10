@@ -628,10 +628,14 @@ export function apply(ctx, config = {}) {
     // An explicit operator chain wins over the deployment default: the board's
     // policy is what the operator authorized for THIS board.
     if (Array.isArray(policy?.routeChain) && policy.routeChain.length > 0) return policy.routeChain[0]
+    // A local-only mandate must not silently fall back to the deployment default:
+    // its locality is unknown to the board (it is a hosted provider route), so
+    // using it would defeat the local-only layer. No route = explicit refusal.
+    if (policy?.locality === 'local') return null
     try {
       const selection = ctx.get?.('agentDefaultModel')?.currentSelection?.()
       if (selection !== null && selection !== undefined && typeof selection.provider === 'string' && typeof selection.model === 'string') {
-        return { provider: selection.provider, model: selection.model }
+        return { provider: selection.provider, model: selection.model, locality: 'remote' }
       }
     } catch { /* optional */ }
     return policy?.routeChain?.[0] ?? null
@@ -653,6 +657,8 @@ export function apply(ctx, config = {}) {
     return {
       ...state.policy,
       allowedProviders: resolved.allowedProviders,
+      deniedProviders: resolved.deniedProviders,
+      locality: resolved.locality,
       allowCloudFallback: resolved.allowCloudFallback,
       maxRetries: resolved.maxRetries,
       maxSwitches: resolved.maxSwitches,
@@ -742,10 +748,11 @@ export function apply(ctx, config = {}) {
         const routePolicy = effectiveRoutePolicy(task)
         if (routePolicy.providersConflict) return { ok: false, reason: 'route_policy_conflict' }
         const route = routeForTask(task)
-        if (route !== null && route !== undefined) {
-          const allowed = isRouteAllowed(route, routePolicy, null)
-          if (!allowed.ok) return { ok: false, reason: allowed.reason }
-        }
+        // No routable model is a refusal, not a silent "use the deployment
+        // default": a local-only layer with no local route lands here.
+        if (route === null || route === undefined) return { ok: false, reason: 'no_route_allowed' }
+        const allowed = isRouteAllowed(route, routePolicy, null)
+        if (!allowed.ok) return { ok: false, reason: allowed.reason }
       }
       // The operator's budget is checked at the ONE launch gate: a manual
       // dispatch, an approval and a tick all count against the same window.
@@ -890,8 +897,11 @@ export function apply(ctx, config = {}) {
     }
     state.assignments.push(assignment)
     // Count the launch against the operator's budget in the SAME step that makes
-    // the assignment durable: a refused launch never consumes a slot.
+    // the assignment durable: a refused launch never consumes a slot. A launch
+    // also issues one provider request, and both ceilings are real because the
+    // snapshot advertises them as enforceable.
     recordBudget('task')
+    recordBudget('request')
     if (proposalId !== null) {
       const proposal = state.proposals.find(entry => entry.id === proposalId)
       if (proposal !== undefined) proposal.status = 'approved'
@@ -1504,6 +1514,9 @@ export function apply(ctx, config = {}) {
       // partial output is classified PARTIAL_STREAM and routed to handoff).
       assignment.retries = (Number(assignment.retries) || 0) + 1
       assignment.status = LEASE_STATUS.RUNNING
+      // Global retry/request ceilings are metered too, or the snapshot would
+      // advertise guarantees the host never applies.
+      recordBudget('retry')
       const delayMs = Math.max(0, Math.min(Number(plan.delayMs) || 0, 60_000))
       assignment.retryAt = Date.now() + delayMs
       const message = `The previous turn failed with ${failure.kind}. Retry the unfinished work in this session. Do not duplicate side effects that already succeeded; re-read the files first. Report the outcome as usual (at most in_review).`
@@ -1520,6 +1533,7 @@ export function apply(ctx, config = {}) {
         const agent = ctx.agents.get(sessionId)
         try {
           if (agent?.followup === undefined) throw new Error('agent is no longer live')
+          recordBudget('request')
           agent.followup({
             id: `msg-agentboard-retry-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
             role: 'user',
@@ -1598,6 +1612,10 @@ export function apply(ctx, config = {}) {
         }
       }
       const attempt = (Number(assignment.attempt) || 0) + 1
+      // A handoff is a provider SWITCH and issues one new request: meter both so
+      // the advertised ceilings stay true.
+      recordBudget('switch')
+      recordBudget('request')
       const key = assignmentKey({ taskId: assignment.taskId, revision: assignment.revision, attempt })
       const sessionIdNext = `session-agentboard-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`
       const switches = (Number(assignment.switches) || 0) + 1

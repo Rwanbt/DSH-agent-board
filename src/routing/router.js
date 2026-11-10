@@ -28,6 +28,13 @@ export function backoffDelay(attempt, { baseMs = 500, capMs = 30_000, retryAfter
 }
 
 export function isRouteAllowed(route, policy, fromRoute) {
+  // A DENY-list wins over everything: the layered resolver reports it, and a
+  // pinned card model must not be able to reach a denied provider.
+  const denied = Array.isArray(policy?.deniedProviders) ? policy.deniedProviders : []
+  if (denied.length > 0 && denied.includes(route.provider)) return { ok: false, reason: 'provider_denied' }
+  // A local-only layer forbids ANY remote route, even when `fromRoute` is not
+  // itself local (a launch has no previous route).
+  if (policy?.locality === 'local' && route.locality === 'remote') return { ok: false, reason: 'local_only_route_required' }
   const allowed = Array.isArray(policy?.allowedProviders) ? policy.allowedProviders : []
   if (allowed.length > 0 && !allowed.includes(route.provider)) return { ok: false, reason: 'provider_not_allowed' }
   const fromLocal = fromRoute?.locality === 'local'
@@ -103,7 +110,11 @@ export function planRoute({
 
   // Stage 3 first for a stream that already produced output: the same request
   // cannot be replayed, so the TASK is handed off to a compatible session.
+  // The switch budget still applies: a handoff to another route IS a switch.
   if (failure?.requiresHandoff === true) {
+    if (switches >= maxSwitches) {
+      return { action: 'blocked', delayMs: 0, nextRoute: null, reason: 'max_switches_reached', cooldownUntil: null }
+    }
     if (next !== null) {
       return { action: 'handoff', delayMs: 0, nextRoute: next, reason: `partial_output_handoff:${failure.kind}`, cooldownUntil: null }
     }
