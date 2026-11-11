@@ -33,6 +33,14 @@ function normalizeTask(raw, ledgerRevision) {
   const runningExecution = executions.find(execution => execution?.outcome === 'running') ?? null
   const lastExecution = executions.length > 0 ? executions[executions.length - 1] : null
   const revision = raw.version ?? raw.revision ?? raw.rev ?? null
+  const workspaceId = typeof raw.workspaceId === 'string' ? raw.workspaceId : ''
+  const claimedBy = typeof raw.claimedBy === 'string' ? raw.claimedBy : null
+  // The real TaskRecord has no `projectId`: `workspaceId` IS the owning project
+  // ("Owning project: a DSH workspace id"). `projectId` keeps its historical
+  // raw-only meaning so no existing consumer changes behaviour; `project` is the
+  // normalized, read-only identity the coordination read model consumes.
+  const hasRawProjectId = typeof raw.projectId === 'string' && raw.projectId !== ''
+  const normalizedProjectId = hasRawProjectId ? raw.projectId : (workspaceId !== '' ? workspaceId : null)
   return {
     id: raw.id,
     system: 'dsh-taskboard',
@@ -42,8 +50,13 @@ function normalizeTask(raw, ledgerRevision) {
     description: typeof raw.description === 'string' ? raw.description : '',
     status: typeof raw.status === 'string' ? raw.status : 'unknown',
     urgency: typeof raw.urgency === 'string' ? raw.urgency : 'normal',
-    workspaceId: typeof raw.workspaceId === 'string' ? raw.workspaceId : '',
+    workspaceId,
     projectId: raw.projectId ?? null,
+    project: {
+      id: normalizedProjectId,
+      workspaceId,
+      source: normalizedProjectId === null ? 'none' : (hasRawProjectId ? 'projectId' : 'workspaceId'),
+    },
     parentId: typeof raw.parentId === 'string' ? raw.parentId : null,
     dependsOn: Array.isArray(raw.dependsOn) ? raw.dependsOn.map(String) : [],
     trashedAt: raw.trashedAt ?? null,
@@ -52,9 +65,13 @@ function normalizeTask(raw, ledgerRevision) {
     version: raw.version ?? null,
     execution: raw.execution ?? null,
     model: raw.model ?? null,
-    claimedBy: typeof raw.claimedBy === 'string' ? raw.claimedBy : null,
+    claimedBy,
     claimedAt: raw.claimedAt ?? null,
-    claim: typeof raw.claimedBy === 'string' ? raw.claimedBy : null,
+    claim: claimedBy,
+    // Read-only alias of the claim holder (`claimedBy`); null when unclaimed. A
+    // lease placeholder (`lease:<id>`) is passed through as the Task Board
+    // reports it, never rewritten.
+    assignee: claimedBy,
     permission: raw.permission ?? null,
     isolation: raw.isolation ?? null,
     branch: typeof raw.branch === 'string' ? raw.branch : null,
@@ -67,6 +84,14 @@ function normalizeTask(raw, ledgerRevision) {
     activeExecutionId: runningExecution?.id ?? null,
     lastExecutionOutcome: lastExecution?.outcome ?? null,
     executionsTotal: executions.length,
+    // NOT present in the real TaskRecord 0.10/0.11 (`TaskRecord` has no
+    // `priority` and no `milestone`; the board's own priority marker is
+    // `urgency`, which is NOT copied here because that would forge a field the
+    // Task Board never sent). Passed through untouched when a future/other board
+    // supplies them; otherwise null. Consumers must treat null as "unknown", not
+    // as "normal".
+    priority: raw.priority ?? null,
+    milestone: raw.milestone ?? null,
     updatedAt: raw.updatedAt ?? null,
     ledgerRevision,
     raw: undefined,
