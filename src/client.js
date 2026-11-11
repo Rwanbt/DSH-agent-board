@@ -4454,6 +4454,8 @@ const DAB_STRINGS = {
     treeView: 'Arbre',
     refresh: 'Rafraîchir',
     search: 'Rechercher un agent, un projet, une tâche…',
+  // Narrow panel: the placeholder must fit next to the three icon-only views.
+  searchShort: 'Rechercher…',
     allProjects: 'Tous les projets',
     filterAttention: 'À traiter',
     filterRecent: 'Récents 24 h',
@@ -4541,7 +4543,7 @@ const DAB_STRINGS = {
     autonomousNotice: 'Exécute dans le mandat configuré',
     orchestratorState: 'État orchestrateur et adaptateurs',
     stateShort: 'État',
-    moreControls: 'Filtres et orchestrateur',
+    moreControls: 'Orchestrateur et actions',
     dismiss: 'Retirer du tableau',
     undismiss: 'Remettre dans le tableau',
     dismissHint: 'Masque cette session des vues « À traiter » et « Récents » (la session n’est pas supprimée ; visible via « Tout » ou la recherche)',
@@ -4721,6 +4723,7 @@ const DAB_STRINGS = {
     treeView: 'Tree',
     refresh: 'Refresh',
     search: 'Search an agent, project, task…',
+  searchShort: 'Search…',
     allProjects: 'All projects',
     filterAttention: 'Needs attention',
     filterRecent: 'Recent 24 h',
@@ -4808,7 +4811,7 @@ const DAB_STRINGS = {
     autonomousNotice: 'Runs inside the configured mandate',
     orchestratorState: 'Orchestrator and adapters status',
     stateShort: 'Status',
-    moreControls: 'Filters and orchestrator',
+    moreControls: 'Orchestrator and actions',
     dismiss: 'Remove from board',
     undismiss: 'Put back on board',
     dismissHint: 'Hides this session from the Attention and Recent views (the session is not deleted; still visible in All or search)',
@@ -5547,7 +5550,7 @@ const DAB_CSS = `
  * ===================================================================== */
 
 /* ---------- header (52-60 px) */
-.dab-toolbar { padding: 8px 16px 7px; gap: 7px; border-bottom: 1px solid var(--dsw-alias-border-l3, transparent); background: var(--dsw-alias-bg-base); }
+.dab-toolbar { position: relative; padding: 8px 16px 7px; gap: 7px; border-bottom: 1px solid var(--dsw-alias-border-l3, transparent); background: var(--dsw-alias-bg-base); }
 .dab-head { display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 40px; }
 .dab-head-ident { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 auto; }
 .dab-head-mark { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 9px;
@@ -5567,6 +5570,14 @@ const DAB_CSS = `
 .dab-seg-btn[aria-pressed="true"] { background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font-weight: 500; }
 .dab-seg-btn:disabled { opacity: .45; cursor: default; }
 .dab-seg-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+/* Icon-only view switch: three IDENTICAL square targets, icon dead-centre.
+   The label is removed from the DOM at that width (see toolbar.js), so no
+   hidden text node or leftover gap can shift the pictogram. */
+.dab-viewswitch[data-icons="true"] { gap: 0; }
+.dab-viewswitch[data-icons="true"] .dab-seg-btn { width: 34px; height: 30px; padding: 0; justify-content: center; }
+.dab-viewswitch[data-icons="true"] .dab-ico { display: block; }
+.dab-chiprow { display: contents; }
+.dab-menu.dab-menu-chips { position: static; }
 .dab-stop { min-height: 30px; gap: 5px; }
 .dab-stop[data-danger="true"]:not([disabled]) { color: var(--dsw-alias-state-error-primary); }
 @media (hover: hover) { .dab-stop[data-danger="true"]:hover:not([disabled]) { background: var(--dsw-alias-interactive-bg-hover-danger); } }
@@ -5738,12 +5749,19 @@ const DAB_CSS = `
   .dab-subtitle { font-size: 10px; line-height: 13px; }
   .dab-head-actions { gap: 4px; }
   .dab-stop { min-height: 30px; padding: 4px 8px; }
-  .dab-stop-text { display: none; }
+  /* The header stop is icon-only at this width; the one inside the menu keeps
+     its word, where the room is available. */
+  .dab-head-actions > .dab-stop .dab-stop-text { display: none; }
   .dab-filters { gap: 6px; flex-wrap: wrap; }
   .dab-search { flex: 1 1 140px; max-width: none; }
-  .dab-chips { order: 3; flex: 1 0 100%; gap: 0; margin: 0 -4px; padding: 0 4px; }
+  .dab-chiprow { display: flex; align-items: center; gap: 6px; order: 3; flex: 1 0 100%; min-width: 0; }
+  .dab-chiprow .dab-chips { flex: 1 1 auto; min-width: 0; gap: 0; }
   .dab-chip-btn { min-height: 32px; }
-  .dab-viewswitch .dab-seg-btn { padding: 5px 7px; }
+  /* Filters now sit at the end of the chip row, right of "History". Their panel
+     is anchored to the toolbar and inset on both sides, so it can never open
+     outside the panel whatever the trigger position. */
+  .dab-menu.dab-menu-chips .dab-menu-pop { left: 10px; right: 10px; width: auto; max-width: none;
+    max-height: min(70vh, 520px); overflow: auto; }
   .dab-shown { display: none; }
   .dab-menu-pop { min-width: 240px; }
   .dab-super { padding: 8px 10px; gap: 8px; min-height: 0; margin-bottom: 10px; }
@@ -5789,6 +5807,10 @@ const DAB_CSS = `
 /* Coarse pointers: real touch targets, no hover-only affordances. */
 @media (pointer: coarse) {
   .dab-chip-btn, .dab-seg-btn { min-height: 40px; }
+  /* Icon-only views stay SQUARE on touch (40x40), not tall 30x40 rectangles:
+     equal width and height keep the icon optically centred. */
+  .dab-viewswitch[data-icons="true"] .dab-seg-btn { width: 40px; height: 40px; }
+  .dab-search { height: 40px; }
   .dab-stat { min-height: 48px; }
   .dab-icon-btn, .dab-menu-btn { width: 40px; height: 40px; }
   .dab-stop { min-height: 40px; }
@@ -7642,7 +7664,7 @@ function DabToolbar(props) {
   const h = React.createElement
   const {
     counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh,
-    ui, setUi, projects, onHistory, narrow, taskStateAvailable, taskStateUnavailableReason, onToggleCompact, agentTotal,
+    ui, setUi, projects, onHistory, narrow, iconOnly, taskStateAvailable, taskStateUnavailableReason, onToggleCompact, agentTotal,
   } = props
   const modeNotice = mode === 'off' ? dabT('offNotice') : mode === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice')
   const notice = secondary ? dabT('secondaryInstance') : stopped ? dabT('stoppedNotice') : modeNotice
@@ -7712,15 +7734,23 @@ function DabToolbar(props) {
       onClick: () => { if (mode !== value) onMode(value) },
     }, dabT(value === 'off' ? 'modeObserve' : value))))
 
-  const viewSwitch = h('div', { className: 'dab-seg dab-viewswitch', role: 'group', 'aria-label': dabT('viewLabel') },
-    DAB_VIEW_OPTIONS.map(([value, labelKey, icon]) => h('button', {
-      key: value,
-      type: 'button',
-      className: 'dab-seg-btn',
-      'aria-pressed': (ui.viewMode ?? 'global') === value ? 'true' : 'false',
-      title: dabT(labelKey),
-      onClick: () => setUi({ viewMode: value }),
-    }, dabIcon(icon), narrow ? null : h('span', { className: 'dab-seg-text' }, dabT(labelKey)))))
+  // Below the label breakpoint the three views become identical square icon
+  // buttons: same width, same height, icon dead-centre. The label is dropped
+  // from the DOM (not merely hidden by CSS) so no empty text node can shift the
+  // icon, and the button keeps an explicit accessible name.
+  const viewSwitch = h('div', {
+    className: 'dab-seg dab-viewswitch', role: 'group', 'aria-label': dabT('viewLabel'),
+    'data-icons': iconOnly === true ? 'true' : 'false',
+  },
+  DAB_VIEW_OPTIONS.map(([value, labelKey, icon]) => h('button', {
+    key: value,
+    type: 'button',
+    className: 'dab-seg-btn',
+    'aria-pressed': (ui.viewMode ?? 'global') === value ? 'true' : 'false',
+    'aria-label': iconOnly === true ? dabT(labelKey) : undefined,
+    title: dabT(labelKey),
+    onClick: () => setUi({ viewMode: value }),
+  }, dabIcon(icon), iconOnly === true ? null : h('span', { className: 'dab-seg-text' }, dabT(labelKey)))))
 
   const chips = h('div', { className: 'dab-chips', role: 'group', 'aria-label': dabT('filterLabel') },
     [['attention', 'filterActive'], ['all', 'filterAll'], ['action', 'filterAction']].map(([value, labelKey]) => h('button', {
@@ -7738,7 +7768,8 @@ function DabToolbar(props) {
   const search = h('label', { className: 'dab-search' },
     h('span', { className: 'dab-search-ico', 'aria-hidden': 'true' }, dabIcon('search')),
     h('input', {
-      type: 'search', className: 'dab-input', placeholder: dabT('search'), 'aria-label': dabT('search'), value: ui.query,
+      type: 'search', className: 'dab-input', placeholder: narrow ? dabT('searchShort') : dabT('search'),
+      'aria-label': dabT('search'), title: dabT('search'), value: ui.query,
       onChange: event => setUi({ query: event.target.value }),
       onKeyDown: event => { if (event.key === 'Escape') setUi({ query: '' }) },
     }))
@@ -7750,6 +7781,16 @@ function DabToolbar(props) {
     h('div', { className: 'dab-menu-row' }, taskStateSelect),
     h('div', { className: 'dab-menu-row dab-menu-row-actions' }, compactToggle, h('span', { className: 'dab-grow' }), clearFilters),
     h('div', { className: 'dab-menu-note' }, `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}`))
+
+  // A single filters trigger, moved into the chip row on a narrow panel: it
+  // sits immediately right of "History", on the same line, and its panel is
+  // anchored to the toolbar so it can never open outside the panel.
+  const filtersMenu = h(DabMenu, {
+    label: dabT('filtersLabel'), icon: 'filter', badge: activeFilterCount,
+    open: filtersOpen, setOpen: setFiltersOpen, className: narrow ? 'dab-menu-chips' : undefined,
+    title: filtersActive ? `${activeFilterCount} ${dabT('filtersLabel')}` : dabT('noFiltersActive'),
+  }, filterPanel)
+  const chipRow = h('div', { className: 'dab-chiprow' }, chips, narrow ? filtersMenu : null)
 
   const settingsPanel = h('div', { className: 'dab-settings-pop' },
     h('div', { className: hostAlert ? 'dab-alert' : 'dab-notice' }, hostDown ? dabT('orchestratorDown') : notice),
@@ -7773,9 +7814,7 @@ function DabToolbar(props) {
           h('div', { className: 'dab-menu-label' }, dabT('orchestratorLabel')),
           modeSeg,
           h('div', { className: 'dab-menu-row dab-menu-row-actions' }, stopButton, h('span', { className: 'dab-grow' }),
-            h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy }, dabT('refresh'))),
-          h('div', { className: 'dab-menu-label' }, dabT('filtersLabel')),
-          filterPanel))
+            h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy }, dabT('refresh')))))
       : null)
 
   return h('header', { className: 'dab-toolbar' },
@@ -7788,14 +7827,11 @@ function DabToolbar(props) {
       headActions),
     h('div', { className: 'dab-filters' },
       search,
-      chips,
+      chipRow,
       h('span', { className: 'dab-grow' }),
       narrow ? null : h('span', { className: 'dab-shown', title: `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}` }, `${visibleCount}/${counts.total}`),
       viewSwitch,
-      h(DabMenu, {
-        label: dabT('filtersLabel'), icon: 'filter', badge: activeFilterCount,
-        open: filtersOpen, setOpen: setFiltersOpen, title: filtersActive ? `${activeFilterCount} ${dabT('filtersLabel')}` : dabT('noFiltersActive'),
-      }, filterPanel)))
+      narrow ? null : filtersMenu))
 }
 
 function DabExecutionList({ host, onApprove, onReject }) {
@@ -7889,6 +7925,12 @@ function DabOrchestratorState({ host, hostError }) {
 
 const DAB_PANEL_ID = 'dsh-agent-board'
 const DAB_UI_KEY = 'dsh-agent-board:ui:v2'
+// Bumped whenever the DEFAULT presentation changes: a preference written by an
+// older build must not pin the obsolete default forever. Before the cockpit the
+// board opened on the projects tree; a payload without this revision is
+// therefore re-read with the cockpit default while every explicit filter,
+// fold and dismissal is preserved.
+const DAB_UI_SCHEMA = 2
 const DAB_VIEW_MODES = Object.freeze(['global', 'projects', 'hierarchy'])
 
 /** UI state survives a panel remount (navigation to a session and back). */
@@ -7931,7 +7973,7 @@ function dabReadUi() {
       expanded: Array.isArray(parsed.expanded) ? parsed.expanded.slice(0, 200) : [],
       collapsed: Array.isArray(parsed.collapsed) ? parsed.collapsed.slice(0, 200) : [],
       dismissed: Array.isArray(parsed.dismissed) ? parsed.dismissed.slice(-500) : [],
-      viewMode: DAB_VIEW_MODES.includes(parsed.viewMode) ? parsed.viewMode : base.viewMode,
+      viewMode: parsed.schema === DAB_UI_SCHEMA && DAB_VIEW_MODES.includes(parsed.viewMode) ? parsed.viewMode : base.viewMode,
       roleFilter: filters.role,
       statusFilter: filters.status,
       taskStateFilter: filters.taskState,
@@ -7952,6 +7994,7 @@ function dabWriteUi(ui) {
     persisted.expanded = persisted.expanded.slice(-200)
     persisted.collapsed = persisted.collapsed.slice(-200)
     persisted.dismissed = persisted.dismissed.slice(-500)
+    persisted.schema = DAB_UI_SCHEMA
     globalThis.localStorage?.setItem(DAB_UI_KEY, JSON.stringify(persisted))
   } catch { /* private mode */ }
 }
@@ -7969,6 +8012,7 @@ function dabMakePage(store, ctx) {
     const [notice, setNotice] = React.useState('')
     const [openError, setOpenError] = React.useState('')
     const [narrow, setNarrow] = React.useState(false)
+    const [iconOnly, setIconOnly] = React.useState(false)
     const [nowBucket, setNowBucket] = React.useState(() => Math.floor(Date.now() / 60000))
     const rootRef = React.useRef(null)
     const scrollRef = React.useRef(null)
@@ -7999,6 +8043,7 @@ function dabMakePage(store, ctx) {
       const observer = new ResizeObserver(entries => {
         const width = entries[0]?.contentRect?.width ?? element.clientWidth
         setNarrow(width > 0 && width <= 720)
+        setIconOnly(width > 0 && width <= 900)
       })
       observer.observe(element)
       return () => observer.disconnect()
@@ -8275,7 +8320,7 @@ function dabMakePage(store, ctx) {
     },
     h(DabToolbar, {
       counts, visibleCount: overview.counts.shown, agentTotal: overview.counts.agents, mode, busy, hostDown, canStop, stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
-      secondary: host.instance?.primary === false, ui, setUi, projects: projectList, narrow,
+      secondary: host.instance?.primary === false, ui, setUi, projects: projectList, narrow, iconOnly,
       taskStateAvailable: hierarchy.totals.taskStateAvailable,
       taskStateUnavailableReason: hierarchy.workspace.taskboard !== null && hierarchy.workspace.taskboard !== undefined && hierarchy.workspace.taskboard.available === false
         ? (typeof hierarchy.workspace.taskboard.reason === 'string' ? hierarchy.workspace.taskboard.reason : null)

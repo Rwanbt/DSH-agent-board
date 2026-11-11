@@ -24,6 +24,12 @@
 
 const DAB_PANEL_ID = 'dsh-agent-board'
 const DAB_UI_KEY = 'dsh-agent-board:ui:v2'
+// Bumped whenever the DEFAULT presentation changes: a preference written by an
+// older build must not pin the obsolete default forever. Before the cockpit the
+// board opened on the projects tree; a payload without this revision is
+// therefore re-read with the cockpit default while every explicit filter,
+// fold and dismissal is preserved.
+const DAB_UI_SCHEMA = 2
 const DAB_VIEW_MODES = Object.freeze(['global', 'projects', 'hierarchy'])
 
 /** UI state survives a panel remount (navigation to a session and back). */
@@ -66,7 +72,7 @@ function dabReadUi() {
       expanded: Array.isArray(parsed.expanded) ? parsed.expanded.slice(0, 200) : [],
       collapsed: Array.isArray(parsed.collapsed) ? parsed.collapsed.slice(0, 200) : [],
       dismissed: Array.isArray(parsed.dismissed) ? parsed.dismissed.slice(-500) : [],
-      viewMode: DAB_VIEW_MODES.includes(parsed.viewMode) ? parsed.viewMode : base.viewMode,
+      viewMode: parsed.schema === DAB_UI_SCHEMA && DAB_VIEW_MODES.includes(parsed.viewMode) ? parsed.viewMode : base.viewMode,
       roleFilter: filters.role,
       statusFilter: filters.status,
       taskStateFilter: filters.taskState,
@@ -87,6 +93,7 @@ function dabWriteUi(ui) {
     persisted.expanded = persisted.expanded.slice(-200)
     persisted.collapsed = persisted.collapsed.slice(-200)
     persisted.dismissed = persisted.dismissed.slice(-500)
+    persisted.schema = DAB_UI_SCHEMA
     globalThis.localStorage?.setItem(DAB_UI_KEY, JSON.stringify(persisted))
   } catch { /* private mode */ }
 }
@@ -104,6 +111,7 @@ function dabMakePage(store, ctx) {
     const [notice, setNotice] = React.useState('')
     const [openError, setOpenError] = React.useState('')
     const [narrow, setNarrow] = React.useState(false)
+    const [iconOnly, setIconOnly] = React.useState(false)
     const [nowBucket, setNowBucket] = React.useState(() => Math.floor(Date.now() / 60000))
     const rootRef = React.useRef(null)
     const scrollRef = React.useRef(null)
@@ -134,6 +142,7 @@ function dabMakePage(store, ctx) {
       const observer = new ResizeObserver(entries => {
         const width = entries[0]?.contentRect?.width ?? element.clientWidth
         setNarrow(width > 0 && width <= 720)
+        setIconOnly(width > 0 && width <= 900)
       })
       observer.observe(element)
       return () => observer.disconnect()
@@ -410,7 +419,7 @@ function dabMakePage(store, ctx) {
     },
     h(DabToolbar, {
       counts, visibleCount: overview.counts.shown, agentTotal: overview.counts.agents, mode, busy, hostDown, canStop, stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
-      secondary: host.instance?.primary === false, ui, setUi, projects: projectList, narrow,
+      secondary: host.instance?.primary === false, ui, setUi, projects: projectList, narrow, iconOnly,
       taskStateAvailable: hierarchy.totals.taskStateAvailable,
       taskStateUnavailableReason: hierarchy.workspace.taskboard !== null && hierarchy.workspace.taskboard !== undefined && hierarchy.workspace.taskboard.available === false
         ? (typeof hierarchy.workspace.taskboard.reason === 'string' ? hierarchy.workspace.taskboard.reason : null)

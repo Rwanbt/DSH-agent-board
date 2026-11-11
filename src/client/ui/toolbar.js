@@ -141,7 +141,7 @@ function DabToolbar(props) {
   const h = React.createElement
   const {
     counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh,
-    ui, setUi, projects, onHistory, narrow, taskStateAvailable, taskStateUnavailableReason, onToggleCompact, agentTotal,
+    ui, setUi, projects, onHistory, narrow, iconOnly, taskStateAvailable, taskStateUnavailableReason, onToggleCompact, agentTotal,
   } = props
   const modeNotice = mode === 'off' ? dabT('offNotice') : mode === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice')
   const notice = secondary ? dabT('secondaryInstance') : stopped ? dabT('stoppedNotice') : modeNotice
@@ -211,15 +211,23 @@ function DabToolbar(props) {
       onClick: () => { if (mode !== value) onMode(value) },
     }, dabT(value === 'off' ? 'modeObserve' : value))))
 
-  const viewSwitch = h('div', { className: 'dab-seg dab-viewswitch', role: 'group', 'aria-label': dabT('viewLabel') },
-    DAB_VIEW_OPTIONS.map(([value, labelKey, icon]) => h('button', {
-      key: value,
-      type: 'button',
-      className: 'dab-seg-btn',
-      'aria-pressed': (ui.viewMode ?? 'global') === value ? 'true' : 'false',
-      title: dabT(labelKey),
-      onClick: () => setUi({ viewMode: value }),
-    }, dabIcon(icon), narrow ? null : h('span', { className: 'dab-seg-text' }, dabT(labelKey)))))
+  // Below the label breakpoint the three views become identical square icon
+  // buttons: same width, same height, icon dead-centre. The label is dropped
+  // from the DOM (not merely hidden by CSS) so no empty text node can shift the
+  // icon, and the button keeps an explicit accessible name.
+  const viewSwitch = h('div', {
+    className: 'dab-seg dab-viewswitch', role: 'group', 'aria-label': dabT('viewLabel'),
+    'data-icons': iconOnly === true ? 'true' : 'false',
+  },
+  DAB_VIEW_OPTIONS.map(([value, labelKey, icon]) => h('button', {
+    key: value,
+    type: 'button',
+    className: 'dab-seg-btn',
+    'aria-pressed': (ui.viewMode ?? 'global') === value ? 'true' : 'false',
+    'aria-label': iconOnly === true ? dabT(labelKey) : undefined,
+    title: dabT(labelKey),
+    onClick: () => setUi({ viewMode: value }),
+  }, dabIcon(icon), iconOnly === true ? null : h('span', { className: 'dab-seg-text' }, dabT(labelKey)))))
 
   const chips = h('div', { className: 'dab-chips', role: 'group', 'aria-label': dabT('filterLabel') },
     [['attention', 'filterActive'], ['all', 'filterAll'], ['action', 'filterAction']].map(([value, labelKey]) => h('button', {
@@ -237,7 +245,8 @@ function DabToolbar(props) {
   const search = h('label', { className: 'dab-search' },
     h('span', { className: 'dab-search-ico', 'aria-hidden': 'true' }, dabIcon('search')),
     h('input', {
-      type: 'search', className: 'dab-input', placeholder: dabT('search'), 'aria-label': dabT('search'), value: ui.query,
+      type: 'search', className: 'dab-input', placeholder: narrow ? dabT('searchShort') : dabT('search'),
+      'aria-label': dabT('search'), title: dabT('search'), value: ui.query,
       onChange: event => setUi({ query: event.target.value }),
       onKeyDown: event => { if (event.key === 'Escape') setUi({ query: '' }) },
     }))
@@ -249,6 +258,16 @@ function DabToolbar(props) {
     h('div', { className: 'dab-menu-row' }, taskStateSelect),
     h('div', { className: 'dab-menu-row dab-menu-row-actions' }, compactToggle, h('span', { className: 'dab-grow' }), clearFilters),
     h('div', { className: 'dab-menu-note' }, `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}`))
+
+  // A single filters trigger, moved into the chip row on a narrow panel: it
+  // sits immediately right of "History", on the same line, and its panel is
+  // anchored to the toolbar so it can never open outside the panel.
+  const filtersMenu = h(DabMenu, {
+    label: dabT('filtersLabel'), icon: 'filter', badge: activeFilterCount,
+    open: filtersOpen, setOpen: setFiltersOpen, className: narrow ? 'dab-menu-chips' : undefined,
+    title: filtersActive ? `${activeFilterCount} ${dabT('filtersLabel')}` : dabT('noFiltersActive'),
+  }, filterPanel)
+  const chipRow = h('div', { className: 'dab-chiprow' }, chips, narrow ? filtersMenu : null)
 
   const settingsPanel = h('div', { className: 'dab-settings-pop' },
     h('div', { className: hostAlert ? 'dab-alert' : 'dab-notice' }, hostDown ? dabT('orchestratorDown') : notice),
@@ -272,9 +291,7 @@ function DabToolbar(props) {
           h('div', { className: 'dab-menu-label' }, dabT('orchestratorLabel')),
           modeSeg,
           h('div', { className: 'dab-menu-row dab-menu-row-actions' }, stopButton, h('span', { className: 'dab-grow' }),
-            h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy }, dabT('refresh'))),
-          h('div', { className: 'dab-menu-label' }, dabT('filtersLabel')),
-          filterPanel))
+            h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy }, dabT('refresh')))))
       : null)
 
   return h('header', { className: 'dab-toolbar' },
@@ -287,14 +304,11 @@ function DabToolbar(props) {
       headActions),
     h('div', { className: 'dab-filters' },
       search,
-      chips,
+      chipRow,
       h('span', { className: 'dab-grow' }),
       narrow ? null : h('span', { className: 'dab-shown', title: `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}` }, `${visibleCount}/${counts.total}`),
       viewSwitch,
-      h(DabMenu, {
-        label: dabT('filtersLabel'), icon: 'filter', badge: activeFilterCount,
-        open: filtersOpen, setOpen: setFiltersOpen, title: filtersActive ? `${activeFilterCount} ${dabT('filtersLabel')}` : dabT('noFiltersActive'),
-      }, filterPanel)))
+      narrow ? null : filtersMenu))
 }
 
 function DabExecutionList({ host, onApprove, onReject }) {

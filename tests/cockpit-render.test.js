@@ -77,7 +77,8 @@ const React = {
 
 const CODE = `${[...sources.values()].join('\n\n')}
 return {
-  dabT, DAB_STRINGS, DAB_CSS,
+  dabT, DAB_STRINGS, DAB_CSS, DAB_UI_KEY,
+  dabReadUi, dabWriteUi,
   setLang: value => { DAB_LANG = value },
   DabToolbar, DabOverviewStats, DabGlobalOverview, DabGlobalCard, DabSuperOrchestratorBar,
   DabInspector, DabAgentPreview,
@@ -266,6 +267,65 @@ test('narrow toolbar: one-line header, stop reachable, no five-row stack', () =>
   assert.equal(byClass(tree, 'dab-chips').length, 1)
   // Three popovers replace the secondary controls: settings, filters, more.
   assert.equal(byClass(tree, 'dab-menu').length, 3)
+})
+
+test('narrow toolbar: the filters trigger sits on the chip row, right of History', () => {
+  const tree = render(cockpit.DabToolbar(toolbarProps({ narrow: true })))
+  const chipRow = byClass(tree, 'dab-chiprow')[0]
+  assert.ok(chipRow !== undefined, 'the chip row exists')
+  assert.deepEqual(byClass(chipRow, 'dab-chip-btn').map(chip => textOf(chip)), ['Live', 'All', 'Needs action', 'History'])
+  // One single filters popover, inside the chip row and AFTER the history chip.
+  const inRow = byClass(chipRow, 'dab-menu')
+  assert.equal(inRow.length, 1)
+  assert.match(inRow[0].props.className, /dab-menu-chips/)
+  assert.equal(chipRow.children[chipRow.children.length - 1], inRow[0], 'filters come after History')
+  assert.equal(byTag(inRow[0], 'button')[0].props['aria-label'], 'Filters')
+  // The header keeps the settings and the orchestrator menu only: the filter
+  // bar ends on the view switch, the popover lives in the chip row.
+  const bar = byClass(tree, 'dab-filters')[0]
+  const last = bar.children[bar.children.length - 1]
+  assert.equal(byClass(last, 'dab-viewswitch').length, 1, 'no second filters trigger at the end of the bar')
+})
+
+test('icon-only view switch: three square targets, no hidden label, explicit names', () => {
+  const narrow = render(cockpit.DabToolbar(toolbarProps({ narrow: true, iconOnly: true })))
+  const views = byClass(narrow, 'dab-viewswitch')[0]
+  assert.equal(views.props['data-icons'], 'true')
+  // The label leaves the DOM entirely: nothing can shift the pictogram.
+  assert.equal(byClass(views, 'dab-seg-text').length, 0)
+  const buttons = byTag(views, 'button')
+  assert.deepEqual(buttons.map(button => button.props['aria-label']), ['Overview', 'Projects', 'Hierarchy'])
+  assert.equal(buttons[0].props['aria-pressed'], 'true')
+  // A wide toolbar keeps the visible labels.
+  const wide = render(cockpit.DabToolbar(toolbarProps()))
+  assert.equal(byClass(byClass(wide, 'dab-viewswitch')[0], 'dab-seg-text').length, 3)
+  assert.equal(byClass(wide, 'dab-viewswitch')[0].props['data-icons'], 'false')
+})
+
+test('a legacy preference cannot pin the pre-cockpit projects default', () => {
+  const store = new Map()
+  globalThis.localStorage = { getItem: key => store.get(key) ?? null, setItem: (key, value) => store.set(key, value) }
+  try {
+    // Payload written before the cockpit shipped: the projects tree was the
+    // default. It must not survive the upgrade; explicit filters must.
+    store.set(cockpit.DAB_UI_KEY, JSON.stringify({ viewMode: 'projects', filter: 'all', roleFilter: 'generic' }))
+    const migrated = cockpit.dabReadUi()
+    assert.equal(migrated.viewMode, 'global')
+    assert.equal(migrated.filter, 'all')
+    assert.equal(migrated.roleFilter, 'generic')
+    // The next write stamps the schema, so an EXPLICIT choice made after the
+    // upgrade is honoured again.
+    cockpit.dabWriteUi(migrated)
+    const written = JSON.parse(store.get(cockpit.DAB_UI_KEY))
+    assert.equal(written.schema, 2)
+    store.set(cockpit.DAB_UI_KEY, JSON.stringify({ ...written, viewMode: 'projects' }))
+    assert.equal(cockpit.dabReadUi().viewMode, 'projects')
+    // No stored value at all: the cockpit.
+    store.clear()
+    assert.equal(cockpit.dabReadUi().viewMode, 'global')
+  } finally {
+    delete globalThis.localStorage
+  }
 })
 
 // ---------------------------------------------------------------- indicators
@@ -506,6 +566,11 @@ test('cockpit CSS: panel-width responsive, theme tokens, adaptive grids', () => 
   // The preview must stay IN FLOW inside the sheet: an absolute preview collapses
   // the bottom sheet to its grip (regression caught on the integrated host).
   assert.match(css, /\.dab-insp-panel \.dab-inspector \{ position: static; inset: auto;/)
+  // The narrow filter popover is clamped to the panel, never outside the screen.
+  assert.match(css, /\.dab-menu\.dab-menu-chips \.dab-menu-pop \{ left: 10px; right: 10px;/)
+  // Icon-only views are identical rectangles, and SQUARE on touch.
+  assert.match(css, /\.dab-viewswitch\[data-icons="true"\] \.dab-seg-btn \{ width: 34px; height: 30px;/)
+  assert.match(css, /\.dab-viewswitch\[data-icons="true"\] \.dab-seg-btn \{ width: 40px; height: 40px; \}/)
   // The status dot stays bottom-left, clear of the role pictogram.
   assert.match(css, /\.dab-avatar-dot \{ position: absolute; left: 0; right: auto; bottom: 0;/)
   // Motion is opt-out.

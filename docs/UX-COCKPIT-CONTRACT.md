@@ -130,9 +130,20 @@ Precedence: **attention > active > review > other**.
   status, Task Board state, compact, clear).
 - Narrow (< 720 px): the title block keeps the mockup's compact two lines (title +
   agent count) with the live dot and the `⋯` menu on the same row — no second row
-  of controls; the menu holds mode, stop, filters, refresh; the filter area is
-  search + view toggle, then a horizontally scrollable chip row. No five-row
-  stack.
+  of controls; the menu holds the supervision mode, stop and refresh; the filter
+  area is search + the three icon-only views on the first line, then a horizontally
+  scrollable chip row whose LAST control is the filters trigger, immediately right
+  of `Historique`. No five-row stack.
+- The three views are identical square targets when their label is dropped
+  (34×30, 40×40 on a coarse pointer): the label leaves the DOM, so no hidden text
+  node can shift the pictogram, and each button keeps an explicit `aria-label`.
+- On a narrow panel the filters popover is anchored to the toolbar and inset on
+  both sides (`left/right: 10px`, `width: auto`, `max-height: min(70vh, 520px)`,
+  scrollable): it can never open outside the panel, whatever the trigger position.
+- A preference written before the cockpit (no `schema` field) no longer pins the
+  old projects default: `viewMode` falls back to `global`, every explicit filter,
+  fold and dismissal is preserved, and the next write stamps `schema: 2` so a
+  choice made after the upgrade is honoured again.
 
 ### `DabSuperOrchestratorBar` (`ui/superbar.js`)
 
