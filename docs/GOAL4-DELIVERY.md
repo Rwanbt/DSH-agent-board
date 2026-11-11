@@ -175,8 +175,9 @@ b3bdd35 feat(supervision): Super Orchestrator layer, delegation limits and host 
 b9db3a6 build(client): bundle the mascot, hierarchy and supervision modules
 ab73c76 docs(goal4): integration notes, delivery evidence and independent review
 9fc9810 docs(goal4): record the pushed branch and pull request
-<follow-up> feat(roles): deduce undeclared roles from declared text (marked "déduit")
-<this commit> docs(goal4): record the role deduction and the final 411-test result
+9fc9810 docs(goal4): record the pushed branch and pull request
+a90c992 feat(roles): deduce undeclared roles from declared text (marked "déduit")
+8cd3e89 docs(goal4): record the role deduction and the final 411-test result
 ```
 
 The working tree is clean after this commit. The branch was pushed to
