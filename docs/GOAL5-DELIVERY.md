@@ -234,3 +234,44 @@ which is why the other captures show 0 in "À traiter".
 - The isolated host used a simulated model provider and a simulated Task Board;
   a real provider outage, a real Task Board and a real Android device were not
   exercised in this round.
+
+## 9. Follow-up (2026-11-11, same branch): default view and mobile controls
+
+Three product corrections reported after the first review, all verified on the
+integrated host:
+
+1. **The cockpit is really the default view.** The default was already `global`
+   in code, but a preference written by an older build (`viewMode: 'projects'`,
+   no `schema`) kept pinning the projects tree. `dabReadUi()` now compares the
+   stored payload with `DAB_UI_SCHEMA = 2`: a legacy payload is read with the
+   cockpit default while every explicit filter, fold and dismissal is preserved,
+   and the next write stamps `schema: 2` so an explicit post-upgrade choice is
+   honoured again. Verified live: legacy `{viewMode:'projects', filter:'all'}` →
+   `data-view="global"` with "Tout" still pressed; choosing "Projets" after the
+   upgrade survives a reload (`schema: 2` in storage).
+2. **The three view buttons keep a centred, identical pictogram.** Below
+   900 px the label is removed from the DOM (not merely hidden by CSS) and the
+   buttons become identical squares — 34×30 px, **40×40 px on a coarse pointer**
+   — with `justify-content: center` and `display: block` on the SVG. Previously
+   the coarse-pointer rule forced `min-height: 40px` on 30 px-wide buttons, so
+   the target (and its selected pill) became a tall rectangle around a 16 px
+   icon. The search placeholder also shortens to `Rechercher…` at that width so
+   the three views do not squeeze it.
+3. **The filter trigger sits right of `Historique`, on the same line.** On a
+   narrow panel it moved out of the search line into the chip row, whose last
+   control it is now; the `⋯` menu keeps the supervision mode, stop and refresh
+   only (renamed « Orchestrateur et actions »), so there is a single filters
+   entry point. Its popover is anchored to the toolbar and inset 10 px on both
+   sides with a 70 vh / 520 px scrollable cap, which removes any possibility of
+   opening outside the panel (the old `right: 0` panel could overflow a narrow
+   column in a wide window). The stop button inside that menu now shows its word
+   (« Arrêt »), the header one stays icon-only.
+
+Evidence: `docs/e2e/screenshots/cockpit-390-light.png`,
+`cockpit-360-light.png`, `cockpit-320-light.png`, `cockpit-768-light.png`,
+`cockpit-390-menu.png` (re-captured on the integrated host), plus the render
+tests « narrow toolbar: the filters trigger sits on the chip row, right of
+History », « icon-only view switch: three square targets… », « a legacy
+preference cannot pin the pre-cockpit projects default » and the CSS assertions
+in `tests/cockpit-render.test.js`. Full suite: **451/451 pass**, bundle rebuilt
+(23 modules), no horizontal overflow at 320/360/390/768.

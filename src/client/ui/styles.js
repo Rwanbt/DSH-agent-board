@@ -383,7 +383,7 @@ const DAB_CSS = `
  * ===================================================================== */
 
 /* ---------- header (52-60 px) */
-.dab-toolbar { padding: 8px 16px 7px; gap: 7px; border-bottom: 1px solid var(--dsw-alias-border-l3, transparent); background: var(--dsw-alias-bg-base); }
+.dab-toolbar { position: relative; padding: 8px 16px 7px; gap: 7px; border-bottom: 1px solid var(--dsw-alias-border-l3, transparent); background: var(--dsw-alias-bg-base); }
 .dab-head { display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 40px; }
 .dab-head-ident { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 auto; }
 .dab-head-mark { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 9px;
@@ -403,6 +403,14 @@ const DAB_CSS = `
 .dab-seg-btn[aria-pressed="true"] { background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font-weight: 500; }
 .dab-seg-btn:disabled { opacity: .45; cursor: default; }
 .dab-seg-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+/* Icon-only view switch: three IDENTICAL square targets, icon dead-centre.
+   The label is removed from the DOM at that width (see toolbar.js), so no
+   hidden text node or leftover gap can shift the pictogram. */
+.dab-viewswitch[data-icons="true"] { gap: 0; }
+.dab-viewswitch[data-icons="true"] .dab-seg-btn { width: 34px; height: 30px; padding: 0; justify-content: center; }
+.dab-viewswitch[data-icons="true"] .dab-ico { display: block; }
+.dab-chiprow { display: contents; }
+.dab-menu.dab-menu-chips { position: static; }
 .dab-stop { min-height: 30px; gap: 5px; }
 .dab-stop[data-danger="true"]:not([disabled]) { color: var(--dsw-alias-state-error-primary); }
 @media (hover: hover) { .dab-stop[data-danger="true"]:hover:not([disabled]) { background: var(--dsw-alias-interactive-bg-hover-danger); } }
@@ -574,12 +582,19 @@ const DAB_CSS = `
   .dab-subtitle { font-size: 10px; line-height: 13px; }
   .dab-head-actions { gap: 4px; }
   .dab-stop { min-height: 30px; padding: 4px 8px; }
-  .dab-stop-text { display: none; }
+  /* The header stop is icon-only at this width; the one inside the menu keeps
+     its word, where the room is available. */
+  .dab-head-actions > .dab-stop .dab-stop-text { display: none; }
   .dab-filters { gap: 6px; flex-wrap: wrap; }
   .dab-search { flex: 1 1 140px; max-width: none; }
-  .dab-chips { order: 3; flex: 1 0 100%; gap: 0; margin: 0 -4px; padding: 0 4px; }
+  .dab-chiprow { display: flex; align-items: center; gap: 6px; order: 3; flex: 1 0 100%; min-width: 0; }
+  .dab-chiprow .dab-chips { flex: 1 1 auto; min-width: 0; gap: 0; }
   .dab-chip-btn { min-height: 32px; }
-  .dab-viewswitch .dab-seg-btn { padding: 5px 7px; }
+  /* Filters now sit at the end of the chip row, right of "History". Their panel
+     is anchored to the toolbar and inset on both sides, so it can never open
+     outside the panel whatever the trigger position. */
+  .dab-menu.dab-menu-chips .dab-menu-pop { left: 10px; right: 10px; width: auto; max-width: none;
+    max-height: min(70vh, 520px); overflow: auto; }
   .dab-shown { display: none; }
   .dab-menu-pop { min-width: 240px; }
   .dab-super { padding: 8px 10px; gap: 8px; min-height: 0; margin-bottom: 10px; }
@@ -625,6 +640,10 @@ const DAB_CSS = `
 /* Coarse pointers: real touch targets, no hover-only affordances. */
 @media (pointer: coarse) {
   .dab-chip-btn, .dab-seg-btn { min-height: 40px; }
+  /* Icon-only views stay SQUARE on touch (40x40), not tall 30x40 rectangles:
+     equal width and height keep the icon optically centred. */
+  .dab-viewswitch[data-icons="true"] .dab-seg-btn { width: 40px; height: 40px; }
+  .dab-search { height: 40px; }
   .dab-stat { min-height: 48px; }
   .dab-icon-btn, .dab-menu-btn { width: 40px; height: 40px; }
   .dab-stop { min-height: 40px; }
