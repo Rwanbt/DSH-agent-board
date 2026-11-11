@@ -17,6 +17,26 @@ future storage migration. Canonical definitions live in
 | `RoutePolicy` | `routeChain[]` entries `{ provider, model, locality?, reasoningEffort? }` | an explicit chain, no implicit “any model” fallback |
 | `ProviderHealthEvent` | `{ failures, lastFailureKind, lastFailureAt, cooldownUntil }` per provider | a provider in cooldown is skipped |
 | `AuditEvent` | `{ at, type, ... }` | append-only JSONL, bounded in memory |
+| `AgentRole` | `{ id, label, family, shape, color, gradient[], scope, emblem? }` | 15 approved roles; palette equals `src/assets/agent-bots/roles.json`; colour = identity, never status |
+| `AgentAvatarModel` | `{ roleId, roleLabel, family, shape, color, resolution, rawRole, variant, size, src, emblem, status, tone, taskState, taskTone, altParts[] }` | pure view model; unknown role ⇒ `roleId:null`, `src:null`, no guessed mascot; the raw value is preserved |
+| `SupervisionPayload` | host `/state`.`supervision`: `{ version, at, workspace, projects[], blocks[], crossProjectDependencies[], recommendations[], capabilities, capabilityReasons, limits, taskboard }` | workspace node is `synthetic:true` (the supervision layer, not an agent); recommendations are `applies:false`; unavailable capabilities carry a reason |
+| `CoordinationModel` | `{ available, reason, source, tasks[], dependencies[], capabilities, notes }` | read-only mapping of the Task Board ledger; no write method exists |
+
+## Supervision and delegation rules
+
+- The Super Orchestrator is the **host supervision layer**, not an AI agent: it
+  creates no session, holds no model and cannot widen a permission.
+- A project orchestration node only exists for an agent whose **declared** role
+  resolves to `orchestrator`; otherwise the hierarchy shows a gap.
+- Every delegation is gated by `authorizeLaunch` **then** `evaluateDelegation`
+  (when the supervision layer is enabled), and the gate can only narrow:
+  concurrency, sliding-hour budget, depth, cross-project and dependency-cycle
+  refusals are explicit and happen before any lease/session.
+- `assignment.delegation.depth` is read from the journal; a handoff continues the
+  delegation record instead of deepening it.
+- Task Board coordination capabilities are reported, never emulated: with the real
+  Task Board there is no board-facing write API, so reassignment/priority/blocked/
+  Kanban stay `unavailable`/`proposal_only`.
 
 Statuses: `running`, `waiting_user`, `recovering`, `finished_unread`, `finished_read`,
 `failed`, `idle`, `unknown`, `unavailable`. Assignment statuses: `starting`, `running`, `recovering`,

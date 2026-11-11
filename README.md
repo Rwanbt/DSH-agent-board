@@ -20,6 +20,12 @@ execution record while the board keeps the model failover.
 > was exercised **without user credentials**; a real provider outage and a real
 > Task Board extension were **not** exercised. See
 > [docs/LIMITATIONS.md](docs/LIMITATIONS.md) before trusting a claim.
+>
+> **GOAL 4 (mascots + supervision):** the 15 approved mascots, the reusable
+> `AgentAvatar`, the role-aware cards, the workspace → project → orchestrator
+> hierarchy and the Super Orchestrator supervision layer are implemented and
+> tested; the Task Board coordination stays read-only with documented proposals
+> (`docs/MASCOTS-SUPER-ORCHESTRATOR.md`).
 
 ## Branches
 
@@ -29,12 +35,25 @@ execution record while the board keeps the model failover.
 | `dev` | Integration branch: GOAL 1 UX + GOAL 2 runtime audit/corrections + GOAL 3 supervision/orchestration, the branch to build and try. |
 | `fix/agent-board-runtime-e2e` | Feature history of the GOAL 2 corrections and review rounds (merged into `dev`). |
 | `goal3/supervision-orchestration` | GOAL 3 work: unified execution contract, layered routing/budget/fencing, supervision fidelity, adapters, benchmarks, reviews (to be merged into `dev`). |
+| `feat/agent-board-mascots-super-orchestrator` | GOAL 4: the 15 Mascot SVGs byte-identical, role registry/aliases, `AgentAvatar`, role-aware cards + hierarchy + filters, the Super Orchestrator supervision layer and the Task Board coordination read model. |
 
 The board never pushes, merges or opens a PR on a forge: the forge adapters are
 read-only and the Task Board stays the sole owner of tickets and executions.
 
 ## What it does
 
+- **Mascots & roles** — the 15 approved SVG roles (6 silhouettes, exact palette),
+  resolved from a **declared** role/name only (aliases documented; a model never
+  implies a role; an unknown role gets a neutral generic identity). The mascot
+  colour is identity; runtime status is a separate dot. Assets are inlined as data
+  URIs, so there is no external request and no CSP exception.
+- **Supervision** — a workspace-level Super Orchestrator **layer** (not an AI
+  agent) that aggregates real project/agent/task facts, exposes blocks and
+  cross-project dependencies, proposes (never applies) reassignments, and gates
+  board-owned delegations with concurrency/hourly/depth/cycle limits. The panel
+  shows a `Projets` view (the existing view and semantics, now with mascots and
+  roles on the cards) and a `Hiérarchie` view, with role/status/
+  Task-Board-state filters.
 - **Cards & branches** — sessions from the native `sessions.list` snapshot,
   sub-agents from the `subagentCatalog` projection and/or `parentId`, grouped by
   DSH workspace, collapsible sub-trees, compact mode, responsive down to a phone
@@ -207,7 +226,9 @@ handler runs.
 
 ```sh
 node --test tests/            # full suite (unit + contract + host integration + security + perf)
+node scripts/build-assets.mjs # regenerate the inlined SVG data URIs (never hand-edit)
 node scripts/build-client.mjs # regenerate src/client.js after editing src/client/**
+node scripts/mascot-gallery.mjs # write an HTML gallery of the 32 approved SVGs
 node scripts/smoke-host.mjs   # fast module/DAG smoke check
 node scripts/e2e/run-e2e.mjs  # isolated real DSH host + fake provider + simulated contract
 node scripts/bench/projection-bench.mjs   # 5/20/50/150 agents, 1000 sessions
@@ -216,8 +237,10 @@ node scripts/bench/projection-bench.mjs   # 5/20/50/150 agents, 1000 sessions
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Mascots, supervision & Super Orchestrator](docs/MASCOTS-SUPER-ORCHESTRATOR.md)
 - [Contracts & adapters](docs/CONTRACTS.md)
 - [Task Board execution contract (proposed, simulated)](docs/TASKBOARD-CONTRACT.md)
+- [Task Board coordination (read-only, proposals)](docs/TASKBOARD-COORDINATION.md)
 - [Failover, routing policy and budgets](docs/FAILOVER.md)
 - [Agent engine adapters](docs/ADAPTERS.md)
 - [Performance benchmarks](docs/PERFORMANCE.md)
