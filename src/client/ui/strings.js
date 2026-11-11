@@ -111,6 +111,7 @@ const DAB_STRINGS = {
     undismiss: 'Remettre dans le tableau',
     dismissHint: 'Masque cette session des vues « À traiter » et « Récents » (la session n’est pas supprimée ; visible via « Tout » ou la recherche)',
     viewLabel: 'Vue',
+    viewModeLabel: 'Mode de vue',
     filterLabel: 'Filtre',
     orchestratorLabel: 'Orchestrateur',
     syncOk: 'Task Board synchronisé',
@@ -120,6 +121,115 @@ const DAB_STRINGS = {
     keyboardHint: 'Entrée : ouvrir · Espace : aperçu · double-clic : ouvrir',
     projects: 'Projets',
     ago: 'il y a',
+    // ---- supervision / hiérarchie / identités (GOAL 4)
+    role: 'Rôle',
+    roleAll: 'Tous les rôles',
+    roleGeneric: 'Générique',
+    roleFamilyLabel: 'Famille de rôle',
+    roleDeclared: 'Rôle déclaré',
+    roleDeclaredAlias: 'rôle déclaré (alias)',
+    noDeclaredRole: 'Rôle non déclaré',
+    genericIdentity: 'Identité générique',
+    familyGovernance: 'Gouvernance / connaissances',
+    familyCoordination: 'Coordination / supervision',
+    familyExecution: 'Production / optimisation',
+    familyQuality: 'Revue / audit',
+    familyValidation: 'Validation / tests',
+    familyProtection: 'Protection / règles',
+    statusFilterLabel: 'Statut',
+    statusAll: 'Tous les statuts',
+    viewProjects: 'Projets',
+    viewHierarchy: 'Hiérarchie',
+    taskStateFilterLabel: 'État Task Board',
+    taskStateAll: 'Tous les états',
+    taskStateUnavailable: 'Task Board non lu',
+    taskStateUnavailable: 'Task Board indisponible',
+    taskStateTitle: 'État de la tâche liée (Task Board)',
+    taskTodo: 'À faire',
+    taskInProgress: 'En cours',
+    taskInReview: 'En revue',
+    taskBlocked: 'Bloquée',
+    taskDone: 'Terminée',
+    taskCanceled: 'Annulée',
+    taskArchived: 'Archivée',
+    agent: 'Agent',
+    agents: 'agents',
+    // Count forms (fr): the UI never prints "1 projets".
+    projectSingular: 'projet',
+    projectPlural: 'projets',
+    agentSingular: 'agent',
+    agentPlural: 'agents',
+    unreadSingular: 'non lu',
+    unreadPlural: 'non lus',
+    interruptedSingular: 'interrompu',
+    interruptedPlural: 'interrompus',
+    blockedSingular: 'bloqué',
+    blockedPlural: 'bloqués',
+    turnSingular: 'tour',
+    turnPlural: 'tours',
+    stepSingular: 'étape',
+    stepPlural: 'étapes',
+    shownSingular: 'affiché',
+    shownPlural: 'affichés',
+    supervision: 'Supervision',
+    supervisionLayer: 'Couche de supervision (non un agent)',
+    superOrchestrator: 'Super-orchestrateur',
+    supervisionExpand: 'Afficher la supervision',
+    supervisionCollapse: 'Masquer la supervision',
+    supervisionUnavailable: 'Supervision non publiée par l’hôte : structure et comptages réels, capacités indisponibles.',
+    taskboardUnavailable: 'Task Board indisponible pour la lecture',
+    supervisionWorkspace: 'Espace de travail',
+    supervisionMode: 'Mode',
+    supervisionBlocked: 'bloqués',
+    supervisionDependencies: 'Dépendances inter-projets',
+    supervisionNoDependencies: 'Aucune dépendance inter-projets connue.',
+    supervisionBlocks: 'Blocages',
+    supervisionNoBlocks: 'Aucun blocage connu.',
+    supervisionRecommendations: 'Recommandations',
+    supervisionNoRecommendations: 'Aucune recommandation.',
+    recommendationNotApplied: 'proposition — non appliquée',
+    recommendationDelegate: 'Délégation',
+    recommendationUnblock: 'Déblocage',
+    recommendationPriority: 'Priorité',
+    recommendationReassign: 'Réaffectation',
+    supervisionCapabilities: 'Capacités',
+    supervisionCapabilityReason: 'Raison',
+    supervisionStatusActive: 'Actif',
+    supervisionStatusIdle: 'Inactif (observation)',
+    supervisionStatusBlocked: 'Bloqué',
+    supervisionStatusUnknown: 'Inconnu',
+    supervisionSynthetic: 'Couche de supervision de l’hôte : aucune session ne lui correspond.',
+    supervisionDelegation: 'Délégation : {inFlight} en cours · profondeur {depth} · {concurrent} simultanées · {hourly}/h',
+    capObserve: 'Observer',
+    capRecommend: 'Recommander',
+    capDelegate: 'Déléguer',
+    capReassign: 'Réaffecter',
+    capPriority: 'Prioriser',
+    capReceiveReports: 'Rapports d’orchestrateur',
+    capKanbanWrite: 'Écriture Task Board',
+    capabilityAvailable: 'Disponible',
+    capabilityGated: 'Sous conditions',
+    capabilityProposalOnly: 'Proposition seulement',
+    capabilityUnavailable: 'Non disponible',
+    capReasonSupervisionUnavailable: 'hôte : supervision non publiée',
+    capReasonGated: 'soumise aux limites et à l’accord de l’opérateur',
+    capReasonProposalOnly: 'aucune écriture : proposition uniquement',
+    capReasonReadOnly: 'Task Board en lecture seule depuis le board',
+    capReasonNoChannel: 'aucun canal de rapport d’orchestrateur dans cette version',
+    capReasonDisabled: 'désactivée par la politique',
+    capReasonUnknown: 'raison non fournie par l’hôte',
+    hierarchy: 'Hiérarchie',
+    hierarchyOrchestratorMissing: 'Aucun orchestrateur déclaré',
+    hierarchyOrchestratorMissingHint: 'Aucun agent de ce projet ne déclare le rôle orchestrator : le board n’en crée jamais.',
+    hierarchyAgentsCount: '{n} agents',
+    hierarchyHiddenByFilter: '{n} masqués par le filtre',
+    hierarchyNoAgents: 'Aucun agent visible dans ce projet.',
+    hierarchyEmpty: 'Aucun agent ne correspond aux filtres.',
+    hierarchyTeamOf: 'Équipe de {name}',
+    activityReal: 'Activité réelle : {activity}',
+    emptyFiltered: 'Aucun agent ne correspond aux filtres actifs.',
+    clearFilters: 'Effacer les filtres',
+    noActivity: 'Activité inconnue',
   },
   en: {
     title: 'Agent Board',
@@ -226,6 +336,7 @@ const DAB_STRINGS = {
     undismiss: 'Put back on board',
     dismissHint: 'Hides this session from the Attention and Recent views (the session is not deleted; still visible in All or search)',
     viewLabel: 'View',
+    viewModeLabel: 'View mode',
     filterLabel: 'Filter',
     orchestratorLabel: 'Orchestrator',
     syncOk: 'Task Board synced',
@@ -235,6 +346,115 @@ const DAB_STRINGS = {
     keyboardHint: 'Enter: open · Space: preview · double-click: open',
     projects: 'Projects',
     ago: 'ago',
+    // ---- supervision / hierarchy / identities (GOAL 4)
+    role: 'Role',
+    roleAll: 'All roles',
+    roleGeneric: 'Generic',
+    roleFamilyLabel: 'Role family',
+    roleDeclared: 'Declared role',
+    roleDeclaredAlias: 'declared role (alias)',
+    noDeclaredRole: 'No declared role',
+    genericIdentity: 'Generic identity',
+    familyGovernance: 'Governance / knowledge',
+    familyCoordination: 'Coordination / monitoring',
+    familyExecution: 'Production / optimization',
+    familyQuality: 'Review / audit',
+    familyValidation: 'Validation / testing',
+    familyProtection: 'Protection / rules',
+    statusFilterLabel: 'Status',
+    statusAll: 'All statuses',
+    viewProjects: 'Projects',
+    viewHierarchy: 'Hierarchy',
+    taskStateFilterLabel: 'Task Board state',
+    taskStateAll: 'All states',
+    taskStateUnavailable: 'Task Board not read',
+    taskStateUnavailable: 'Task Board unavailable',
+    taskStateTitle: 'Linked Task Board state',
+    taskTodo: 'Todo',
+    taskInProgress: 'In progress',
+    taskInReview: 'In review',
+    taskBlocked: 'Blocked',
+    taskDone: 'Done',
+    taskCanceled: 'Canceled',
+    taskArchived: 'Archived',
+    agent: 'Agent',
+    agents: 'agents',
+    // Count forms (en): 1 project / 2 projects.
+    projectSingular: 'project',
+    projectPlural: 'projects',
+    agentSingular: 'agent',
+    agentPlural: 'agents',
+    unreadSingular: 'unread',
+    unreadPlural: 'unread',
+    interruptedSingular: 'interrupted',
+    interruptedPlural: 'interrupted',
+    blockedSingular: 'blocked',
+    blockedPlural: 'blocked',
+    turnSingular: 'turn',
+    turnPlural: 'turns',
+    stepSingular: 'step',
+    stepPlural: 'steps',
+    shownSingular: 'shown',
+    shownPlural: 'shown',
+    supervision: 'Supervision',
+    supervisionLayer: 'Supervision layer (not an agent)',
+    superOrchestrator: 'Super orchestrator',
+    supervisionExpand: 'Show supervision',
+    supervisionCollapse: 'Hide supervision',
+    supervisionUnavailable: 'Supervision not published by the host: real structure and counts, capabilities unavailable.',
+    taskboardUnavailable: 'Task Board unavailable for reading',
+    supervisionWorkspace: 'Workspace',
+    supervisionMode: 'Mode',
+    supervisionBlocked: 'blocked',
+    supervisionDependencies: 'Cross-project dependencies',
+    supervisionNoDependencies: 'No known cross-project dependency.',
+    supervisionBlocks: 'Blocking items',
+    supervisionNoBlocks: 'No known blocking item.',
+    supervisionRecommendations: 'Recommendations',
+    supervisionNoRecommendations: 'No recommendation.',
+    recommendationNotApplied: 'proposal — not applied',
+    recommendationDelegate: 'Delegation',
+    recommendationUnblock: 'Unblock',
+    recommendationPriority: 'Priority',
+    recommendationReassign: 'Reassignment',
+    supervisionCapabilities: 'Capabilities',
+    supervisionCapabilityReason: 'Reason',
+    supervisionStatusActive: 'Active',
+    supervisionStatusIdle: 'Idle (observing)',
+    supervisionStatusBlocked: 'Blocked',
+    supervisionStatusUnknown: 'Unknown',
+    supervisionSynthetic: 'Host supervision layer: no session backs it.',
+    supervisionDelegation: 'Delegation: {inFlight} in flight · depth {depth} · {concurrent} concurrent · {hourly}/h',
+    capObserve: 'Observe',
+    capRecommend: 'Recommend',
+    capDelegate: 'Delegate',
+    capReassign: 'Reassign',
+    capPriority: 'Set priority',
+    capReceiveReports: 'Orchestrator reports',
+    capKanbanWrite: 'Task Board writes',
+    capabilityAvailable: 'Available',
+    capabilityGated: 'Gated',
+    capabilityProposalOnly: 'Proposal only',
+    capabilityUnavailable: 'Unavailable',
+    capReasonSupervisionUnavailable: 'host: supervision not published',
+    capReasonGated: 'subject to limits and operator approval',
+    capReasonProposalOnly: 'no write path: proposal only',
+    capReasonReadOnly: 'Task Board is read-only from the board',
+    capReasonNoChannel: 'no orchestrator report channel in this build',
+    capReasonDisabled: 'disabled by policy',
+    capReasonUnknown: 'no reason provided by the host',
+    hierarchy: 'Hierarchy',
+    hierarchyOrchestratorMissing: 'No declared orchestrator',
+    hierarchyOrchestratorMissingHint: 'No agent in this project declares the orchestrator role: the board never creates one.',
+    hierarchyAgentsCount: '{n} agents',
+    hierarchyHiddenByFilter: '{n} hidden by the filter',
+    hierarchyNoAgents: 'No visible agent in this project.',
+    hierarchyEmpty: 'No agent matches the filters.',
+    hierarchyTeamOf: 'Team of {name}',
+    activityReal: 'Real activity: {activity}',
+    emptyFiltered: 'No agent matches the active filters.',
+    clearFilters: 'Clear filters',
+    noActivity: 'Activity unknown',
   },
 }
 
@@ -279,6 +499,84 @@ const DAB_STATUS_TEXT = {
 function dabStatusLabel(status) {
   return dabT(DAB_STATUS_TEXT[status] ?? 'statusUnknown')
 }
+
+/** Task Board workflow state: a SEPARATE vocabulary from the agent statuses. */
+const DAB_TASK_STATE_TEXT = {
+  todo: 'taskTodo',
+  in_progress: 'taskInProgress',
+  in_review: 'taskInReview',
+  blocked: 'taskBlocked',
+  done: 'taskDone',
+  canceled: 'taskCanceled',
+  archived: 'taskArchived',
+}
+
+function dabTaskStateLabel(state) {
+  const key = DAB_TASK_STATE_TEXT[state]
+  return key === undefined ? null : dabT(key)
+}
+
+/**
+ * Translated count noun with a real singular form ("projet"/"projets"). Used
+ * where the number is rendered separately (counters, chips).
+ */
+function dabCountNoun(count, singularKey, pluralKey) {
+  const value = Number(count) || 0
+  const key = typeof pluralKeyFor === 'function'
+    ? pluralKeyFor(value, singularKey, pluralKey)
+    : (Math.abs(value) === 1 ? singularKey : pluralKey)
+  return dabT(key)
+}
+
+/** Translated count with a real singular form (the UI must never print
+ * "1 projets"). The pure key choice lives in board/hierarchy.js. */
+function dabCountLabel(count, singularKey, pluralKey) {
+  const value = Number(count) || 0
+  return `${value} ${dabCountNoun(value, singularKey, pluralKey)}`
+}
+
+/** "3 tours · 9 étapes" / "1 turn · 2 steps" — real counters only. */
+function dabTurnStepLabel(turns, steps) {
+  return `${dabCountLabel(turns, 'turnSingular', 'turnPlural')} · ${dabCountLabel(steps, 'stepSingular', 'stepPlural')}`
+}
+
+const DAB_FAMILY_TEXT = {
+  governance: 'familyGovernance',
+  coordination: 'familyCoordination',
+  execution: 'familyExecution',
+  quality: 'familyQuality',
+  validation: 'familyValidation',
+  protection: 'familyProtection',
+}
+
+function dabFamilyLabel(family) {
+  const key = DAB_FAMILY_TEXT[family]
+  return key === undefined ? null : dabT(key)
+}
+
+const DAB_SUPERVISION_STATUS_TEXT = {
+  active: 'supervisionStatusActive',
+  idle: 'supervisionStatusIdle',
+  blocked: 'supervisionStatusBlocked',
+}
+
+function dabSupervisionStatusLabel(status) {
+  const key = DAB_SUPERVISION_STATUS_TEXT[status]
+  return key === undefined ? dabT('supervisionStatusUnknown') : dabT(key)
+}
+
+const DAB_RECOMMENDATION_TEXT = {
+  delegate: 'recommendationDelegate',
+  unblock: 'recommendationUnblock',
+  priority: 'recommendationPriority',
+  reassign: 'recommendationReassign',
+}
+
+function dabRecommendationLabel(kind) {
+  const key = DAB_RECOMMENDATION_TEXT[kind]
+  return key === undefined ? String(kind ?? '') : dabT(key)
+}
+
 
 function dabWaitingLabel(action) {
   if (action === 'approval') return dabT('waitingApproval')

@@ -23,7 +23,12 @@ const DAB_UI_KEY = 'dsh-agent-board:ui:v2'
 const DAB_MEMORY = { scrollTop: 0, selectedId: null }
 
 function dabDefaultUi() {
-  return { filter: 'attention', query: '', project: null, compact: false, folded: [], expanded: [], collapsed: [], dismissed: [], treeLimit: {} }
+  return {
+    filter: 'attention', query: '', project: null, compact: false,
+    folded: [], expanded: [], collapsed: [], dismissed: [], treeLimit: {},
+    // GOAL 4 additive preferences (validated and bounded on read).
+    viewMode: 'projects', roleFilter: null, statusFilter: null, taskStateFilter: null, supervisionOpen: null,
+  }
 }
 
 function dabReadUi() {
@@ -32,6 +37,13 @@ function dabReadUi() {
     const raw = globalThis.localStorage?.getItem(DAB_UI_KEY)
     if (!raw) return base
     const parsed = JSON.parse(raw)
+    // Role/status/task filters are re-validated by the pure hierarchy module: an
+    // unknown persisted value can never select an invisible pseudo-status.
+    const filters = normalizeHierarchyFilters({
+      role: parsed.roleFilter,
+      status: parsed.statusFilter,
+      taskState: parsed.taskStateFilter,
+    })
     return {
       ...base,
       filter: VIEW_FILTERS.includes(parsed.filter) ? parsed.filter : base.filter,
@@ -41,6 +53,11 @@ function dabReadUi() {
       expanded: Array.isArray(parsed.expanded) ? parsed.expanded.slice(0, 200) : [],
       collapsed: Array.isArray(parsed.collapsed) ? parsed.collapsed.slice(0, 200) : [],
       dismissed: Array.isArray(parsed.dismissed) ? parsed.dismissed.slice(-500) : [],
+      viewMode: parsed.viewMode === 'hierarchy' ? 'hierarchy' : 'projects',
+      roleFilter: filters.role,
+      statusFilter: filters.status,
+      taskStateFilter: filters.taskState,
+      supervisionOpen: typeof parsed.supervisionOpen === 'boolean' ? parsed.supervisionOpen : null,
     }
   } catch {
     return base
@@ -121,8 +138,53 @@ function dabMakePage(store, ctx) {
     const counts = React.useMemo(() => boardCounts(projection), [projection])
     const projectList = React.useMemo(() => projectOptions(projection), [projection])
 
+    const mode = typeof host.mode === 'string' ? host.mode : 'off'
+    // The host publishes the supervision payload (GOAL 4). A missing/foreign
+    // value is `null`: the hierarchy then renders structure and real counts only.
+    const supervision = host.supervision !== null && typeof host.supervision === 'object' && !Array.isArray(host.supervision)
+      ? host.supervision
+      : null
+    const taskStates = React.useMemo(() => (typeof taskStateIndex === 'function' ? taskStateIndex(supervision) : null), [supervision])
+    const filters = React.useMemo(() => normalizeHierarchyFilters({
+      role: ui.roleFilter, status: ui.statusFilter, taskState: ui.taskStateFilter,
+    }), [ui.roleFilter, ui.statusFilter, ui.taskStateFilter])
+    const filtersActive = filters.role !== null || filters.status !== null || filters.taskState !== null
+
+    // Fold state of the rendered projects (computed identically for the board
+    // and the hierarchy, so a fold is never out of sync between views).
+    const foldedProjects = React.useMemo(() => {
+      const set = new Set()
+      for (const project of view.projects) {
+        const folded = project.unassigned
+          ? !foldedSet.has(`open:${project.id}`) && ui.query === '' && ui.project !== project.id
+          : foldedSet.has(project.id)
+        if (folded) set.add(project.id)
+      }
+      return set
+    }, [view.projects, foldedSet, ui.query, ui.project])
+
+    // Existing view, narrowed by the explicit agent filters. buildBoardView
+    // still owns visibility, attention and ordering; this only removes entries
+    // the operator filtered out.
+    const filteredView = React.useMemo(() => filterBoardViewByAgent(view, filters, { projection, taskStates }),
+      [view, projection, filters, taskStates])
+
+    // The hierarchy is rebuilt only when its real inputs change: a compact-mode
+    // toggle or a selection never rebuilds it.
+    const hierarchy = React.useMemo(() => buildHierarchyView(projection, view, supervision, {
+      filters, taskStates, foldedProjects, mode,
+    }), [projection, view, supervision, filters, taskStates, foldedProjects, mode])
+
     // Every width keeps the overview: all projects, each foldable.
-    const shownProjects = view.projects
+    const shownProjects = React.useMemo(() => {
+      if (ui.viewMode === 'hierarchy') return []
+      return filteredView.projects.map(project => {
+        const entry = hierarchy.projectsById.get(project.id)
+        return entry === undefined
+          ? project
+          : { ...project, orchestrator: entry.orchestrator, hierarchyCounts: entry.counts }
+      })
+    }, [filteredView, hierarchy, ui.viewMode])
 
     const selectedNode = selectedId !== null ? projection.byId.get(selectedId) ?? null : null
     const parentNode = selectedNode && selectedNode.parentId && !selectedNode.orphan && !selectedNode.parentCycle
@@ -237,21 +299,37 @@ function dabMakePage(store, ctx) {
       }
     }
 
-    const mode = typeof host.mode === 'string' ? host.mode : 'off'
     const hostDown = snapshot.hostError !== null && snapshot.hostError !== undefined && host.sync === null
     const canStop = (host.assignments ?? []).some(assignment => assignment.status === 'running' || assignment.status === 'starting')
-    const ctxValue = { selectedId, arbiter, onToggleBranch, onRevealHidden, nowBucket }
+    const ctxValue = {
+      selectedId, arbiter, onToggleBranch, onRevealHidden, nowBucket,
+      roles: hierarchy.roles,
+      taskStates,
+      onFoldProject: project => onFold(project.unassigned ? `open:${project.id}` : project.id),
+    }
+    // Collapsed by default when a single project exists; the operator's explicit
+    // choice (persisted) always wins.
+    const supervisionOpen = ui.supervisionOpen === null || ui.supervisionOpen === undefined
+      ? hierarchy.projects.length !== 1
+      : ui.supervisionOpen === true
 
-    const empty = shownProjects.length === 0
+    const empty = shownProjects.length === 0 && ui.viewMode !== 'hierarchy'
       ? h('div', { className: 'dab-empty' },
-        h('div', null, ui.query !== '' ? dabT('emptySearch') : dabT('emptyAttention')),
-        ui.query === '' ? h('div', { className: 'dab-muted' }, dabT('emptyHint')) : null,
-        ui.query === '' ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setHistoryOpen(true) }, dabIcon('history'), ` ${dabT('history')}`) : null)
+        h('div', null, ui.query !== '' ? dabT('emptySearch') : (filtersActive ? dabT('emptyFiltered') : dabT('emptyAttention'))),
+        ui.query === '' && !filtersActive ? h('div', { className: 'dab-muted' }, dabT('emptyHint')) : null,
+        filtersActive
+          ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setUi({ roleFilter: null, statusFilter: null, taskStateFilter: null }) }, dabT('clearFilters'))
+          : null,
+        ui.query === '' && !filtersActive ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setHistoryOpen(true) }, dabIcon('history'), ` ${dabT('history')}`) : null)
       : null
 
     return h('div', { className: 'dab-root', ref: rootRef, 'data-dsh-agent-board': '', 'data-narrow': narrow ? 'true' : 'false' },
       h(DabToolbar, {
-        counts, visibleCount: view.visibleCount, mode, busy, hostDown, canStop, ui, setUi, projects: projectList, narrow,
+        counts, visibleCount: filteredView.visibleCount, mode, busy, hostDown, canStop, ui, setUi, projects: projectList, narrow,
+        taskStateAvailable: hierarchy.totals.taskStateAvailable,
+        taskStateUnavailableReason: hierarchy.workspace.taskboard !== null && hierarchy.workspace.taskboard !== undefined && hierarchy.workspace.taskboard.available === false
+          ? (typeof hierarchy.workspace.taskboard.reason === 'string' ? hierarchy.workspace.taskboard.reason : null)
+          : null,
         stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
         secondary: host.instance?.primary === false,
         onMode: value => act('mode', () => store.setMode(value)),
@@ -264,23 +342,38 @@ function dabMakePage(store, ctx) {
       h('div', { className: 'dab-main' },
         h('div', { className: 'dab-scroll', ref: scrollRef, onScroll: event => { DAB_MEMORY.scrollTop = event.currentTarget.scrollTop } },
           notice !== '' ? h('div', { className: 'dab-alert', role: 'status', style: { marginBottom: '8px' } }, notice) : null,
+          h(DabSupervisionBand, {
+            workspace: hierarchy.workspace,
+            totals: hierarchy.totals,
+            projects: hierarchy.projects,
+            open: supervisionOpen,
+            onToggle: () => setUi({ supervisionOpen: !supervisionOpen }),
+          }),
           h(DabExecutionList, { host, onApprove: id => act('approve', () => store.decide(id, true)), onReject: id => act('reject', () => store.decide(id, false)) }),
           empty,
-          h('div', { className: 'dab-projects' }, shownProjects.map(project => h(DabProjectGroup, {
-            key: project.id, project, ctx: ctxValue, compact: ui.compact,
-            // "Unassigned" starts folded (opt-in), every real project starts open.
-            folded: project.unassigned
-              ? !foldedSet.has(`open:${project.id}`) && ui.query === '' && ui.project !== project.id
-              : foldedSet.has(project.id),
-            onFold: id => onFold(project.unassigned ? `open:${id}` : id),
-            treeLimit: ui.treeLimit[project.id] ?? DEFAULT_TREE_LIMIT,
-            onMoreTrees,
-          })))),
+          ui.viewMode === 'hierarchy'
+            ? h(DabHierarchyView, { hierarchy, ctx: ctxValue, compact: ui.compact })
+            : h('div', { className: 'dab-projects' }, shownProjects.map(project => h(DabProjectGroup, {
+              key: project.id, project, ctx: ctxValue, compact: ui.compact,
+              // "Unassigned" starts folded (opt-in), every real project starts open.
+              folded: project.unassigned
+                ? !foldedSet.has(`open:${project.id}`) && ui.query === '' && ui.project !== project.id
+                : foldedSet.has(project.id),
+              onFold: id => onFold(project.unassigned ? `open:${id}` : id),
+              treeLimit: ui.treeLimit[project.id] ?? DEFAULT_TREE_LIMIT,
+              onMoreTrees,
+            })))),
         selectedNode !== null
-          ? h(DabAgentPreview, { node: selectedNode, parent: parentNode, onOpen: openSession, onSelect: selectNode, onClose: () => setSelectedId(null), openError, onDismiss, dismissed: dismissedSet.has(selectedNode.id) })
+          ? h(DabAgentPreview, {
+            node: selectedNode, parent: parentNode, onOpen: openSession, onSelect: selectNode, onClose: () => setSelectedId(null), openError, onDismiss, dismissed: dismissedSet.has(selectedNode.id),
+            role: hierarchy.roles.get(selectedNode.id) ?? null,
+            taskState: selectedNode.taskId !== null && selectedNode.taskId !== undefined && taskStates instanceof Map
+              ? taskStates.get(String(selectedNode.taskId)) ?? null
+              : null,
+          })
           : null),
       historyOpen
-        ? h(DabHistoryDrawer, { projection, project: ui.project, selectedId, arbiter, onClose: () => setHistoryOpen(false) })
+        ? h(DabHistoryDrawer, { projection, project: ui.project, selectedId, arbiter, onClose: () => setHistoryOpen(false), roles: hierarchy.roles, taskStates })
         : null,
     )
   }

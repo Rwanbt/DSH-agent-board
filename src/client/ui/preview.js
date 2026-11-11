@@ -6,11 +6,15 @@
  * @module dsh-agent-board/client/ui/preview
  */
 
-function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, onDismiss, dismissed }) {
+function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, onDismiss, dismissed, role, taskState }) {
   const h = React.createElement
   const [more, setMore] = React.useState(false)
   React.useEffect(() => { setMore(false) }, [node?.id])
   if (node === null || node === undefined) return null
+  const resolvedRole = role ?? (typeof dabResolveAgentRole === 'function' ? dabResolveAgentRole(node.role) : { roleId: null, roleLabel: null, family: null, source: 'generic', raw: node.role ?? null })
+  const roleText = resolvedRole?.roleLabel ?? (typeof node.role === 'string' && node.role !== '' ? node.role : null)
+  const roleFamily = typeof dabFamilyLabel === 'function' ? dabFamilyLabel(resolvedRole?.family) : null
+  const taskLabel = typeof dabTaskStateLabel === 'function' && typeof taskState === 'string' ? dabTaskStateLabel(taskState) : null
   const preview = node.preview ?? { text: '', final: false }
   const hasFinal = preview.final === true && typeof preview.text === 'string' && preview.text !== ''
   const line = hasFinal ? lastUsefulLine(preview.text) : ''
@@ -20,6 +24,8 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
     facts.push(h('dt', { key: `${key}-t` }, label), h('dd', { key: `${key}-d`, className: mono ? 'dab-mono' : undefined }, value))
   }
   fact('project', dabT('project'), node.projectId === 'unassigned' ? dabT('unassigned') : node.projectTitle)
+  fact('role', dabT('role'), roleText === null ? null : `${roleText}${roleFamily ? ` · ${roleFamily}` : ''}${resolvedRole?.source === 'alias' ? ` (${dabT('roleDeclaredAlias')})` : ''}`)
+  fact('taskState', dabT('taskStateTitle'), taskLabel)
   fact('provider', dabT('provider'), node.model?.provider, true)
   fact('model', dabT('model'), dabModelChipText(node.model), true)
   fact('modelSource', dabT('modelSource'), node.model?.source === 'unknown' ? null : (node.model.source === 'assignment' ? dabT('modelAssignment') : dabT('modelNative')))
@@ -35,7 +41,7 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
   } else if (node.parentContested) {
     fact('parent', dabT('parent'), `${dabT('contest')} (${(node.parentCandidates ?? []).join(', ')})`, true)
   }
-  if (node.activity) fact('activity', dabT('activity'), `${node.activity.turns} ${dabT('turns')} · ${node.activity.steps} ${dabT('steps')}`)
+  if (node.activity) fact('activity', dabT('activity'), dabTurnStepLabel(node.activity.turns, node.activity.steps))
   fact('cwd', dabT('directory'), node.cwd, true)
   fact('session', dabT('session'), node.id, true)
   // A route switch must stay visible: never show only the LAST provider.
@@ -69,7 +75,24 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
         'data-source': typeof node.model?.source === 'string' ? node.model.source : 'unknown',
         title: dabModelTitle(node.model),
       }, dabModelChipText(node.model) ?? dabT('noModel')),
-      node.role ? h('span', { className: 'dab-tag' }, node.role) : null,
+      roleText !== null
+        ? h('span', {
+          className: 'dab-role-chip',
+          'data-resolution': resolvedRole?.source ?? 'generic',
+          title: [dabT('role'), roleText, roleFamily].filter(Boolean).join(' · '),
+        }, roleText)
+        : null,
+      roleFamily !== null
+        ? h('span', { className: 'dab-family-chip', title: `${dabT('roleFamilyLabel')} : ${roleFamily}` }, roleFamily)
+        : null,
+      taskLabel !== null
+        ? h('span', {
+          className: 'dab-task-chip',
+          'data-state': taskState,
+          'data-tone': typeof AGENT_TASK_STATE_TONE === 'object' ? AGENT_TASK_STATE_TONE[taskState] ?? 'idle' : 'idle',
+          title: `${dabT('taskStateTitle')} — ${taskLabel}`,
+        }, h('span', { className: 'dab-task-dot', 'aria-hidden': 'true' }), taskLabel)
+        : null,
       node.origin === 'subagent' ? h('span', { className: 'dab-tag' }, dabT('subagent')) : null),
     node.status === 'waiting_user'
       ? h('div', { className: 'dab-wait', style: { whiteSpace: 'normal' } }, node.waitingDetail ?? dabWaitingLabel(node.expectedAction))
@@ -82,7 +105,7 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
       ? h('button', { type: 'button', className: 'dab-linkish', 'aria-expanded': more, onClick: () => setMore(value => !value) }, more ? dabT('seeLess') : dabT('seeMore'))
       : null,
     !hasFinal && node.activity
-      ? h('div', { className: 'dab-muted' }, `${dabT('activity')} : ${node.activity.turns} ${dabT('turns')} · ${node.activity.steps} ${dabT('steps')}`)
+      ? h('div', { className: 'dab-muted' }, `${dabT('activity')} : ${dabTurnStepLabel(node.activity.turns, node.activity.steps)}`)
       : null,
     h('div', { className: 'dab-actions' },
       h('button', { type: 'button', className: 'dab-btn', 'aria-pressed': 'false', onClick: () => onOpen(node.id), 'data-testid': 'dab-open' }, `↗ ${dabT('openSession')}`),
