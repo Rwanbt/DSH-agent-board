@@ -128,6 +128,9 @@ const DAB_STRINGS = {
     roleFamilyLabel: 'Famille de rôle',
     roleDeclared: 'Rôle déclaré',
     roleDeclaredAlias: 'rôle déclaré (alias)',
+    roleInferred: 'déduit',
+    roleInferredDefault: 'Rôle déduit par défaut (aucun rôle déclaré ni mot-clé de rôle)',
+    roleInferredFrom: 'Rôle déduit du texte déclaré (« {signal} »)',
     noDeclaredRole: 'Rôle non déclaré',
     genericIdentity: 'Identité générique',
     familyGovernance: 'Gouvernance / connaissances',
@@ -353,6 +356,9 @@ const DAB_STRINGS = {
     roleFamilyLabel: 'Role family',
     roleDeclared: 'Declared role',
     roleDeclaredAlias: 'declared role (alias)',
+    roleInferred: 'deduced',
+    roleInferredDefault: 'Role deduced by default (no declared role, no role keyword)',
+    roleInferredFrom: 'Role deduced from declared text (“{signal}”)',
     noDeclaredRole: 'No declared role',
     genericIdentity: 'Generic identity',
     familyGovernance: 'Governance / knowledge',
@@ -480,6 +486,21 @@ function dabT(key, vars) {
   const raw = (DAB_STRINGS[DAB_LANG] ?? DAB_STRINGS.en)[key] ?? DAB_STRINGS.en[key] ?? key
   if (vars === undefined) return raw
   return raw.replace(/\{(\w+)\}/g, (_, name) => String(vars[name] ?? ''))
+}
+
+/**
+ * Human-readable provenance of a DEDUCED role: the matched declared-text token,
+ * or the explicit "no signal" default. Declared/generic roles return null (they
+ * do not need an inference explanation).
+ */
+function dabInferenceReason(role) {
+  if (role === null || role === undefined || role.source !== 'inferred') return null
+  const inference = role.inference
+  if (inference === null || typeof inference !== 'object') return dabT('roleInferred')
+  if (inference.defaulted === true) return dabT('roleInferredDefault')
+  const signal = typeof inference.token === 'string' && inference.token !== '' ? inference.token : inference.rule
+  if (typeof signal === 'string' && signal !== '') return dabT('roleInferredFrom', { signal })
+  return dabT('roleInferredDefault')
 }
 
 const DAB_STATUS_TEXT = {

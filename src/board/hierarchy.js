@@ -28,7 +28,7 @@
  */
 
 import { buildBoardView } from './view.js'
-import { AGENT_ROLE_IDS, AGENT_STATUS_TONE, AGENT_TASK_STATE_TONE, dabResolveAgentRole } from '../contracts/agent-roles.js'
+import { AGENT_ROLE_IDS, AGENT_STATUS_TONE, AGENT_TASK_STATE_TONE, dabResolveRoleForNode } from '../contracts/agent-roles.js'
 
 export const WORKSPACE_ROLE_ID = 'super_orchestrator'
 export const PROJECT_ORCHESTRATOR_ROLE_ID = 'orchestrator'
@@ -107,21 +107,49 @@ export function taskStateIndex(supervision) {
   return index
 }
 
+/** Task Board task titles indexed by task id; null when the integration is absent. */
+export function taskTitleIndex(supervision) {
+  const taskboard = supervision?.taskboard
+  if (!isPlainObject(taskboard) || taskboard.available !== true || !Array.isArray(taskboard.tasks)) return null
+  const index = new Map()
+  for (const task of taskboard.tasks) {
+    if (!isPlainObject(task) || typeof task.id !== 'string') continue
+    if (typeof task.title === 'string' && task.title !== '') index.set(task.id, task.title)
+  }
+  return index.size > 0 ? index : null
+}
+
 /**
- * Resolve the declared role of every node once per build. The resolver is
- * injected (default: the pure registry) so a test can stub it. Nodes sharing a
- * declared role string share one resolution: O(distinct declared roles).
+ * Resolve the role of every node once per build.
+ *
+ * A DECLARED role/name always wins; otherwise the documented text inference is
+ * used (title/goal/task title), marked `source:'inferred'`. The resolver is
+ * injectable so a test can stub it; with the default resolver, nodes sharing the
+ * same declared role + inference text share one resolution.
+ *
+ * @param {object} projection
+ * @param {Function|object} [resolver] injected resolver (called with the declared
+ *   role string, for backward compatibility) or default node resolver
+ * @param {Map<string,string>|null} [taskTitles] task id -> title (inference input)
  */
-export function resolveNodeRoles(projection, resolver = dabResolveAgentRole) {
-  const resolve = typeof resolver === 'function' ? resolver : dabResolveAgentRole
+export function resolveNodeRoles(projection, resolver = dabResolveRoleForNode, taskTitles = null) {
+  const resolve = typeof resolver === 'function' ? resolver : dabResolveRoleForNode
+  const useInference = resolve === dabResolveRoleForNode
   const cache = new Map()
   const out = new Map()
   for (const node of projection.nodes) {
     const declared = typeof node.role === 'string' && node.role !== '' ? node.role : null
-    const key = declared ?? ''
+    const taskTitle = taskTitles instanceof Map && node.taskId !== null && node.taskId !== undefined
+      ? taskTitles.get(String(node.taskId)) ?? null
+      : null
+    const key = useInference && declared === null
+      ? `i|${String(node.title ?? '')}|${String(node.goal ?? '')}|${String(taskTitle ?? '')}`
+      : (declared ?? '')
     let resolved = cache.get(key)
     if (resolved === undefined) {
-      resolved = declared === null ? { roleId: null, source: 'generic', raw: null, role: null } : resolve(declared)
+      resolved = useInference
+        ? resolve({ role: declared, title: node.title, goal: node.goal, taskTitle })
+        : (declared === null ? { roleId: null, source: 'generic', raw: null, role: null } : resolve(declared))
       if (!isPlainObject(resolved)) resolved = { roleId: null, source: 'generic', raw: declared, role: null }
       cache.set(key, resolved)
     }
@@ -129,7 +157,10 @@ export function resolveNodeRoles(projection, resolver = dabResolveAgentRole) {
       roleId: typeof resolved.roleId === 'string' && resolved.roleId !== '' ? resolved.roleId : null,
       roleLabel: typeof resolved.role?.label === 'string' ? resolved.role.label : null,
       family: typeof resolved.role?.family === 'string' ? resolved.role.family : null,
-      source: resolved.source === 'explicit' || resolved.source === 'alias' ? resolved.source : 'generic',
+      source: resolved.source === 'explicit' || resolved.source === 'alias' || resolved.source === 'inferred'
+        ? resolved.source
+        : 'generic',
+      inference: isPlainObject(resolved.inference) ? resolved.inference : null,
       raw: typeof resolved.raw === 'string' ? resolved.raw : declared,
     })
   }
@@ -137,10 +168,11 @@ export function resolveNodeRoles(projection, resolver = dabResolveAgentRole) {
 }
 
 /**
- * The project orchestrator: an agent whose DECLARED role resolves to
- * `orchestrator`. A `super_orchestrator` is the workspace layer, not a project
- * orchestrator. Deterministic choice when several are declared: a root first,
- * then the most recently updated, then the id. Never fabricated.
+ * The project orchestrator: an agent whose resolved role is `orchestrator`
+ * (declared, or deduced from its declared text and then marked as such). A
+ * `super_orchestrator` is the workspace layer, not a project orchestrator.
+ * Deterministic choice when several qualify: a root first, then the most
+ * recently updated, then the id. Never fabricated.
  */
 export function findProjectOrchestrator(nodes, roles) {
   let best = null
@@ -161,6 +193,8 @@ export function findProjectOrchestrator(nodes, roles) {
     role: best.role,
     roleId: PROJECT_ORCHESTRATOR_ROLE_ID,
     roleLabel: roles.get(best.id)?.roleLabel ?? null,
+    source: roles.get(best.id)?.source ?? 'explicit',
+    inference: roles.get(best.id)?.inference ?? null,
     status: best.status,
     projectId: best.projectId,
   }
@@ -232,7 +266,8 @@ export function buildHierarchyView(projection, view, supervision, options = {}) 
   const source = projection ?? { nodes: [], byId: new Map(), roots: [], projects: [] }
   const boardView = view ?? buildBoardView(source, options.viewOptions ?? {})
   const filters = normalizeHierarchyFilters(options.filters)
-  const roles = resolveNodeRoles(source, options.resolveRole)
+  const taskTitles = options.taskTitles ?? taskTitleIndex(supervision)
+  const roles = resolveNodeRoles(source, options.resolveRole, taskTitles ?? null)
   const taskStates = options.taskStates ?? taskStateIndex(supervision)
   const taskStateAvailable = taskStates !== null
   const folded = options.foldedProjects instanceof Set ? options.foldedProjects : new Set()

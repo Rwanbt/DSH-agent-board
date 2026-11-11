@@ -23,20 +23,26 @@ function dabMascot(h, props) {
 
 function dabCardRole(node, resolved) {
   if (resolved !== null && resolved !== undefined) return resolved
+  // Declared role first, then the documented text inference (title/goal), never
+  // the model. A node passed with no role property still gets a mascot.
+  if (typeof dabResolveRoleForNode === 'function') {
+    return dabResolveRoleForNode({ role: node.role, title: node.title, goal: node.goal })
+  }
   if (typeof dabResolveAgentRole === 'function') return dabResolveAgentRole(node.role)
-  return { roleId: null, roleLabel: null, family: null, source: 'generic', raw: node.role ?? null }
+  return { roleId: null, roleLabel: null, family: null, source: 'generic', raw: node.role ?? null, inference: null }
 }
 
 function dabCardSignature(props) {
   const node = props.node
   const role = dabCardRole(node, props.role)
   return [
-    node.id, node.status, node.seen, node.title, node.role, node.updatedAt, node.expectedAction, node.waitingDetail,
+    node.id, node.status, node.seen, node.title, node.role, node.goal, node.updatedAt, node.expectedAction, node.waitingDetail,
     node.model?.model, node.model?.provider, node.model?.reasoningEffort, node.model?.source, node.recentlyFinished,
     node.taskId, node.error, node.orphan, node.parentCycle, node.parentReason, node.interrupted, node.providerUnavailable,
     node.projectId, node.projectTitle, node.origin,
     node.activity?.turns, node.activity?.steps,
     role?.roleId, role?.roleLabel, role?.family, role?.source,
+    role?.inference?.rule, role?.inference?.defaulted,
     props.selected, props.root, props.hiddenChildren, props.totalChildren, props.collapsed, props.expanded, props.groupActive,
     props.depth, props.compact, props.nowBucket, props.taskState, props.groupedProject,
   ].join('|')
@@ -58,11 +64,17 @@ function DabAgentCardImpl(props) {
     ? { turns: Number(node.activity.turns) || 0, steps: Number(node.activity.steps) || 0 }
     : null
   const calm = !(node.status === 'running' || node.status === 'recovering' || node.status === 'waiting_user' || node.status === 'finished_unread' || node.status === 'interrupted' || node.status === 'provider_unavailable' || (node.status === 'failed' && node.seen !== true))
-  const label = [node.title, statusText, roleText, projectText, taskLabel, groupActive ? dabT('groupActive') : null].filter(Boolean).join(' — ')
+  const label = [node.title, statusText, roleText, role.source === 'inferred' ? dabT('roleInferred') : null, projectText, taskLabel, groupActive ? dabT('groupActive') : null].filter(Boolean).join(' — ')
 
   const stop = event => { event.stopPropagation() }
   const mascot = dabMascot(h, {
-    role: node.role,
+    // The resolved role wins (declared or inferred); the raw declared value is
+    // only a fallback, and the title/goal are inference inputs for a card that
+    // was rendered without a pre-resolved role (Tree view).
+    role: role.roleId ?? node.role,
+    title: node.title,
+    goal: node.goal,
+    resolvedRole: role.roleId !== null && role.roleId !== undefined ? role : null,
     name: node.title,
     status: node.status,
     // The card renders its own linked-task chip in the meta row; the mascot
@@ -110,14 +122,21 @@ function DabAgentCardImpl(props) {
       }, roleText))
     }
   } else if (roleText !== null) {
+    const inferred = role.source === 'inferred'
+    const reason = typeof dabInferenceReason === 'function' ? dabInferenceReason(role) : null
     meta.push(h('span', {
       key: 'role',
       className: 'dab-role-chip',
       'data-resolution': role.source ?? 'generic',
       'data-role': role.roleId ?? 'generic',
-      title: [dabT('role'), roleText, familyText, role.raw !== null && role.raw !== undefined && role.raw !== roleText ? `(${role.raw})` : null]
+      title: [dabT('role'), roleText, familyText, reason,
+        role.raw !== null && role.raw !== undefined && role.raw !== roleText ? `(${role.raw})` : null]
         .filter(Boolean).join(' · '),
-    }, roleText))
+    }, roleText,
+    // A deduced role says so, visibly (never presented as declared).
+    inferred && compact !== true
+      ? h('span', { key: 'inferred', className: 'dab-role-inferred' }, ` · ${dabT('roleInferred')}`)
+      : null))
   }
   // Compact model chip: the card's provider/model fact, never a guess. It shares
   // the identity row with the role, so the work facts keep their own row.

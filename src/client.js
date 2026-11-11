@@ -690,6 +690,206 @@ function dabAvatarVariantForSize(size) {
 }
 
 /**
+ * Declared-text role inference.
+ *
+ * A board session rarely DECLARES a role. To give every card a real mascot
+ * without inventing a role from a model or from behaviour, the role is inferred
+ * from text the runtime ALREADY declares (session title, goal objective, linked
+ * task title). The result is always marked `source:'inferred'` and carries the
+ * matching rule, so the UI can say "déduit" and never present it as declared.
+ *
+ * Rules are checked in order (most specific first); the first matching token
+ * wins. A token matches exactly (`words`) or as a prefix (`stems`); the text is
+ * accent/lowercase-normalized and split on non-alphanumerics, so "Plain" does
+ * not match "plan" and "preview" does not match "review".
+ *
+ * A model/provider is NEVER an input here: two agents sharing one model can have
+ * two different roles. When there is no usable text at all, the agent stays
+ * generic; when there is text but no keyword, it gets the productive default
+ * (`worker`, `defaulted:true`) — still marked inferred.
+ */
+const AGENT_ROLE_INFERENCE = Object.freeze([
+  Object.freeze({
+    roleId: 'super_orchestrator',
+    phrases: Object.freeze(['super orchestrator', 'multi project', 'multi projets', 'workspace orchestrator']),
+    words: Object.freeze(['supervision']),
+    stems: Object.freeze([]),
+  }),
+  Object.freeze({
+    roleId: 'reviewer',
+    phrases: Object.freeze(['code review', 'peer review']),
+    words: Object.freeze(['review', 'reviews', 'revue', 'revues', 'relire', 'relit', 'critique']),
+    stems: Object.freeze(['review']),
+  }),
+  Object.freeze({
+    roleId: 'auditor',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['audit', 'audits', 'compliance', 'conformite']),
+    stems: Object.freeze(['audit']),
+  }),
+  Object.freeze({
+    roleId: 'verifier',
+    phrases: Object.freeze([]),
+    // "e2e" is deliberately NOT a keyword: it is commonly an environment label
+    // ("E2E simulated card") rather than a role, and it would map every harness
+    // session to Verifier.
+    words: Object.freeze(['qa', 'test', 'tests', 'tester', 'testing', 'verificateur']),
+    stems: Object.freeze(['verif', 'valid', 'test']),
+  }),
+  Object.freeze({
+    roleId: 'guardian',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['security', 'securite', 'guard', 'guardian', 'protection', 'auth', 'authz', 'permission', 'permissions', 'rgpd']),
+    stems: Object.freeze(['secur', 'guard', 'protect']),
+  }),
+  Object.freeze({
+    roleId: 'optimizer',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['optimizer', 'performance', 'perf', 'bench', 'benchmark', 'tuning', 'latence', 'latency', 'speed', 'optimisation', 'optimization']),
+    stems: Object.freeze(['optimis', 'optimiz', 'performance']),
+  }),
+  Object.freeze({
+    roleId: 'knowledge_manager',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['knowledge', 'documentation', 'document', 'documentation', 'doc', 'docs', 'memory', 'memoire', 'wiki', 'notes', 'connaissance', 'connaissances']),
+    stems: Object.freeze(['knowledge', 'document']),
+  }),
+  Object.freeze({
+    roleId: 'integrator',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['integrator', 'integration', 'merge', 'fusion', 'assemble', 'consolidate', 'consolidation']),
+    stems: Object.freeze(['integrat']),
+  }),
+  Object.freeze({
+    roleId: 'researcher',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['research', 'recherche', 'explore', 'explorer', 'exploration', 'investigation', 'search', 'scout', 'veille', 'etude', 'etudes']),
+    stems: Object.freeze(['research', 'explor', 'investigat']),
+  }),
+  Object.freeze({
+    roleId: 'architect',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['architect', 'architecture', 'design', 'conception', 'schema', 'structure', 'ux', 'ui']),
+    stems: Object.freeze(['architect', 'design', 'conception']),
+  }),
+  Object.freeze({
+    roleId: 'planner',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['plan', 'plans', 'planning', 'planification', 'roadmap', 'backlog', 'sprint', 'milestone', 'milestones', 'jalon', 'jalons', 'planificateur']),
+    stems: Object.freeze(['planification']),
+  }),
+  Object.freeze({
+    roleId: 'dispatcher',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['dispatch', 'dispatcher', 'distribue', 'distribution', 'assign', 'assignment', 'affectation', 'repartition']),
+    stems: Object.freeze(['dispatch', 'distrib']),
+  }),
+  Object.freeze({
+    roleId: 'observer',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['observer', 'observation', 'monitor', 'monitoring', 'surveillance', 'watch', 'alert', 'alertes']),
+    stems: Object.freeze(['observ', 'monitor', 'surveill']),
+  }),
+  Object.freeze({
+    roleId: 'orchestrator',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['orchestrator', 'orchestration', 'coordination', 'coordonne', 'lead', 'leads', 'leader', 'pilote', 'supervisor', 'supervise']),
+    stems: Object.freeze(['orchestrat', 'coordinat']),
+  }),
+  Object.freeze({
+    roleId: 'worker',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['worker', 'code', 'coding', 'build', 'fix', 'fixes', 'feature', 'features', 'dev', 'developer', 'implementation', 'tache', 'task']),
+    stems: Object.freeze(['implement', 'developp', 'refactor', 'corrig', 'execute', 'produce']),
+  }),
+])
+
+/** The role given to a text-bearing agent with no keyword and no declaration. */
+const AGENT_ROLE_INFERENCE_DEFAULT = 'worker'
+
+const MAX_INFERENCE_TEXT = 400
+
+function normalizeInferenceText(value) {
+  if (typeof value !== 'string') return ''
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_INFERENCE_TEXT)
+}
+
+/**
+ * Infer a role from declared text only.
+ *
+ * @param {{title?:string, goal?:string, taskTitle?:string}} [input]
+ * @returns {{ roleId: string, source:'inferred', rule: string, token: string|null, defaulted: boolean, text: string } | null}
+ *   `null` only when there is NO usable text at all (the agent stays generic).
+ */
+function inferAgentRoleFromText(input = {}) {
+  const rawText = [input.title, input.goal, input.taskTitle]
+    .filter(value => typeof value === 'string' && value.trim() !== '')
+    .join(' · ')
+  const text = normalizeInferenceText(rawText)
+  if (text === '') return null
+  const tokens = text.split(' ')
+  const padded = ` ${text} `
+  for (const rule of AGENT_ROLE_INFERENCE) {
+    for (const phrase of rule.phrases ?? []) {
+      const normalizedPhrase = normalizeInferenceText(phrase)
+      if (normalizedPhrase !== '' && padded.includes(` ${normalizedPhrase} `)) {
+        return { roleId: rule.roleId, source: 'inferred', rule: rule.roleId, token: normalizedPhrase, defaulted: false, text: text.slice(0, 120) }
+      }
+    }
+    for (const word of rule.words ?? []) {
+      if (tokens.includes(normalizeInferenceText(word))) {
+        return { roleId: rule.roleId, source: 'inferred', rule: rule.roleId, token: word, defaulted: false, text: text.slice(0, 120) }
+      }
+    }
+    for (const stem of rule.stems ?? []) {
+      const normalizedStem = normalizeInferenceText(stem)
+      if (normalizedStem !== '' && tokens.some(token => token.startsWith(normalizedStem))) {
+        return { roleId: rule.roleId, source: 'inferred', rule: rule.roleId, token: stem, defaulted: false, text: text.slice(0, 120) }
+      }
+    }
+  }
+  // Text exists but no role keyword: the agent is a productive default, still
+  // INFERRED (never presented as declared).
+  return {
+    roleId: AGENT_ROLE_INFERENCE_DEFAULT,
+    source: 'inferred',
+    rule: `default:${AGENT_ROLE_INFERENCE_DEFAULT}`,
+    token: null,
+    defaulted: true,
+    text: text.slice(0, 120),
+  }
+}
+
+/**
+ * Resolve an agent node: a declared role/name always wins; otherwise infer from
+ * the text the runtime declares. The result shape matches `dabResolveAgentRole`
+ * plus an `inference` fact (null when declared/generic).
+ *
+ * @param {{role?:string, name?:string, title?:string, goal?:string, taskTitle?:string}} [input]
+ * @returns {{ roleId:string|null, source:'explicit'|'alias'|'inferred'|'generic', raw:string|null, role:object|null, inference:object|null }}
+ */
+function dabResolveRoleForNode(input = {}) {
+  const declared = dabResolveAgentRole({ role: input.role, name: input.name })
+  if (declared.roleId !== null) return { ...declared, inference: null }
+  const inference = inferAgentRoleFromText(input)
+  if (inference === null) return { ...declared, inference: null }
+  return {
+    roleId: inference.roleId,
+    source: 'inferred',
+    raw: declared.raw,
+    role: AGENT_ROLES[inference.roleId] ?? null,
+    inference,
+  }
+}
+
+/**
  * Pure avatar view model. The data-URI source map is injected so this module
  * stays asset-free and unit-testable; the component passes `AGENT_BOT_ASSETS`.
  *
@@ -701,6 +901,10 @@ function dabAvatarVariantForSize(size) {
  * @param {object} input
  * @param {string|object|null} [input.role] declared role/name
  * @param {string|null} [input.name] display name (never used to infer a role)
+ * @param {string|null} [input.title] declared session title (inference input)
+ * @param {string|null} [input.goal] declared goal objective (inference input)
+ * @param {string|null} [input.taskTitle] linked task title (inference input)
+ * @param {object|null} [input.resolvedRole] already-resolved role (wins, keeps rule)
  * @param {string|null} [input.status] one of the board's EXISTING statuses
  * @param {string|null} [input.taskState] Task Board workflow state (separate)
  * @param {number} [input.size]
@@ -712,7 +916,24 @@ function dabAvatarVariantForSize(size) {
 function dabAgentAvatarModel(input = {}) {
   const size = Number.isFinite(Number(input.size)) ? Math.max(8, Math.min(256, Math.trunc(Number(input.size)))) : 40
   const variant = input.variant === 'full' || input.variant === 'compact' ? input.variant : dabAvatarVariantForSize(size)
-  const resolved = dabResolveAgentRole(input.role)
+  const preset = input.resolvedRole
+  const resolved = preset !== null && preset !== undefined && typeof preset.roleId === 'string' && AGENT_ROLES[preset.roleId] !== undefined
+    ? {
+      roleId: preset.roleId,
+      // A pre-resolved INFERRED role must stay inferred: provenance is never
+      // upgraded to "explicit" just because another module resolved it first.
+      source: preset.source === 'explicit' || preset.source === 'alias' ? preset.source : 'inferred',
+      raw: typeof preset.raw === 'string' ? preset.raw : null,
+      role: AGENT_ROLES[preset.roleId],
+      inference: preset.inference ?? null,
+    }
+    : dabResolveRoleForNode({
+      role: input.role,
+      name: input.name,
+      title: input.title,
+      goal: input.goal,
+      taskTitle: input.taskTitle,
+    })
   const role = resolved.role
   const emblem = role?.id === 'super_orchestrator'
     ? (input.emblem === 'bolt' ? 'bolt' : 'crown')
@@ -735,6 +956,8 @@ function dabAgentAvatarModel(input = {}) {
   const altParts = []
   if (typeof input.name === 'string' && input.name.trim() !== '') altParts.push({ text: input.name.trim() })
   if (role !== null) altParts.push({ text: role.label })
+  // Assistive technology gets the provenance too: a deduced role is announced.
+  if (resolved.source === 'inferred') altParts.push({ labelKey: 'roleInferred' })
   if (statusKnown) altParts.push({ labelKey: AGENT_TONES[tone].labelKey })
   if (taskTone !== null) altParts.push({ labelKey: AGENT_TONES[taskTone].labelKey })
   return {
@@ -745,6 +968,7 @@ function dabAgentAvatarModel(input = {}) {
     color: role?.color ?? null,
     gradient: role?.gradient ?? null,
     resolution: resolved.source,
+    inference: resolved.inference ?? null,
     rawRole: resolved.raw,
     variant,
     size,
@@ -3112,21 +3336,49 @@ function taskStateIndex(supervision) {
   return index
 }
 
+/** Task Board task titles indexed by task id; null when the integration is absent. */
+function taskTitleIndex(supervision) {
+  const taskboard = supervision?.taskboard
+  if (!isPlainObject(taskboard) || taskboard.available !== true || !Array.isArray(taskboard.tasks)) return null
+  const index = new Map()
+  for (const task of taskboard.tasks) {
+    if (!isPlainObject(task) || typeof task.id !== 'string') continue
+    if (typeof task.title === 'string' && task.title !== '') index.set(task.id, task.title)
+  }
+  return index.size > 0 ? index : null
+}
+
 /**
- * Resolve the declared role of every node once per build. The resolver is
- * injected (default: the pure registry) so a test can stub it. Nodes sharing a
- * declared role string share one resolution: O(distinct declared roles).
+ * Resolve the role of every node once per build.
+ *
+ * A DECLARED role/name always wins; otherwise the documented text inference is
+ * used (title/goal/task title), marked `source:'inferred'`. The resolver is
+ * injectable so a test can stub it; with the default resolver, nodes sharing the
+ * same declared role + inference text share one resolution.
+ *
+ * @param {object} projection
+ * @param {Function|object} [resolver] injected resolver (called with the declared
+ *   role string, for backward compatibility) or default node resolver
+ * @param {Map<string,string>|null} [taskTitles] task id -> title (inference input)
  */
-function resolveNodeRoles(projection, resolver = dabResolveAgentRole) {
-  const resolve = typeof resolver === 'function' ? resolver : dabResolveAgentRole
+function resolveNodeRoles(projection, resolver = dabResolveRoleForNode, taskTitles = null) {
+  const resolve = typeof resolver === 'function' ? resolver : dabResolveRoleForNode
+  const useInference = resolve === dabResolveRoleForNode
   const cache = new Map()
   const out = new Map()
   for (const node of projection.nodes) {
     const declared = typeof node.role === 'string' && node.role !== '' ? node.role : null
-    const key = declared ?? ''
+    const taskTitle = taskTitles instanceof Map && node.taskId !== null && node.taskId !== undefined
+      ? taskTitles.get(String(node.taskId)) ?? null
+      : null
+    const key = useInference && declared === null
+      ? `i|${String(node.title ?? '')}|${String(node.goal ?? '')}|${String(taskTitle ?? '')}`
+      : (declared ?? '')
     let resolved = cache.get(key)
     if (resolved === undefined) {
-      resolved = declared === null ? { roleId: null, source: 'generic', raw: null, role: null } : resolve(declared)
+      resolved = useInference
+        ? resolve({ role: declared, title: node.title, goal: node.goal, taskTitle })
+        : (declared === null ? { roleId: null, source: 'generic', raw: null, role: null } : resolve(declared))
       if (!isPlainObject(resolved)) resolved = { roleId: null, source: 'generic', raw: declared, role: null }
       cache.set(key, resolved)
     }
@@ -3134,7 +3386,10 @@ function resolveNodeRoles(projection, resolver = dabResolveAgentRole) {
       roleId: typeof resolved.roleId === 'string' && resolved.roleId !== '' ? resolved.roleId : null,
       roleLabel: typeof resolved.role?.label === 'string' ? resolved.role.label : null,
       family: typeof resolved.role?.family === 'string' ? resolved.role.family : null,
-      source: resolved.source === 'explicit' || resolved.source === 'alias' ? resolved.source : 'generic',
+      source: resolved.source === 'explicit' || resolved.source === 'alias' || resolved.source === 'inferred'
+        ? resolved.source
+        : 'generic',
+      inference: isPlainObject(resolved.inference) ? resolved.inference : null,
       raw: typeof resolved.raw === 'string' ? resolved.raw : declared,
     })
   }
@@ -3142,10 +3397,11 @@ function resolveNodeRoles(projection, resolver = dabResolveAgentRole) {
 }
 
 /**
- * The project orchestrator: an agent whose DECLARED role resolves to
- * `orchestrator`. A `super_orchestrator` is the workspace layer, not a project
- * orchestrator. Deterministic choice when several are declared: a root first,
- * then the most recently updated, then the id. Never fabricated.
+ * The project orchestrator: an agent whose resolved role is `orchestrator`
+ * (declared, or deduced from its declared text and then marked as such). A
+ * `super_orchestrator` is the workspace layer, not a project orchestrator.
+ * Deterministic choice when several qualify: a root first, then the most
+ * recently updated, then the id. Never fabricated.
  */
 function findProjectOrchestrator(nodes, roles) {
   let best = null
@@ -3166,6 +3422,8 @@ function findProjectOrchestrator(nodes, roles) {
     role: best.role,
     roleId: PROJECT_ORCHESTRATOR_ROLE_ID,
     roleLabel: roles.get(best.id)?.roleLabel ?? null,
+    source: roles.get(best.id)?.source ?? 'explicit',
+    inference: roles.get(best.id)?.inference ?? null,
     status: best.status,
     projectId: best.projectId,
   }
@@ -3237,7 +3495,8 @@ function buildHierarchyView(projection, view, supervision, options = {}) {
   const source = projection ?? { nodes: [], byId: new Map(), roots: [], projects: [] }
   const boardView = view ?? buildBoardView(source, options.viewOptions ?? {})
   const filters = normalizeHierarchyFilters(options.filters)
-  const roles = resolveNodeRoles(source, options.resolveRole)
+  const taskTitles = options.taskTitles ?? taskTitleIndex(supervision)
+  const roles = resolveNodeRoles(source, options.resolveRole, taskTitles ?? null)
   const taskStates = options.taskStates ?? taskStateIndex(supervision)
   const taskStateAvailable = taskStates !== null
   const folded = options.foldedProjects instanceof Set ? options.foldedProjects : new Set()
@@ -3947,6 +4206,9 @@ const DAB_STRINGS = {
     roleFamilyLabel: 'Famille de rôle',
     roleDeclared: 'Rôle déclaré',
     roleDeclaredAlias: 'rôle déclaré (alias)',
+    roleInferred: 'déduit',
+    roleInferredDefault: 'Rôle déduit par défaut (aucun rôle déclaré ni mot-clé de rôle)',
+    roleInferredFrom: 'Rôle déduit du texte déclaré (« {signal} »)',
     noDeclaredRole: 'Rôle non déclaré',
     genericIdentity: 'Identité générique',
     familyGovernance: 'Gouvernance / connaissances',
@@ -4172,6 +4434,9 @@ const DAB_STRINGS = {
     roleFamilyLabel: 'Role family',
     roleDeclared: 'Declared role',
     roleDeclaredAlias: 'declared role (alias)',
+    roleInferred: 'deduced',
+    roleInferredDefault: 'Role deduced by default (no declared role, no role keyword)',
+    roleInferredFrom: 'Role deduced from declared text (“{signal}”)',
     noDeclaredRole: 'No declared role',
     genericIdentity: 'Generic identity',
     familyGovernance: 'Governance / knowledge',
@@ -4299,6 +4564,21 @@ function dabT(key, vars) {
   const raw = (DAB_STRINGS[DAB_LANG] ?? DAB_STRINGS.en)[key] ?? DAB_STRINGS.en[key] ?? key
   if (vars === undefined) return raw
   return raw.replace(/\{(\w+)\}/g, (_, name) => String(vars[name] ?? ''))
+}
+
+/**
+ * Human-readable provenance of a DEDUCED role: the matched declared-text token,
+ * or the explicit "no signal" default. Declared/generic roles return null (they
+ * do not need an inference explanation).
+ */
+function dabInferenceReason(role) {
+  if (role === null || role === undefined || role.source !== 'inferred') return null
+  const inference = role.inference
+  if (inference === null || typeof inference !== 'object') return dabT('roleInferred')
+  if (inference.defaulted === true) return dabT('roleInferredDefault')
+  const signal = typeof inference.token === 'string' && inference.token !== '' ? inference.token : inference.rule
+  if (typeof signal === 'string' && signal !== '') return dabT('roleInferredFrom', { signal })
+  return dabT('roleInferredDefault')
 }
 
 const DAB_STATUS_TEXT = {
@@ -4694,6 +4974,10 @@ const DAB_CSS = `
   background: var(--dab-chip-fill); color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 16px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dab-role-chip[data-resolution="generic"] { background: transparent; box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary)); }
+/* A deduced role is marked, never presented as declared: dotted chip edge + a
+   small muted suffix. No role colour is added here (the mascot carries it). */
+.dab-role-chip[data-resolution="inferred"] { background: transparent; box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary)); border-bottom: 1px dotted var(--dsw-alias-label-secondary); }
+.dab-role-inferred { font-size: 10px; line-height: 12px; color: var(--dsw-alias-label-secondary); text-transform: lowercase; }
 /* Family chip: identity context only, never a status colour. */
 .dab-family-chip { display: inline-flex; align-items: center; max-width: 100%; min-width: 0; padding: 0 6px; border-radius: 999px; corner-shape: round;
   background: transparent; box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary));
@@ -4944,6 +5228,10 @@ function DabAgentAvatar(props) {
   const model = dabAgentAvatarModel({
     role: props.role,
     name: props.name,
+    title: props.title,
+    goal: props.goal,
+    taskTitle: props.taskTitle,
+    resolvedRole: props.resolvedRole,
     status: props.status,
     taskState: props.taskState,
     size: props.size,
@@ -4993,6 +5281,7 @@ function DabAgentAvatar(props) {
     className: 'dab-avatar',
     'data-role': model.roleId ?? 'generic',
     'data-tone': model.tone,
+    'data-resolution': model.resolution,
     'data-variant': model.variant,
     'data-selected': selected ? 'true' : 'false',
     'data-size': String(model.size),
@@ -5035,20 +5324,26 @@ function dabMascot(h, props) {
 
 function dabCardRole(node, resolved) {
   if (resolved !== null && resolved !== undefined) return resolved
+  // Declared role first, then the documented text inference (title/goal), never
+  // the model. A node passed with no role property still gets a mascot.
+  if (typeof dabResolveRoleForNode === 'function') {
+    return dabResolveRoleForNode({ role: node.role, title: node.title, goal: node.goal })
+  }
   if (typeof dabResolveAgentRole === 'function') return dabResolveAgentRole(node.role)
-  return { roleId: null, roleLabel: null, family: null, source: 'generic', raw: node.role ?? null }
+  return { roleId: null, roleLabel: null, family: null, source: 'generic', raw: node.role ?? null, inference: null }
 }
 
 function dabCardSignature(props) {
   const node = props.node
   const role = dabCardRole(node, props.role)
   return [
-    node.id, node.status, node.seen, node.title, node.role, node.updatedAt, node.expectedAction, node.waitingDetail,
+    node.id, node.status, node.seen, node.title, node.role, node.goal, node.updatedAt, node.expectedAction, node.waitingDetail,
     node.model?.model, node.model?.provider, node.model?.reasoningEffort, node.model?.source, node.recentlyFinished,
     node.taskId, node.error, node.orphan, node.parentCycle, node.parentReason, node.interrupted, node.providerUnavailable,
     node.projectId, node.projectTitle, node.origin,
     node.activity?.turns, node.activity?.steps,
     role?.roleId, role?.roleLabel, role?.family, role?.source,
+    role?.inference?.rule, role?.inference?.defaulted,
     props.selected, props.root, props.hiddenChildren, props.totalChildren, props.collapsed, props.expanded, props.groupActive,
     props.depth, props.compact, props.nowBucket, props.taskState, props.groupedProject,
   ].join('|')
@@ -5070,11 +5365,17 @@ function DabAgentCardImpl(props) {
     ? { turns: Number(node.activity.turns) || 0, steps: Number(node.activity.steps) || 0 }
     : null
   const calm = !(node.status === 'running' || node.status === 'recovering' || node.status === 'waiting_user' || node.status === 'finished_unread' || node.status === 'interrupted' || node.status === 'provider_unavailable' || (node.status === 'failed' && node.seen !== true))
-  const label = [node.title, statusText, roleText, projectText, taskLabel, groupActive ? dabT('groupActive') : null].filter(Boolean).join(' — ')
+  const label = [node.title, statusText, roleText, role.source === 'inferred' ? dabT('roleInferred') : null, projectText, taskLabel, groupActive ? dabT('groupActive') : null].filter(Boolean).join(' — ')
 
   const stop = event => { event.stopPropagation() }
   const mascot = dabMascot(h, {
-    role: node.role,
+    // The resolved role wins (declared or inferred); the raw declared value is
+    // only a fallback, and the title/goal are inference inputs for a card that
+    // was rendered without a pre-resolved role (Tree view).
+    role: role.roleId ?? node.role,
+    title: node.title,
+    goal: node.goal,
+    resolvedRole: role.roleId !== null && role.roleId !== undefined ? role : null,
     name: node.title,
     status: node.status,
     // The card renders its own linked-task chip in the meta row; the mascot
@@ -5122,14 +5423,21 @@ function DabAgentCardImpl(props) {
       }, roleText))
     }
   } else if (roleText !== null) {
+    const inferred = role.source === 'inferred'
+    const reason = typeof dabInferenceReason === 'function' ? dabInferenceReason(role) : null
     meta.push(h('span', {
       key: 'role',
       className: 'dab-role-chip',
       'data-resolution': role.source ?? 'generic',
       'data-role': role.roleId ?? 'generic',
-      title: [dabT('role'), roleText, familyText, role.raw !== null && role.raw !== undefined && role.raw !== roleText ? `(${role.raw})` : null]
+      title: [dabT('role'), roleText, familyText, reason,
+        role.raw !== null && role.raw !== undefined && role.raw !== roleText ? `(${role.raw})` : null]
         .filter(Boolean).join(' · '),
-    }, roleText))
+    }, roleText,
+    // A deduced role says so, visibly (never presented as declared).
+    inferred && compact !== true
+      ? h('span', { key: 'inferred', className: 'dab-role-inferred' }, ` · ${dabT('roleInferred')}`)
+      : null))
   }
   // Compact model chip: the card's provider/model fact, never a guess. It shares
   // the identity row with the role, so the work facts keep their own row.
@@ -5557,9 +5865,10 @@ function DabHierarchyProject({ project, ctx, compact, filtersActive }) {
         'data-gap': 'true',
         title: dabT('hierarchyOrchestratorMissingHint'),
       }, h('span', { className: 'dab-gap-dot', 'aria-hidden': 'true' }), dabT('hierarchyOrchestratorMissing'))
-      : h('span', { className: 'dab-hier-orch', title: `${dabT('orchestratorLabel')} : ${orchestrator.name}` },
-        dabMascot(h, { role: orchestrator.role, name: orchestrator.name, status: orchestrator.status, size: 20, variant: 'compact', decorative: true }),
-        h('span', null, orchestrator.name)),
+      : h('span', { className: 'dab-hier-orch', title: `${dabT('orchestratorLabel')} : ${orchestrator.name}${orchestrator.source === 'inferred' ? ` · ${dabT('roleInferred')}` : ''}` },
+        dabMascot(h, { role: orchestrator.roleId, resolvedRole: orchestrator, name: orchestrator.name, status: orchestrator.status, size: 20, variant: 'compact', decorative: true }),
+        h('span', null, orchestrator.name),
+        orchestrator.source === 'inferred' ? h('span', { className: 'dab-role-inferred' }, dabT('roleInferred')) : null),
     dabProjectCounters(h, project.counts)),
     project.folded ? null : h('div', { className: 'dab-hier-body' },
       project.teams.length === 0
@@ -5845,9 +6154,14 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
   const [more, setMore] = React.useState(false)
   React.useEffect(() => { setMore(false) }, [node?.id])
   if (node === null || node === undefined) return null
-  const resolvedRole = role ?? (typeof dabResolveAgentRole === 'function' ? dabResolveAgentRole(node.role) : { roleId: null, roleLabel: null, family: null, source: 'generic', raw: node.role ?? null })
+  const resolvedRole = role ?? (typeof dabResolveRoleForNode === 'function'
+    ? dabResolveRoleForNode({ role: node.role, title: node.title, goal: node.goal })
+    : { roleId: null, roleLabel: null, family: null, source: 'generic', raw: node.role ?? null, inference: null })
   const roleText = resolvedRole?.roleLabel ?? (typeof node.role === 'string' && node.role !== '' ? node.role : null)
   const roleFamily = typeof dabFamilyLabel === 'function' ? dabFamilyLabel(resolvedRole?.family) : null
+  const roleProvenance = resolvedRole?.source === 'inferred'
+    ? ` · ${dabT('roleInferred')}${typeof dabInferenceReason === 'function' && dabInferenceReason(resolvedRole) ? ` (${dabInferenceReason(resolvedRole)})` : ''}`
+    : (resolvedRole?.source === 'alias' ? ` (${dabT('roleDeclaredAlias')})` : '')
   const taskLabel = typeof dabTaskStateLabel === 'function' && typeof taskState === 'string' ? dabTaskStateLabel(taskState) : null
   const preview = node.preview ?? { text: '', final: false }
   const hasFinal = preview.final === true && typeof preview.text === 'string' && preview.text !== ''
@@ -5858,7 +6172,7 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
     facts.push(h('dt', { key: `${key}-t` }, label), h('dd', { key: `${key}-d`, className: mono ? 'dab-mono' : undefined }, value))
   }
   fact('project', dabT('project'), node.projectId === 'unassigned' ? dabT('unassigned') : node.projectTitle)
-  fact('role', dabT('role'), roleText === null ? null : `${roleText}${roleFamily ? ` · ${roleFamily}` : ''}${resolvedRole?.source === 'alias' ? ` (${dabT('roleDeclaredAlias')})` : ''}`)
+  fact('role', dabT('role'), roleText === null ? null : `${roleText}${roleFamily ? ` · ${roleFamily}` : ''}${roleProvenance}`)
   fact('taskState', dabT('taskStateTitle'), taskLabel)
   fact('provider', dabT('provider'), node.model?.provider, true)
   fact('model', dabT('model'), dabModelChipText(node.model), true)

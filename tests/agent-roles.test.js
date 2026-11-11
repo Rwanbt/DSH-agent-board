@@ -15,6 +15,9 @@ import {
   TASK_STATE_TONES,
   normalizeAgentRoleKey,
   dabResolveAgentRole,
+  dabResolveRoleForNode,
+  inferAgentRoleFromText,
+  AGENT_ROLE_INFERENCE_DEFAULT,
   dabAvatarVariantForSize,
   dabAgentAvatarModel,
 } from '../src/contracts/agent-roles.js'
@@ -299,4 +302,65 @@ test('the avatar model exposes the documented fields and altParts', () => {
   assert.deepEqual(generic.altParts, [{ text: 'Ghost' }, { labelKey: 'statusFailed' }])
   assert.equal(generic.resolution, 'generic')
   assert.equal(generic.rawRole, 'nope')
+})
+
+test('undeclared roles are deduced from declared text (accent/case-safe, word-bounded)', () => {
+  assert.equal(inferAgentRoleFromText({ title: 'Code review of the parser' }).roleId, 'reviewer')
+  assert.equal(inferAgentRoleFromText({ title: 'Polish the UI' }).roleId, 'architect')
+  assert.equal(inferAgentRoleFromText({ title: 'Audit de conformité' }).roleId, 'auditor')
+  assert.equal(inferAgentRoleFromText({ goal: 'Validate the release' }).roleId, 'verifier')
+  assert.equal(inferAgentRoleFromText({ title: 'Sécurité des permissions' }).roleId, 'guardian')
+  assert.equal(inferAgentRoleFromText({ title: 'Optimise the render loop' }).roleId, 'optimizer')
+  assert.equal(inferAgentRoleFromText({ title: 'Document the architecture' }).roleId, 'knowledge_manager')
+  assert.equal(inferAgentRoleFromText({ title: 'Merge the feature branch' }).roleId, 'integrator')
+  assert.equal(inferAgentRoleFromText({ title: 'Research OpenTelemetry exporters' }).roleId, 'researcher')
+  assert.equal(inferAgentRoleFromText({ title: 'Plan the next sprint' }).roleId, 'planner')
+  assert.equal(inferAgentRoleFromText({ title: 'Dispatch the work' }).roleId, 'dispatcher')
+  assert.equal(inferAgentRoleFromText({ title: 'Monitor the queue' }).roleId, 'observer')
+  assert.equal(inferAgentRoleFromText({ title: 'Lead the project' }).roleId, 'orchestrator')
+  // Word boundaries: "Plain"/"preview" must not be read as plan/review.
+  assert.equal(inferAgentRoleFromText({ title: 'Plain idle' }).roleId, AGENT_ROLE_INFERENCE_DEFAULT)
+  assert.equal(inferAgentRoleFromText({ title: 'Preview the diff' }).roleId, AGENT_ROLE_INFERENCE_DEFAULT)
+  // No keyword -> productive default, still INFERRED (not declared).
+  const fallback = inferAgentRoleFromText({ title: 'Stopped launch' })
+  assert.equal(fallback.roleId, AGENT_ROLE_INFERENCE_DEFAULT)
+  assert.equal(fallback.defaulted, true)
+  // No usable text at all -> generic identity preserved.
+  assert.equal(inferAgentRoleFromText({}), null)
+  assert.equal(inferAgentRoleFromText({ title: '   ' }), null)
+})
+
+test('a declared role always wins over inference; the model is never an input', () => {
+  const declared = dabResolveRoleForNode({ role: 'dev', title: 'Code review' })
+  assert.equal(declared.roleId, 'worker')
+  assert.equal(declared.source, 'alias')
+  assert.equal(declared.inference, null)
+  const inferred = dabResolveRoleForNode({ title: 'Code review of the parser' })
+  assert.equal(inferred.roleId, 'reviewer')
+  assert.equal(inferred.source, 'inferred')
+  assert.equal(inferred.inference.rule, 'reviewer')
+  assert.equal(inferred.inference.token, 'code review')
+  const modelNever = dabResolveRoleForNode({ model: 'reviewer', provider: 'worker', title: 'Build the card' })
+  assert.equal(modelNever.roleId, 'worker')
+  assert.equal(modelNever.source, 'inferred')
+})
+
+test('the avatar model exposes the inferred mascot and announces the deduction', () => {
+  const model = dabAgentAvatarModel({ title: 'Polish the UI', size: 64, sources: AGENT_BOT_ASSETS })
+  assert.equal(model.roleId, 'architect')
+  assert.equal(model.resolution, 'inferred')
+  assert.equal(model.src, AGENT_BOT_ASSETS.architect.full)
+  assert.ok(model.altParts.some(part => part.labelKey === 'roleInferred'))
+  // A pre-resolved inferred role stays inferred: provenance is never upgraded.
+  const preset = dabAgentAvatarModel({
+    resolvedRole: { roleId: 'architect', source: 'inferred', inference: { defaulted: false, token: 'ui' } },
+    size: 64,
+    sources: AGENT_BOT_ASSETS,
+  })
+  assert.equal(preset.resolution, 'inferred')
+  assert.equal(preset.src, AGENT_BOT_ASSETS.architect.full)
+  // No declared role and no text at all stays generic (grey identity, no mascot).
+  const generic = dabAgentAvatarModel({ role: 'Mystery', sources: AGENT_BOT_ASSETS })
+  assert.equal(generic.roleId, null)
+  assert.equal(generic.src, null)
 })

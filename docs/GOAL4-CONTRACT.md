@@ -4,6 +4,12 @@
 > in parallel. It is kept as the reviewable interface record; the user-facing
 > documentation is [MASCOTS-SUPER-ORCHESTRATOR.md](MASCOTS-SUPER-ORCHESTRATOR.md)
 > and the delivery evidence is [GOAL4-DELIVERY.md](GOAL4-DELIVERY.md).
+>
+> **Follow-up (post-review):** a role that is NOT declared is now deduced from
+> the text the runtime already declares (session/goal/task title), marked
+> `source:'inferred'` and visibly labelled « déduit ». The generic identity is
+> kept only when there is no declared role and no usable text. The declared-name
+> aliases and the ban on model/provider inference below are unchanged.
 
 Branch: `feat/agent-board-mascots-super-orchestrator`
 Base: `goal3/supervision-orchestration` @ `905e367`

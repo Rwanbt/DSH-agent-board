@@ -43,10 +43,13 @@ read-only and the Task Board stays the sole owner of tickets and executions.
 ## What it does
 
 - **Mascots & roles** — the 15 approved SVG roles (6 silhouettes, exact palette),
-  resolved from a **declared** role/name only (aliases documented; a model never
-  implies a role; an unknown role gets a neutral generic identity). The mascot
-  colour is identity; runtime status is a separate dot. Assets are inlined as data
-  URIs, so there is no external request and no CSP exception.
+  resolved from a **declared** role/name first, then from the text the runtime
+  already declares (session/goal/task title) with an ordered keyword table; a
+  deduced role is always marked « déduit » and announced to assistive technology.
+  A model never implies a role; only an agent with no declared role and no usable
+  text keeps a neutral generic identity. The mascot colour is identity; runtime
+  status is a separate dot. Assets are inlined as data URIs, so there is no
+  external request and no CSP exception.
 - **Supervision** — a workspace-level Super Orchestrator **layer** (not an AI
   agent) that aggregates real project/agent/task facts, exposes blocks and
   cross-project dependencies, proposes (never applies) reassignments, and gates

@@ -296,9 +296,10 @@ function DabHierarchyProject({ project, ctx, compact, filtersActive }) {
         'data-gap': 'true',
         title: dabT('hierarchyOrchestratorMissingHint'),
       }, h('span', { className: 'dab-gap-dot', 'aria-hidden': 'true' }), dabT('hierarchyOrchestratorMissing'))
-      : h('span', { className: 'dab-hier-orch', title: `${dabT('orchestratorLabel')} : ${orchestrator.name}` },
-        dabMascot(h, { role: orchestrator.role, name: orchestrator.name, status: orchestrator.status, size: 20, variant: 'compact', decorative: true }),
-        h('span', null, orchestrator.name)),
+      : h('span', { className: 'dab-hier-orch', title: `${dabT('orchestratorLabel')} : ${orchestrator.name}${orchestrator.source === 'inferred' ? ` · ${dabT('roleInferred')}` : ''}` },
+        dabMascot(h, { role: orchestrator.roleId, resolvedRole: orchestrator, name: orchestrator.name, status: orchestrator.status, size: 20, variant: 'compact', decorative: true }),
+        h('span', null, orchestrator.name),
+        orchestrator.source === 'inferred' ? h('span', { className: 'dab-role-inferred' }, dabT('roleInferred')) : null),
     dabProjectCounters(h, project.counts)),
     project.folded ? null : h('div', { className: 'dab-hier-body' },
       project.teams.length === 0
