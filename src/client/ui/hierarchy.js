@@ -143,6 +143,51 @@ function dabCapabilityMatrix(h, capabilities, reasons) {
 }
 
 /**
+ * The supervision LAYER body: capabilities, recommendations, blocks,
+ * cross-project dependencies, Task Board availability and delegation limits.
+ * Shared by `DabSupervisionBand` (hierarchy view) and the compact
+ * `DabSuperOrchestratorBar` (cockpit), so the same real facts are never
+ * rendered twice with two different meanings.
+ */
+function DabSupervisionBody({ workspace, totals, projects, id = DAB_SUPERVISION_BODY_ID, hidden = false }) {
+  const h = React.createElement
+  return h('div', { className: 'dab-band-body', id, hidden },
+    workspace.available ? null : h('div', { className: 'dab-band-notice' }, dabT('supervisionUnavailable')),
+    // A Task Board that cannot be read is REPORTED here, not silently missing.
+    workspace.taskboard !== null && workspace.taskboard !== undefined && workspace.taskboard.available === false
+      ? h('div', { className: 'dab-band-notice', title: String(workspace.taskboard.reason ?? '') },
+        `${dabT('taskboardUnavailable')}${workspace.taskboard.reason ? ` — ${String(workspace.taskboard.reason)}` : ''}`)
+      : null,
+    h('div', { className: 'dab-muted' }, dabT('supervisionSynthetic')),
+    workspace.agent !== null && workspace.agent !== undefined
+      ? h('div', { className: 'dab-band-agent' },
+        h('span', { className: 'dab-label' }, `${dabT('superOrchestrator')} : `),
+        h('span', null, String(workspace.agent.name ?? workspace.agent.id ?? '')),
+        workspace.agent.status ? h('span', { className: 'dab-tag' }, dabStatusLabel(workspace.agent.status)) : null)
+      : null,
+    workspace.delegation === null || workspace.delegation === undefined
+      ? null
+      : h('div', { className: 'dab-muted' }, dabT('supervisionDelegation', {
+        inFlight: Number(workspace.delegation.inFlight) || 0,
+        depth: workspace.delegation.depthLimit ?? '?',
+        concurrent: workspace.delegation.concurrentLimit ?? '?',
+        hourly: workspace.delegation.hourlyLimit ?? '?',
+      })),
+    h('div', { className: 'dab-band-section' },
+      h('div', { className: 'dab-label' }, `${dabT('supervisionRecommendations')} (${Array.isArray(workspace.recommendations) ? workspace.recommendations.length : 0})`),
+      dabRecommendationList(h, workspace.recommendations, projects)),
+    h('div', { className: 'dab-band-section' },
+      h('div', { className: 'dab-label' }, `${dabT('supervisionBlocks')} (${Array.isArray(workspace.blocks) ? workspace.blocks.length : 0})`),
+      dabBlockList(h, workspace.blocks)),
+    h('div', { className: 'dab-band-section' },
+      h('div', { className: 'dab-label' }, `${dabT('supervisionDependencies')} (${Number(totals.dependencies) || 0})`),
+      dabDependencyList(h, workspace.crossProjectDependencies, projects)),
+    h('div', { className: 'dab-band-section' },
+      h('div', { className: 'dab-label' }, dabT('supervisionCapabilities')),
+      dabCapabilityMatrix(h, workspace.capabilities, workspace.capabilityReasons)))
+}
+
+/**
  * The supervision band (host supervision layer). Collapsed by default when a
  * single project exists: the caller owns the persisted open state.
  */
@@ -182,40 +227,7 @@ function DabSupervisionBand({ workspace, totals, projects, open, onToggle }) {
 
   // The body is ALWAYS rendered (hidden when collapsed): `aria-controls` must
   // never point at a missing element, and the hidden attribute is enough.
-  const body = h('div', { className: 'dab-band-body', id: DAB_SUPERVISION_BODY_ID, hidden: !open },
-    workspace.available ? null : h('div', { className: 'dab-band-notice' }, dabT('supervisionUnavailable')),
-    // A Task Board that cannot be read is REPORTED here, not silently missing.
-    workspace.taskboard !== null && workspace.taskboard !== undefined && workspace.taskboard.available === false
-      ? h('div', { className: 'dab-band-notice', title: String(workspace.taskboard.reason ?? '') },
-        `${dabT('taskboardUnavailable')}${workspace.taskboard.reason ? ` — ${String(workspace.taskboard.reason)}` : ''}`)
-      : null,
-    h('div', { className: 'dab-muted' }, dabT('supervisionSynthetic')),
-    workspace.agent !== null && workspace.agent !== undefined
-      ? h('div', { className: 'dab-band-agent' },
-        h('span', { className: 'dab-label' }, `${dabT('superOrchestrator')} : `),
-        h('span', null, String(workspace.agent.name ?? workspace.agent.id ?? '')),
-        workspace.agent.status ? h('span', { className: 'dab-tag' }, dabStatusLabel(workspace.agent.status)) : null)
-      : null,
-    workspace.delegation === null || workspace.delegation === undefined
-      ? null
-      : h('div', { className: 'dab-muted' }, dabT('supervisionDelegation', {
-        inFlight: Number(workspace.delegation.inFlight) || 0,
-        depth: workspace.delegation.depthLimit ?? '?',
-        concurrent: workspace.delegation.concurrentLimit ?? '?',
-        hourly: workspace.delegation.hourlyLimit ?? '?',
-      })),
-    h('div', { className: 'dab-band-section' },
-      h('div', { className: 'dab-label' }, `${dabT('supervisionRecommendations')} (${Array.isArray(workspace.recommendations) ? workspace.recommendations.length : 0})`),
-      dabRecommendationList(h, workspace.recommendations, projects)),
-    h('div', { className: 'dab-band-section' },
-      h('div', { className: 'dab-label' }, `${dabT('supervisionBlocks')} (${Array.isArray(workspace.blocks) ? workspace.blocks.length : 0})`),
-      dabBlockList(h, workspace.blocks)),
-    h('div', { className: 'dab-band-section' },
-      h('div', { className: 'dab-label' }, `${dabT('supervisionDependencies')} (${Number(totals.dependencies) || 0})`),
-      dabDependencyList(h, workspace.crossProjectDependencies, projects)),
-    h('div', { className: 'dab-band-section' },
-      h('div', { className: 'dab-label' }, dabT('supervisionCapabilities')),
-      dabCapabilityMatrix(h, workspace.capabilities, workspace.capabilityReasons)))
+  const body = h(DabSupervisionBody, { workspace, totals, projects, hidden: !open })
 
   return h('section', {
     className: 'dab-band',

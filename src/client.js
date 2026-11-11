@@ -2926,13 +2926,17 @@ function supervisionTaskIndex(supervision) {
  *   - finished-and-not-consulted results; unseen failures;
  *   - everything else (idle, read, archived) is history: hidden by default,
  *     reachable through the "recent" filter, the search, or the History drawer.
+ * The additive "action" filter narrows the same view to the interventions that
+ * actually need the operator (`isActionRequired`): waiting_user,
+ * provider_unavailable, and unseen failed/interrupted launches. It is the data
+ * source of the cockpit "À traiter" control.
  * Age is used only to scope the optional "recent" filter, never to set a status.
  *
  * @module dsh-agent-board/board/view
  */
 
 
-const VIEW_FILTERS = Object.freeze(['attention', 'recent', 'all'])
+const VIEW_FILTERS = Object.freeze(['attention', 'action', 'recent', 'all'])
 const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000
 const DEFAULT_CHILD_LIMIT = 4
 const DEFAULT_TREE_LIMIT = 8
@@ -2955,6 +2959,26 @@ function isAttention(node) {
   if (node.status === STATUS.PROVIDER_UNAVAILABLE) return true
   if (node.status === STATUS.FINISHED_UNREAD) return true
   if (node.status === STATUS.FAILED && node.seen !== true) return true
+  return false
+}
+
+/**
+ * Is this node an intervention the operator must act on right now?
+ *
+ * Strictly narrower than `isAttention()` (which also covers running agents and
+ * unread results): waiting for the user, a provider outage, and a failure or an
+ * interruption the user has not read yet. An archived session is history
+ * whatever its status, exactly like `isAttention()`.
+ *
+ * This predicate never depends on age, role, model or Task Board state.
+ */
+function isActionRequired(node) {
+  if (node === undefined || node === null) return false
+  if (node.archived === true) return false
+  if (node.status === STATUS.WAITING_USER) return true
+  if (node.status === STATUS.PROVIDER_UNAVAILABLE) return true
+  if (node.status === STATUS.FAILED) return node.seen !== true
+  if (node.status === STATUS.INTERRUPTED) return node.seen !== true
   return false
 }
 
@@ -3019,9 +3043,9 @@ function aggregateSubtrees(projection) {
   return agg
 }
 
-function matchesQuery(node, query) {
+function matchesQuery(node, query, taskTitle = null) {
   if (query === '') return true
-  const haystack = [node.title, node.role, node.projectTitle, node.id, node.taskId, node.model?.model, node.model?.provider, node.goal]
+  const haystack = [node.title, node.role, node.projectTitle, node.id, node.taskId, taskTitle, node.model?.model, node.model?.provider, node.goal]
     .filter(value => typeof value === 'string')
     .join(' ')
     .toLowerCase()
@@ -3029,9 +3053,10 @@ function matchesQuery(node, query) {
 }
 
 /** Is this node itself included by the active filter? */
-function includedByFilter(node, filter, now, query = '') {
-  if (query !== '') return matchesQuery(node, query)
+function includedByFilter(node, filter, now, query = '', taskTitle = null) {
+  if (query !== '') return matchesQuery(node, query, taskTitle)
   if (filter === 'all') return node.blank !== true
+  if (filter === 'action') return isActionRequired(node)
   if (isAttention(node)) return true
   if (filter === 'recent') {
     if (node.archived === true || node.blank === true) return false
@@ -3045,8 +3070,10 @@ function includedByFilter(node, filter, now, query = '') {
  *
  * @param {object} projection buildProjection() output
  * @param {object} options
- * @param {'attention'|'recent'|'all'} options.filter
+ * @param {'attention'|'action'|'recent'|'all'} options.filter
  * @param {string} options.query       free-text search (overrides filter)
+ * @param {Map<string,string>|null} [options.taskTitles] task id -> Task Board
+ *   task title; when supplied, the query also matches the linked task title
  * @param {string|null} options.project only this project id, or null for all
  * @param {Set<string>} options.expanded node ids whose hidden children are revealed
  * @param {Set<string>} options.collapsed node ids whose branch is folded
@@ -3063,6 +3090,14 @@ function buildBoardView(projection, options = {}) {
   const dismissed = options.dismissed ?? new Set()
   const childLimit = Number(options.childLimit) || DEFAULT_CHILD_LIMIT
   const agg = options.aggregates ?? aggregateSubtrees(projection)
+  // Optional, additive: the linked Task Board title is searchable when the ledger
+  // was readable. Without this option the query behaves exactly as before.
+  const taskTitles = options.taskTitles !== null && typeof options.taskTitles === 'object' ? options.taskTitles : null
+  const taskTitleOf = node => {
+    if (taskTitles === null || node.taskId === null || node.taskId === undefined) return null
+    if (typeof taskTitles.get === 'function') return taskTitles.get(String(node.taskId)) ?? null
+    return Object.prototype.hasOwnProperty.call(taskTitles, String(node.taskId)) ? taskTitles[String(node.taskId)] : null
+  }
 
   // A node is kept when it, or anything under it, is included (ancestors of an
   // included node are therefore always kept).
@@ -3070,8 +3105,11 @@ function buildBoardView(projection, options = {}) {
   const keeps = node => {
     if (keepMemo.has(node.id)) return keepMemo.get(node.id)
     keepMemo.set(node.id, false) // cycle guard
-    // Dismissed nodes leave the attention/recent views (still searchable, still in "all").
-    let keep = dismissed.has(node.id) && query === '' && filter !== 'all' ? false : includedByFilter(node, filter, now, query)
+    // Dismissed nodes leave the attention/action/recent views (still searchable,
+    // still in "all").
+    let keep = dismissed.has(node.id) && query === '' && filter !== 'all'
+      ? false
+      : includedByFilter(node, filter, now, query, taskTitleOf(node))
     for (const childId of node.children) {
       const child = projection.byId.get(childId)
       if (child !== undefined && keeps(child)) keep = true
@@ -3596,10 +3634,28 @@ function buildHierarchyView(projection, view, supervision, options = {}) {
     available,
   }
 
+  // Every project that REALLY has a declared (or deduced) orchestrator, even when
+  // the current filter or the fold state hides that project. The cockpit band
+  // counts and shows these; the view filter must not change the supervision
+  // picture.
+  const orchestrators = []
+  for (const [projectId, projectNodes] of nodesByProject) {
+    const orchestrator = findProjectOrchestrator(projectNodes, roles)
+    if (orchestrator === null) continue
+    orchestrators.push({
+      projectId,
+      projectTitle: projectNodes[0]?.projectTitle ?? String(projectId),
+      unassigned: projectId === 'unassigned',
+      orchestrator,
+    })
+  }
+  orchestrators.sort((a, b) => String(a.projectTitle).localeCompare(String(b.projectTitle)))
+
   return {
     workspace,
     projects,
     projectsById: new Map(projects.map(project => [project.id, project])),
+    orchestrators,
     // Per-node resolved role (declared role -> approved role, or generic).
     // Additive to the contract shape so the renderer does not re-resolve it.
     roles,
@@ -3673,6 +3729,294 @@ function filterBoardViewByAgent(view, filters, options = {}) {
 }
 
 
+// ---- src/board/overview.js ----
+/**
+ * Flat cockpit overview model (pure): one ordered list of agent cards with
+ * stable sections and indicator counts, computed from the projection only.
+ *
+ * This module is the data half of the responsive cockpit (see
+ * docs/UX-COCKPIT-CONTRACT.md, "Data contract"). The React layer only renders
+ * the output: it never re-derives a status, a section or a count.
+ *
+ * Honesty rules:
+ *   - no status is derived from age, role, model or task state; the section of
+ *     a card is its projection status, and its Task Board state is a separate
+ *     ledger fact rendered as its own chip;
+ *   - the `review` bucket is ONLY the linked Task Board state `in_review`; when
+ *     the ledger is not readable, `reviewAvailable` is false and the review
+ *     count stays 0 (the UI shows the real reason, never a fabricated number);
+ *   - archived sessions are operator-dismissed history, exactly as in
+ *     `board/view.js`, so they are never an intervention;
+ *   - blank sessions are not agents: they are counted in `counts.total` but not
+ *     in `counts.agents`, never in a bucket and never as a card.
+ *
+ * Counting: `attention + active + review + other === counts.agents` (every
+ * non-blank node once, with precedence attention > active > review > other).
+ * The buckets describe the whole projection, independent from the view filter,
+ * the project filter, the search, the focus or the dismiss preference: they are
+ * indicators, not a count of the rendered cards (that is `counts.shown`).
+ *
+ * Ordering: the fixed section order (attention, running, other), then
+ * `sortAttention()` inside each section, which already ends with the title and
+ * then the id, so the result is a deterministic total order.
+ *
+ * @module dsh-agent-board/board/overview
+ */
+
+
+/** Fixed order of the cockpit sections. */
+const OVERVIEW_SECTIONS = Object.freeze(['attention', 'running', 'other'])
+
+/** Indicator buckets, in precedence order (each node counted exactly once). */
+const OVERVIEW_BUCKETS = Object.freeze(['attention', 'active', 'review', 'other'])
+
+const TASK_IN_REVIEW = 'in_review'
+
+function isIndex(value) {
+  return value !== null && typeof value === 'object' && typeof value.get === 'function'
+}
+
+function isReadableIndex(value) {
+  if (isIndex(value)) return true
+  // Tolerant read of a plain object index; `null`/`undefined` mean the ledger is
+  // not readable and must never be turned into "no task is in review".
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function indexedValue(index, id) {
+  if (index === null || id === null || id === undefined) return null
+  const key = String(id)
+  if (isIndex(index)) return index.get(key) ?? null
+  return Object.prototype.hasOwnProperty.call(index, key) ? index[key] : null
+}
+
+function isRootNode(node) {
+  return node.parentId === null || node.parentId === undefined || node.orphan === true || node.parentCycle === true
+}
+
+/**
+ * Depth of every node from its displayed root, cycle-safe and linear.
+ * A flagged root (orphan / broken cycle) is depth 0 even when it still carries
+ * its declared `parentId`, matching the tree `buildProjection()` produces.
+ */
+function computeDepths(nodes, byId) {
+  const memo = new Map()
+  for (const node of nodes) {
+    if (memo.has(node.id)) continue
+    const path = []
+    const seen = new Set()
+    let cursor = node
+    while (cursor !== undefined && !memo.has(cursor.id) && !isRootNode(cursor) && !seen.has(cursor.id)) {
+      seen.add(cursor.id)
+      path.push(cursor)
+      cursor = byId.get(String(cursor.parentId))
+    }
+    let depth
+    if (cursor !== undefined && isRootNode(cursor)) {
+      if (!memo.has(cursor.id)) memo.set(cursor.id, 0)
+      depth = memo.get(cursor.id) + 1
+    } else if (cursor !== undefined && memo.has(cursor.id)) {
+      depth = memo.get(cursor.id) + 1
+    } else {
+      // Hand-built input with an unflagged cycle: break it deterministically at
+      // the current path instead of recursing forever.
+      depth = 0
+    }
+    for (let index = path.length - 1; index >= 0; index -= 1) {
+      memo.set(path[index].id, depth)
+      depth += 1
+    }
+  }
+  return memo
+}
+
+/** Section of a card: status only (the review bucket is not a section). */
+function sectionOf(node) {
+  if (isActionRequired(node)) return 'attention'
+  if (node.status === STATUS.RUNNING || node.status === STATUS.RECOVERING) return 'running'
+  return 'other'
+}
+
+/** Indicator bucket, mutually exclusive with the documented precedence. */
+function bucketOf(node, taskStates, reviewAvailable) {
+  if (isActionRequired(node)) return 'attention'
+  if (node.status === STATUS.RUNNING || node.status === STATUS.RECOVERING) return 'active'
+  if (reviewAvailable && indexedValue(taskStates, node.taskId) === TASK_IN_REVIEW) return 'review'
+  return 'other'
+}
+
+/** Search over the fields the cockpit contract lists, plus the declared role. */
+function matchesOverviewQuery(node, query, role, taskTitle) {
+  if (query === '') return true
+  const haystack = [
+    node.title,
+    node.role,
+    role?.roleId,
+    role?.roleLabel,
+    node.projectTitle,
+    node.id,
+    node.taskId,
+    taskTitle,
+    typeof node.model === 'string' ? node.model : node.model?.model,
+    node.model?.provider,
+    node.goal,
+  ]
+    .filter(value => typeof value === 'string')
+    .join(' ')
+    .toLowerCase()
+  return query.split(/\s+/).filter(Boolean).every(term => haystack.includes(term))
+}
+
+/**
+ * Build the flat cockpit overview.
+ *
+ * @param {object} projection `buildProjection()` output (tolerant of `undefined`)
+ * @param {object} [options]
+ * @param {'attention'|'action'|'all'|'recent'} [options.filter] view filter
+ *   (default `attention`, the existing "current work" policy)
+ * @param {string} [options.query] free-text search; when non-empty it overrides
+ *   the view filter, exactly like `buildBoardView()`
+ * @param {string|null} [options.project] only this project id, or null for all
+ * @param {Set<string>} [options.dismissed] dismissed node ids (existing preference)
+ * @param {Map<string,object>} [options.roles] resolved roles from
+ *   `buildHierarchyView()` (optional; resolved from the projection otherwise)
+ * @param {Map<string,string>|null} [options.taskStates] task id -> Task Board
+ *   state; `null`/`undefined` means the ledger is not readable
+ * @param {Map<string,string>|null} [options.taskTitles] task id -> Task Board title
+ * @param {{role?:string|null,status?:string|null,taskState?:string|null}} [options.filters]
+ *   agent filters, normalized by `normalizeHierarchyFilters()`
+ * @param {'attention'|'active'|'review'|'other'|null} [options.focus] narrows to
+ *   one indicator bucket (and takes precedence over the view filter); null clears it
+ * @param {string|null} [options.selectedId] inspected node; when selecting it just
+ *   acknowledged it out of the active filter, it stays pinned in the overview
+ * @param {number} [options.now]
+ * @returns {{
+ *   sections: Array<{id:string, entries:Array<object>}>,
+ *   entries: Array<object>,
+ *   counts: {total:number, agents:number, active:number, attention:number,
+ *            review:number, other:number, shown:number, reviewAvailable:boolean},
+ *   filter: string, query: string, focus: string|null,
+ * }}
+ */
+function buildOverview(projection, options = {}) {
+  const source = projection !== null && typeof projection === 'object' ? projection : {}
+  const nodes = Array.isArray(source.nodes) ? source.nodes : []
+  const byId = source.byId instanceof Map ? source.byId : new Map(nodes.map(node => [node.id, node]))
+  // Normalized view input so a missing/partial projection degrades to an empty
+  // board instead of throwing inside the shared helpers.
+  const normalizedProjection = { nodes, byId }
+  const now = Number(options.now) || Date.now()
+
+  const filter = VIEW_FILTERS.includes(options.filter) ? options.filter : 'attention'
+  const query = typeof options.query === 'string' ? options.query.trim().toLowerCase() : ''
+  const focus = OVERVIEW_BUCKETS.includes(options.focus) ? options.focus : null
+  const project = typeof options.project === 'string' && options.project !== '' ? options.project : null
+  const dismissed = options.dismissed instanceof Set ? options.dismissed : new Set()
+
+  const taskStates = isReadableIndex(options.taskStates) ? options.taskStates : null
+  const taskTitles = isReadableIndex(options.taskTitles) ? options.taskTitles : null
+  const reviewAvailable = taskStates !== null
+
+  const filters = normalizeHierarchyFilters(options.filters)
+  // The Task Board state filter only applies when the ledger is readable;
+  // otherwise it is ignored (reported, never silently guessed).
+  const effectiveFilters = { ...filters, taskState: reviewAvailable ? filters.taskState : null }
+
+  const roles = options.roles instanceof Map ? options.roles : resolveNodeRoles(normalizedProjection, undefined, taskTitles)
+  const aggregates = aggregateSubtrees(normalizedProjection)
+  const depths = computeDepths(nodes, byId)
+  const selectedId = typeof options.selectedId === 'string' && options.selectedId !== '' ? options.selectedId : null
+
+  const makeEntry = node => ({
+    node,
+    role: roles.get(node.id) ?? null,
+    projectTitle: node.projectTitle ?? null,
+    parentTitle: node.parentId === null || node.parentId === undefined ? null : (byId.get(String(node.parentId))?.title ?? null),
+    taskState: reviewAvailable ? indexedValue(taskStates, node.taskId) : null,
+    taskTitle: indexedValue(taskTitles, node.taskId),
+    descendants: aggregates.get(node.id)?.descendants ?? 0,
+    depth: depths.get(node.id) ?? 0,
+    tier: attentionRank(node),
+  })
+
+  const counts = {
+    total: nodes.length,
+    agents: 0,
+    active: 0,
+    attention: 0,
+    review: 0,
+    other: 0,
+    shown: 0,
+    reviewAvailable,
+  }
+  const buckets = new Map()
+  for (const node of nodes) {
+    if (node.blank === true) continue
+    counts.agents += 1
+    const bucket = bucketOf(node, taskStates, reviewAvailable)
+    buckets.set(node.id, bucket)
+    counts[bucket] += 1
+  }
+
+  const included = []
+  for (const node of nodes) {
+    if (node.blank === true) continue
+    // The dismiss preference hides a session from the attention/action/recent
+    // views (an explicit "all" or a search still reaches it), as in view.js.
+    if (dismissed.has(node.id) && query === '' && filter !== 'all') continue
+    if (project !== null && node.projectId !== project) continue
+    if (!matchesHierarchyFilters(node, roles, effectiveFilters, taskStates, reviewAvailable)) continue
+    const bucket = buckets.get(node.id) ?? 'other'
+    if (focus !== null) {
+      if (bucket !== focus) continue
+    } else if (query === '') {
+      if (filter === 'action') {
+        if (!isActionRequired(node)) continue
+      } else if (filter === 'recent') {
+        const withinWindow = node.archived !== true
+          && Number.isFinite(Number(node.updatedAt))
+          && now - Number(node.updatedAt) <= RECENT_WINDOW_MS
+        if (!isAttention(node) && !withinWindow) continue
+      } else if (filter === 'attention') {
+        if (!isAttention(node)) continue
+      }
+      // filter === 'all': every non-blank node is included.
+    }
+    // A non-empty search overrides the view filter (existing board policy) and
+    // still respects the project, agent and focus narrowing above.
+    if (query !== '' && !matchesOverviewQuery(node, query, roles.get(node.id) ?? null, indexedValue(taskTitles, node.taskId))) continue
+    included.push(makeEntry(node))
+  }
+
+  // The inspected card stays visible while its inspector is open. Selecting a
+  // result ACKNOWLEDGES it (existing board behaviour), which can move it out of
+  // the attention filter; without this pin, the card would vanish under the
+  // operator's eyes and a keyboard user would lose their place. The pin respects
+  // the project, query and agent filters; it only bypasses the view filter.
+  if (selectedId !== null && !included.some(entry => entry.node.id === selectedId)) {
+    const node = byId.get(selectedId)
+    if (node !== undefined && node.blank !== true
+      && (project === null || node.projectId === project)
+      && (focus === null || (buckets.get(node.id) ?? 'other') === focus)
+      && matchesHierarchyFilters(node, roles, effectiveFilters, taskStates, reviewAvailable)
+      && (query === '' || matchesOverviewQuery(node, query, roles.get(node.id) ?? null, indexedValue(taskTitles, node.taskId)))) {
+      included.push(makeEntry(node))
+    }
+  }
+
+  const sections = []
+  const entries = []
+  for (const id of OVERVIEW_SECTIONS) {
+    const sectionEntries = included.filter(entry => sectionOf(entry.node) === id).sort(sortAttention)
+    sections.push({ id, entries: sectionEntries })
+    entries.push(...sectionEntries)
+  }
+  counts.shown = entries.length
+
+  return { sections, entries, counts, filter, query, focus }
+}
+
+
 // ---- src/board/interaction.js ----
 /**
  * Pointer/keyboard arbitration for agent cards (pure, timer-injected).
@@ -3732,6 +4076,15 @@ function createClickArbiter({
     },
     doubleClick(id) {
       return open(id)
+    },
+    /**
+     * Immediate selection (inspection), without the single-click delay. Used by
+     * the cockpit cards, whose keyboard contract is: Enter/Space = inspect, and
+     * opening a session requires the explicit "open" button.
+     */
+    select(id) {
+      cancel()
+      onSelect?.(id)
     },
     key(id, key) {
       if (key === 'Enter') { open(id); return true }
@@ -4254,7 +4607,7 @@ const DAB_STRINGS = {
     shownPlural: 'affichés',
     supervision: 'Supervision',
     supervisionLayer: 'Couche de supervision (non un agent)',
-    superOrchestrator: 'Super-orchestrateur',
+    superOrchestrator: 'Super Orchestrator',
     supervisionExpand: 'Afficher la supervision',
     supervisionCollapse: 'Masquer la supervision',
     supervisionUnavailable: 'Supervision non publiée par l’hôte : structure et comptages réels, capacités indisponibles.',
@@ -4311,6 +4664,44 @@ const DAB_STRINGS = {
     emptyFiltered: 'Aucun agent ne correspond aux filtres actifs.',
     clearFilters: 'Effacer les filtres',
     noActivity: 'Activité inconnue',
+    // --- responsive cockpit (GOAL 5)
+    cockpitSubtitle: 'Cockpit · Tous les projets',
+    modeObserve: 'Observation',
+    stopShort: 'Arrêt',
+    filterActive: 'En cours',
+    filterAction: 'À traiter',
+    viewGlobal: 'Vue globale',
+    statActive: 'Actifs',
+    statAttention: 'À traiter',
+    statReview: 'En revue',
+    statOther: 'Autres',
+    sectionAttention: 'Besoin d’attention',
+    sectionRunning: 'Agents en cours',
+    sectionOther: 'Autres activités',
+    sectionAgents: '{n} agents',
+    liveConnected: 'En direct',
+    liveDown: 'Hors ligne',
+    liveSecondary: 'Instance secondaire — lecture seule',
+    settings: 'Réglages et état de l’hôte',
+    filtersLabel: 'Filtres',
+    noFiltersActive: 'Aucun filtre',
+    activeFilters: '{n} filtres actifs',
+    superProjects: '{n} projets',
+    superOrchestrators: '{n} orchestrateurs',
+    orchestratorSingular: 'orchestrateur',
+    orchestratorPlural: 'orchestrateurs',
+    superNoOrchestrator: 'Aucun orchestrateur de projet déclaré',
+    superDetails: 'Détails de supervision',
+    statusNewResult: 'Nouveau résultat',
+    subagentsCount: '{n} sous-agents',
+    failoverMark: 'Changement de route',
+    statReviewUnavailable: 'Task Board illisible : aucune donnée de revue',
+    inspectorTitle: 'Détails de l’agent',
+    sheetClose: 'Fermer la fiche',
+    gridDensity: 'Densité des cartes',
+    allAgents: 'Tous les agents',
+    focusClear: 'Tout afficher',
+    taskLineNone: 'Aucune tâche liée',
   },
   en: {
     title: 'Agent Board',
@@ -4482,7 +4873,7 @@ const DAB_STRINGS = {
     shownPlural: 'shown',
     supervision: 'Supervision',
     supervisionLayer: 'Supervision layer (not an agent)',
-    superOrchestrator: 'Super orchestrator',
+    superOrchestrator: 'Super Orchestrator',
     supervisionExpand: 'Show supervision',
     supervisionCollapse: 'Hide supervision',
     supervisionUnavailable: 'Supervision not published by the host: real structure and counts, capabilities unavailable.',
@@ -4539,6 +4930,44 @@ const DAB_STRINGS = {
     emptyFiltered: 'No agent matches the active filters.',
     clearFilters: 'Clear filters',
     noActivity: 'Activity unknown',
+    // --- responsive cockpit (GOAL 5)
+    cockpitSubtitle: 'Cockpit · All projects',
+    modeObserve: 'Observe',
+    stopShort: 'Stop',
+    filterActive: 'Live',
+    filterAction: 'Needs action',
+    viewGlobal: 'Overview',
+    statActive: 'Active',
+    statAttention: 'Needs action',
+    statReview: 'In review',
+    statOther: 'Other',
+    sectionAttention: 'Needs attention',
+    sectionRunning: 'Agents running',
+    sectionOther: 'Other activity',
+    sectionAgents: '{n} agents',
+    liveConnected: 'Live',
+    liveDown: 'Offline',
+    liveSecondary: 'Secondary instance — read-only',
+    settings: 'Settings and host state',
+    filtersLabel: 'Filters',
+    noFiltersActive: 'No filter',
+    activeFilters: '{n} active filters',
+    superProjects: '{n} projects',
+    superOrchestrators: '{n} orchestrators',
+    orchestratorSingular: 'orchestrator',
+    orchestratorPlural: 'orchestrators',
+    superNoOrchestrator: 'No project orchestrator declared',
+    superDetails: 'Supervision details',
+    statusNewResult: 'New result',
+    subagentsCount: '{n} sub-agents',
+    failoverMark: 'Route changed',
+    statReviewUnavailable: 'Task Board unreadable: no review data',
+    inspectorTitle: 'Agent details',
+    sheetClose: 'Close agent sheet',
+    gridDensity: 'Card density',
+    allAgents: 'All agents',
+    focusClear: 'Show all',
+    taskLineNone: 'No linked task',
   },
 }
 
@@ -5102,6 +5531,256 @@ const DAB_CSS = `
   .dab-hier-ws-head { align-items: flex-start; }
   .dab-band-counters { gap: 8px; }
   .dab-hier-ws-sub { gap: 6px; }
+}
+
+/* =====================================================================
+ * RESPONSIVE COCKPIT (GOAL 5)
+ * Header + filter bar + Super Orchestrator band + indicators + adaptive
+ * grid + inspector drawer/sheet. Container queries only: the panel width is
+ * what matters, not the window width.
+ * ===================================================================== */
+
+/* ---------- header (52-60 px) */
+.dab-toolbar { padding: 8px 16px 7px; gap: 7px; border-bottom: 1px solid var(--dsw-alias-border-l3, transparent); background: var(--dsw-alias-bg-base); }
+.dab-head { display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 40px; }
+.dab-head-ident { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 auto; }
+.dab-head-mark { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 9px;
+  background: var(--dab-card-fill); color: var(--dsw-alias-label-secondary); font-size: 15px; line-height: 1; }
+.dab-head-text { min-width: 0; }
+.dab-title { font-size: 17px; line-height: 21px; font-weight: 600; margin: 0; letter-spacing: -.2px; white-space: nowrap; }
+.dab-subtitle { font-size: 11px; line-height: 15px; color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dab-head-actions { display: flex; align-items: center; gap: 7px; flex: none; }
+.dab-live { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
+.dab-live .dab-dot { width: 7px; height: 7px; }
+.dab-live[data-tone="running"] .dab-dot { background: var(--dsw-alias-state-success-primary); }
+.dab-live[data-tone="failed"] .dab-dot { background: var(--dsw-alias-state-error-primary); }
+.dab-live[data-tone="idle"] .dab-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--dsw-alias-label-secondary); }
+.dab-seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--dsw-radius-md); background: var(--dab-card-fill); flex: none; }
+.dab-seg-btn { display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 7px; min-height: 26px; padding: 3px 9px;
+  background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.dab-seg-btn[aria-pressed="true"] { background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font-weight: 500; }
+.dab-seg-btn:disabled { opacity: .45; cursor: default; }
+.dab-seg-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+.dab-stop { min-height: 30px; gap: 5px; }
+.dab-stop[data-danger="true"]:not([disabled]) { color: var(--dsw-alias-state-error-primary); }
+@media (hover: hover) { .dab-stop[data-danger="true"]:hover:not([disabled]) { background: var(--dsw-alias-interactive-bg-hover-danger); } }
+.dab-menu { position: relative; flex: none; }
+.dab-menu-btn { position: relative; }
+.dab-menu-badge { position: absolute; top: -1px; right: -1px; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 7px;
+  font-size: 9px; line-height: 13px; text-align: center; background: var(--dsw-alias-brand-primary); color: var(--dsw-alias-bg-base); font-variant-numeric: tabular-nums; }
+.dab-menu-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; min-width: 250px;
+  max-width: min(340px, calc(100vw - 20px)); padding: 10px; border-radius: 12px; background: var(--dab-panel-fill);
+  box-shadow: var(--dsw-elevation-prominent); display: flex; flex-direction: column; gap: 9px; }
+.dab-menu-pop[data-align="start"] { right: auto; left: 0; }
+.dab-menu-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.dab-menu-row .dab-dd { flex: 1 1 auto; min-width: 0; }
+.dab-menu-row .dab-select { width: 100%; max-width: none; }
+.dab-menu-row-actions { gap: 6px; }
+.dab-menu-label { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--dsw-alias-label-secondary); font-weight: 600; }
+.dab-menu-note { font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.dab-state-content { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dab-narrow-menu { display: flex; flex-direction: column; gap: 10px; min-width: min(280px, 80vw); }
+
+/* ---------- filter bar (40-45 px) */
+.dab-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.dab-search { display: flex; align-items: center; gap: 6px; padding: 0 10px; height: 32px; border-radius: 9px;
+  background: var(--dab-card-fill); min-width: 160px; flex: 1 1 200px; max-width: 320px; color: var(--dsw-alias-label-secondary); }
+.dab-search-ico { display: inline-flex; flex: none; }
+.dab-search .dab-input { flex: 1 1 auto; min-width: 0; max-width: none; height: 100%; min-height: 0; padding: 0; background: transparent; }
+.dab-chips { display: flex; align-items: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.dab-chips::-webkit-scrollbar { display: none; }
+.dab-chip-btn { border: 0; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px;
+  min-height: 30px; padding: 0 10px; border-radius: 8px; cursor: pointer; white-space: nowrap; }
+.dab-chip-btn[aria-pressed="true"] { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 13%, transparent);
+  color: var(--dsw-alias-label-primary); font-weight: 500; }
+.dab-chip-btn:focus-visible, .dab-stat:focus-visible, .dab-super-main:focus-visible, .dab-super-orch:focus-visible, .dab-gcard-open:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+.dab-shown { font-size: 11px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
+
+/* ---------- Super Orchestrator band (60-75 px closed) */
+.dab-super { flex: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 2px 0 12px; padding: 8px 12px;
+  min-height: 62px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 24%, transparent);
+  background: linear-gradient(105deg, color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, var(--dab-card-fill)), var(--dab-card-fill) 52%); }
+.dab-super-main { display: flex; align-items: center; gap: 10px; flex: 1 1 240px; min-width: 0; padding: 0; border: 0;
+  border-radius: 10px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.dab-super-mascot { flex: none; display: inline-flex; }
+.dab-super-ident { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.dab-super-title { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 14px; font-weight: 600; line-height: 19px; }
+.dab-super-state { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 400; color: var(--dsw-alias-label-secondary); }
+.dab-super-state .dab-dot { width: 7px; height: 7px; }
+.dab-super-state[data-status="active"] .dab-dot { background: var(--dsw-alias-state-success-primary); }
+.dab-super-state[data-status="blocked"] .dab-dot { background: var(--dsw-alias-state-error-primary); }
+.dab-super-sub { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.dab-super-sep { opacity: .6; }
+.dab-super-orchs { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; }
+.dab-super-orch { display: inline-flex; border: 1px solid var(--dsw-alias-border-l3, transparent); border-radius: 9px;
+  padding: 2px; background: var(--dsw-alias-bg-base); cursor: pointer; }
+.dab-super-orch:hover { border-color: var(--dsw-alias-brand-primary); }
+.dab-super-none { font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.dab-super-more { font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.dab-super .dab-band-body { flex: 1 0 100%; padding: 6px 2px 4px; }
+.dab-super .dab-band-head { min-height: 0; }
+
+/* ---------- indicators (50-60 px) */
+.dab-stats { display: flex; align-items: stretch; gap: 8px; margin: 0 0 14px; min-width: 0; }
+.dab-stat { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 8px 12px;
+  border: 1px solid var(--dsw-alias-border-l3, transparent); border-radius: 11px; background: var(--dab-card-fill);
+  color: var(--dsw-alias-label-primary); font: inherit; text-align: left; cursor: pointer; }
+.dab-stat[aria-pressed="true"] { box-shadow: inset 0 0 0 1.5px var(--dsw-alias-brand-primary); }
+.dab-stat[data-disabled="true"] { opacity: .55; cursor: default; }
+.dab-stat-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dab-stat-dot[data-tone="running"] { background: var(--dsw-alias-state-success-primary); }
+.dab-stat-dot[data-tone="waiting"] { background: var(--dsw-alias-state-warn-primary); }
+.dab-stat-dot[data-tone="reviewing"] { background: var(--dsw-alias-state-info-primary, var(--dsw-alias-brand-primary)); }
+.dab-stat-dot[data-tone="idle"] { background: var(--dsw-alias-label-secondary); }
+.dab-stat-value { font-size: 19px; line-height: 1; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dab-stat-label { font-size: 11px; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- global sections + adaptive grid (240-290 px cards) */
+.dab-overview { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.dab-section { min-width: 0; }
+.dab-section-head { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+.dab-section-title { margin: 0; font-size: 13px; line-height: 18px; font-weight: 600; }
+.dab-section-count { font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.dab-section-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.dab-section-dot[data-tone="waiting"] { background: var(--dsw-alias-state-warn-primary); }
+.dab-section-dot[data-tone="running"] { background: var(--dsw-alias-state-success-primary); }
+.dab-section-dot[data-tone="idle"] { background: var(--dsw-alias-state-info-primary, var(--dsw-alias-brand-primary)); }
+.dab-agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 248px), 1fr)); gap: 9px; min-width: 0; }
+.dab-agent-cell { min-width: 0; }
+
+/* ---------- global card */
+.dab-gcard { position: relative; display: flex; align-items: center; gap: 11px; min-width: 0; min-height: 92px; height: 100%;
+  padding: 10px 12px; border: 1px solid transparent; border-radius: 12px; background: var(--dab-card-fill);
+  cursor: pointer; user-select: none; outline: none;
+  transition: background-color .12s ease, border-color .12s ease, box-shadow .12s ease; }
+.dab-gcard[data-selected="true"] { box-shadow: 0 0 0 1.5px var(--dsw-alias-brand-primary); }
+.dab-gcard[data-status="waiting_user"] { border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 48%, transparent); }
+.dab-gcard[data-status="interrupted"] { border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 32%, transparent); }
+.dab-gcard[data-status="failed"][data-seen="false"] { border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 48%, transparent); }
+.dab-gcard[data-status="provider_unavailable"] { border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 32%, transparent); }
+.dab-gcard[data-calm="true"] .dab-gcard-name { color: var(--dsw-alias-label-secondary); font-weight: 500; }
+.dab-gcard-mascot { flex: none; display: inline-flex; }
+.dab-gcard-ident { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding-right: 14px; }
+.dab-gcard-row { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.dab-gcard-name { flex: 0 1 auto; min-width: 0; font-size: 13px; line-height: 17px; font-weight: 600;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.dab-gcard-failover { flex: none; font-size: 11px; line-height: 14px; color: var(--dsw-alias-label-secondary); }
+.dab-gcard-project { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 10px; line-height: 14px; color: var(--dsw-alias-label-secondary); }
+.dab-gcard-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-gcard-state { flex: none; white-space: nowrap; padding: 0 5px; border-radius: 999px; corner-shape: round;
+  background: var(--dab-chip-fill); font-size: 10px; line-height: 14px; }
+.dab-gcard-state[data-tone="waiting"] { color: var(--dsw-alias-state-warn-primary); }
+.dab-gcard-state[data-tone="failed"] { color: var(--dsw-alias-state-error-primary); }
+.dab-gcard-state[data-tone="unread"] { color: var(--dsw-alias-state-success-primary); }
+.dab-gcard-task { min-width: 0; font-size: 11px; line-height: 15px; color: var(--dsw-alias-label-secondary);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.dab-gcard-badge { position: absolute; top: 7px; right: 8px; padding: 0 5px; border-radius: 6px; background: var(--dab-chip-fill);
+  font-size: 10px; line-height: 16px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
+.dab-gcard-open { position: absolute; right: 3px; bottom: 3px; width: 26px; height: 26px; opacity: 0; }
+.dab-gcard:focus-within .dab-gcard-open, .dab-gcard[data-selected="true"] .dab-gcard-open { opacity: 1; }
+@media (hover: hover) { .dab-gcard:hover .dab-gcard-open { opacity: 1; } }
+@media (hover: none) { .dab-gcard-open { opacity: .75; } }
+
+/* ---------- inspector: desktop drawer overlaying the grid */
+.dab-insp-overlay { position: absolute; inset: 0; z-index: 40; }
+.dab-insp-scrim { position: absolute; inset: 0; background: color-mix(in srgb, #000 26%, transparent); }
+.dab-insp-panel { position: absolute; top: 8px; right: 8px; bottom: 8px; width: min(390px, calc(100% - 16px));
+  display: flex; flex-direction: column; overflow: hidden; border-radius: 14px; background: var(--dab-panel-fill);
+  box-shadow: var(--dsw-elevation-prominent); }
+.dab-insp-grip { display: none; }
+.dab-insp-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 14px 16px; }
+/* The preview becomes the drawer body: no second frame, no second shadow, and
+   it stays IN FLOW (the old narrow rule positioned it absolutely, which would
+   collapse the sheet to its grip). */
+.dab-insp-panel .dab-inspector { position: static; inset: auto; width: 100%; max-width: none; max-height: none; margin: 0; padding: 6px 2px 8px;
+  background: transparent; box-shadow: none; overflow: visible; align-self: auto; }
+.dab-insp-panel .dab-insp-head { position: sticky; top: 0; z-index: 2; background: var(--dab-panel-fill); padding: 4px 0 6px; }
+/* The drawer is narrower than the old inline inspector: identity chips wrap
+   instead of being clipped, and every long value may break. */
+.dab-insp-panel .dab-insp-status { flex-wrap: wrap; row-gap: 4px; }
+.dab-insp-panel .dab-insp-status > * { max-width: 100%; min-width: 0; }
+.dab-insp-panel .dab-chip, .dab-insp-panel .dab-role-chip, .dab-insp-panel .dab-task-chip, .dab-insp-panel .dab-family-chip { max-width: 100%; }
+.dab-insp-panel .dab-actions { gap: 6px; }
+.dab-insp-panel .dab-dl dd { overflow-wrap: anywhere; }
+
+/* Mid-width panels (a desktop window with a narrow Agent Board column): keep
+   3–4 columns instead of two enormous cards. */
+@container dab (max-width: 1023px) {
+  .dab-agent-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 224px), 1fr)); }
+}
+/* Below 900 px the view-switch labels move to tooltips so the filter bar stays
+   on ONE row (the mockup never uses two command rows on desktop). */
+@container dab (max-width: 900px) {
+  .dab-seg-text { display: none; }
+  .dab-shown { display: none; }
+}
+
+/* ---------- narrow panel: one-line header, 2-column mosaic, bottom sheet */
+@container dab (max-width: 720px) {
+  .dab-toolbar { padding: 8px 10px 6px; gap: 6px; }
+  .dab-head { min-height: 34px; gap: 8px; }
+  .dab-head-mark { width: 28px; height: 28px; font-size: 14px; border-radius: 8px; }
+  .dab-title { font-size: 15px; line-height: 19px; }
+  .dab-subtitle { font-size: 10px; line-height: 13px; }
+  .dab-head-actions { gap: 4px; }
+  .dab-stop { min-height: 30px; padding: 4px 8px; }
+  .dab-stop-text { display: none; }
+  .dab-filters { gap: 6px; flex-wrap: wrap; }
+  .dab-search { flex: 1 1 140px; max-width: none; }
+  .dab-chips { order: 3; flex: 1 0 100%; gap: 0; margin: 0 -4px; padding: 0 4px; }
+  .dab-chip-btn { min-height: 32px; }
+  .dab-viewswitch .dab-seg-btn { padding: 5px 7px; }
+  .dab-shown { display: none; }
+  .dab-menu-pop { min-width: 240px; }
+  .dab-super { padding: 8px 10px; gap: 8px; min-height: 0; margin-bottom: 10px; }
+  .dab-super-main { flex: 1 1 auto; }
+  .dab-super-projects { display: none; }
+  /* The mode is already in the header menu on a narrow panel: a third line of
+     text would push the band past the mobile budget. */
+  .dab-super-sub .dab-tag { display: none; }
+  /* Mobile band = mascot, name, state, project count. The orchestrator mini
+     avatars live in the expandable details, exactly like the mockup. */
+  .dab-super-orchs { display: none; }
+  .dab-stats { gap: 6px; margin-bottom: 12px; }
+  .dab-stat { flex-wrap: wrap; align-content: center; gap: 2px 5px; min-height: 46px; padding: 6px 8px; border-radius: 10px; }
+  .dab-stat-value { font-size: 17px; }
+  .dab-stat-label { flex: 1 0 100%; font-size: 10px; line-height: 13px; }
+  .dab-overview { gap: 14px; }
+  .dab-section-head { margin-bottom: 6px; }
+  .dab-agent-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .dab-gcard { flex-direction: column; align-items: flex-start; gap: 3px; min-height: 104px; padding: 7px 9px; }
+  .dab-gcard-ident { width: 100%; padding-right: 0; gap: 1px; }
+  .dab-gcard-name { font-size: 12px; line-height: 16px; width: 100%; -webkit-line-clamp: 1; }
+  .dab-gcard-project { font-size: 9.5px; line-height: 13px; }
+  .dab-gcard-task { font-size: 10px; line-height: 13px; }
+  .dab-gcard-badge { top: 6px; right: 6px; }
+  .dab-gcard-open { width: 30px; height: 30px; right: 0; bottom: 0; }
+  .dab-super-none { display: none; }
+  .dab-insp-panel { top: auto; left: 0; right: 0; bottom: 0; width: 100%; max-height: 78%;
+    border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .dab-insp-grip { display: block; flex: none; width: 38px; height: 4px; margin: 8px auto 2px; border-radius: 2px;
+    background: var(--dsw-alias-label-secondary); opacity: .5; }
+  .dab-insp-body { padding: 0 14px calc(14px + env(safe-area-inset-bottom, 0px)); }
+  .dab-insp-panel .dab-insp-head { padding-top: 2px; }
+  .dab-insp-panel .dab-dl { grid-template-columns: 1fr; gap: 1px 0; }
+  .dab-insp-panel .dab-dl dt { margin-top: 6px; }
+  .dab-projects { display: block; }
+}
+@container dab (max-width: 340px) {
+  .dab-agent-grid { grid-template-columns: minmax(0, 1fr); }
+  .dab-gcard { min-height: 84px; flex-direction: row; align-items: center; }
+  .dab-gcard-ident { width: auto; }
+}
+/* Coarse pointers: real touch targets, no hover-only affordances. */
+@media (pointer: coarse) {
+  .dab-chip-btn, .dab-seg-btn { min-height: 36px; }
+  .dab-stat { min-height: 48px; }
+  .dab-icon-btn, .dab-menu-btn { width: 36px; height: 36px; }
+  .dab-gcard-open { width: 32px; height: 32px; opacity: .85; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dab-gcard { transition: none; }
 }
 `
 
@@ -5714,6 +6393,51 @@ function dabCapabilityMatrix(h, capabilities, reasons) {
 }
 
 /**
+ * The supervision LAYER body: capabilities, recommendations, blocks,
+ * cross-project dependencies, Task Board availability and delegation limits.
+ * Shared by `DabSupervisionBand` (hierarchy view) and the compact
+ * `DabSuperOrchestratorBar` (cockpit), so the same real facts are never
+ * rendered twice with two different meanings.
+ */
+function DabSupervisionBody({ workspace, totals, projects, id = DAB_SUPERVISION_BODY_ID, hidden = false }) {
+  const h = React.createElement
+  return h('div', { className: 'dab-band-body', id, hidden },
+    workspace.available ? null : h('div', { className: 'dab-band-notice' }, dabT('supervisionUnavailable')),
+    // A Task Board that cannot be read is REPORTED here, not silently missing.
+    workspace.taskboard !== null && workspace.taskboard !== undefined && workspace.taskboard.available === false
+      ? h('div', { className: 'dab-band-notice', title: String(workspace.taskboard.reason ?? '') },
+        `${dabT('taskboardUnavailable')}${workspace.taskboard.reason ? ` — ${String(workspace.taskboard.reason)}` : ''}`)
+      : null,
+    h('div', { className: 'dab-muted' }, dabT('supervisionSynthetic')),
+    workspace.agent !== null && workspace.agent !== undefined
+      ? h('div', { className: 'dab-band-agent' },
+        h('span', { className: 'dab-label' }, `${dabT('superOrchestrator')} : `),
+        h('span', null, String(workspace.agent.name ?? workspace.agent.id ?? '')),
+        workspace.agent.status ? h('span', { className: 'dab-tag' }, dabStatusLabel(workspace.agent.status)) : null)
+      : null,
+    workspace.delegation === null || workspace.delegation === undefined
+      ? null
+      : h('div', { className: 'dab-muted' }, dabT('supervisionDelegation', {
+        inFlight: Number(workspace.delegation.inFlight) || 0,
+        depth: workspace.delegation.depthLimit ?? '?',
+        concurrent: workspace.delegation.concurrentLimit ?? '?',
+        hourly: workspace.delegation.hourlyLimit ?? '?',
+      })),
+    h('div', { className: 'dab-band-section' },
+      h('div', { className: 'dab-label' }, `${dabT('supervisionRecommendations')} (${Array.isArray(workspace.recommendations) ? workspace.recommendations.length : 0})`),
+      dabRecommendationList(h, workspace.recommendations, projects)),
+    h('div', { className: 'dab-band-section' },
+      h('div', { className: 'dab-label' }, `${dabT('supervisionBlocks')} (${Array.isArray(workspace.blocks) ? workspace.blocks.length : 0})`),
+      dabBlockList(h, workspace.blocks)),
+    h('div', { className: 'dab-band-section' },
+      h('div', { className: 'dab-label' }, `${dabT('supervisionDependencies')} (${Number(totals.dependencies) || 0})`),
+      dabDependencyList(h, workspace.crossProjectDependencies, projects)),
+    h('div', { className: 'dab-band-section' },
+      h('div', { className: 'dab-label' }, dabT('supervisionCapabilities')),
+      dabCapabilityMatrix(h, workspace.capabilities, workspace.capabilityReasons)))
+}
+
+/**
  * The supervision band (host supervision layer). Collapsed by default when a
  * single project exists: the caller owns the persisted open state.
  */
@@ -5753,40 +6477,7 @@ function DabSupervisionBand({ workspace, totals, projects, open, onToggle }) {
 
   // The body is ALWAYS rendered (hidden when collapsed): `aria-controls` must
   // never point at a missing element, and the hidden attribute is enough.
-  const body = h('div', { className: 'dab-band-body', id: DAB_SUPERVISION_BODY_ID, hidden: !open },
-    workspace.available ? null : h('div', { className: 'dab-band-notice' }, dabT('supervisionUnavailable')),
-    // A Task Board that cannot be read is REPORTED here, not silently missing.
-    workspace.taskboard !== null && workspace.taskboard !== undefined && workspace.taskboard.available === false
-      ? h('div', { className: 'dab-band-notice', title: String(workspace.taskboard.reason ?? '') },
-        `${dabT('taskboardUnavailable')}${workspace.taskboard.reason ? ` — ${String(workspace.taskboard.reason)}` : ''}`)
-      : null,
-    h('div', { className: 'dab-muted' }, dabT('supervisionSynthetic')),
-    workspace.agent !== null && workspace.agent !== undefined
-      ? h('div', { className: 'dab-band-agent' },
-        h('span', { className: 'dab-label' }, `${dabT('superOrchestrator')} : `),
-        h('span', null, String(workspace.agent.name ?? workspace.agent.id ?? '')),
-        workspace.agent.status ? h('span', { className: 'dab-tag' }, dabStatusLabel(workspace.agent.status)) : null)
-      : null,
-    workspace.delegation === null || workspace.delegation === undefined
-      ? null
-      : h('div', { className: 'dab-muted' }, dabT('supervisionDelegation', {
-        inFlight: Number(workspace.delegation.inFlight) || 0,
-        depth: workspace.delegation.depthLimit ?? '?',
-        concurrent: workspace.delegation.concurrentLimit ?? '?',
-        hourly: workspace.delegation.hourlyLimit ?? '?',
-      })),
-    h('div', { className: 'dab-band-section' },
-      h('div', { className: 'dab-label' }, `${dabT('supervisionRecommendations')} (${Array.isArray(workspace.recommendations) ? workspace.recommendations.length : 0})`),
-      dabRecommendationList(h, workspace.recommendations, projects)),
-    h('div', { className: 'dab-band-section' },
-      h('div', { className: 'dab-label' }, `${dabT('supervisionBlocks')} (${Array.isArray(workspace.blocks) ? workspace.blocks.length : 0})`),
-      dabBlockList(h, workspace.blocks)),
-    h('div', { className: 'dab-band-section' },
-      h('div', { className: 'dab-label' }, `${dabT('supervisionDependencies')} (${Number(totals.dependencies) || 0})`),
-      dabDependencyList(h, workspace.crossProjectDependencies, projects)),
-    h('div', { className: 'dab-band-section' },
-      h('div', { className: 'dab-label' }, dabT('supervisionCapabilities')),
-      dabCapabilityMatrix(h, workspace.capabilities, workspace.capabilityReasons)))
+  const body = h(DabSupervisionBody, { workspace, totals, projects, hidden: !open })
 
   return h('section', {
     className: 'dab-band',
@@ -5927,6 +6618,357 @@ function DabHierarchyView({ hierarchy, ctx, compact }) {
       ? h('div', { className: 'dab-hier-projects' }, hierarchy.projects.map(project => h(DabHierarchyProject, { key: project.id, project, ctx, compact, filtersActive })))
       : null)
 }
+
+
+// ---- src/client/ui/overview.js ----
+/**
+ * Global cockpit view: the four runtime indicators and the adaptive grid of
+ * supervision cards.
+ *
+ * Everything is a projection of `board/overview.js` (pure, unit-tested): this
+ * module only renders it. It never computes a status, a count or an ordering
+ * from what is displayed: the sections and the counts come from the model, which
+ * reads the real projection.
+ *
+ * Identity rules (GOAL 4, unchanged): the mascot carries the ROLE; the status is
+ * a separate dot plus a text word (colour is never the only signal). A role the
+ * runtime did not declare is shown as deduced, exactly like the other views.
+ *
+ * @module dsh-agent-board/client/ui/overview
+ */
+
+const DAB_OVERVIEW_BUCKETS = Object.freeze([
+  ['active', 'statActive', 'running'],
+  ['attention', 'statAttention', 'waiting'],
+  ['review', 'statReview', 'reviewing'],
+  ['other', 'statOther', 'idle'],
+])
+
+/** The three sections of the cockpit, always in this order (attention first). */
+const DAB_OVERVIEW_SECTIONS = Object.freeze([
+  ['attention', 'sectionAttention', 'waiting'],
+  ['running', 'sectionRunning', 'running'],
+  ['other', 'sectionOther', 'idle'],
+])
+
+/** Statuses whose card must state the status in words, not only in colour. */
+const DAB_CARD_STATUS_WORDS = Object.freeze([
+  'waiting_user', 'failed', 'interrupted', 'provider_unavailable', 'finished_unread',
+])
+
+function dabOverviewStatusWord(node) {
+  if (node === null || node === undefined || !DAB_CARD_STATUS_WORDS.includes(node.status)) return null
+  if (node.status === 'finished_unread') return dabT('statusNewResult')
+  return dabStatusLabel(node.status)
+}
+
+/**
+ * Four interactive indicators. `focus` is owned by the caller; clicking the
+ * active one clears it. Values are the real, mutually exclusive buckets of the
+ * overview model (never derived from the rendered cards).
+ */
+function DabOverviewStats({ counts, focus, onFocus, reviewAvailable, reviewReason, compact }) {
+  const h = React.createElement
+  const value = bucket => Number(counts?.[bucket]) || 0
+  return h('div', { className: 'dab-stats', role: 'group', 'aria-label': dabT('statActive') },
+    DAB_OVERVIEW_BUCKETS.map(([bucket, labelKey, tone]) => {
+      const review = bucket === 'review'
+      const disabled = review && reviewAvailable !== true
+      const pressed = focus === bucket
+      const title = disabled
+        ? (typeof reviewReason === 'string' && reviewReason !== '' ? reviewReason : dabT('statReviewUnavailable'))
+        : `${dabT(labelKey)} : ${disabled ? '—' : value(bucket)}${pressed ? ` · ${dabT('focusClear')}` : ''}`
+      const inner = [
+        h('span', { key: 'dot', className: 'dab-stat-dot', 'data-tone': tone, 'aria-hidden': 'true' }),
+        h('strong', { key: 'n', className: 'dab-stat-value' }, disabled ? '—' : String(value(bucket))),
+        h('span', { key: 'label', className: 'dab-stat-label' }, dabT(labelKey)),
+      ]
+      if (disabled) {
+        return h('div', { key: bucket, className: 'dab-stat', 'data-bucket': bucket, 'data-disabled': 'true', title }, inner)
+      }
+      return h('button', {
+        key: bucket,
+        type: 'button',
+        className: 'dab-stat',
+        'data-bucket': bucket,
+        'aria-pressed': pressed ? 'true' : 'false',
+        title,
+        onClick: () => onFocus(pressed ? null : bucket),
+      }, inner)
+    }))
+}
+
+/**
+ * The third card line: a REAL task/activity fact, never a runtime code.
+ * Order: linked Task Board title, task id, the waiting detail or the error that
+ * explains an intervention. `goal` and `statusReason` are deliberately excluded:
+ * they can carry internal codes (`turn_end:…`, `assignment:…`) that are not a
+ * task and must not be presented as one. No task is an explicit text, not a
+ * blank line.
+ */
+function dabGlobalTaskLine(entry, node) {
+  const title = typeof entry?.taskTitle === 'string' && entry.taskTitle !== '' ? entry.taskTitle : null
+  if (title !== null) return { text: title, real: true }
+  if (typeof node.taskId === 'string' && node.taskId !== '') return { text: node.taskId, real: true }
+  if (node.status === 'waiting_user' && typeof node.waitingDetail === 'string' && node.waitingDetail !== '') return { text: node.waitingDetail, real: true }
+  if (typeof node.error === 'string' && node.error !== '') return { text: node.error, real: true }
+  return { text: dabT('taskLineNone'), real: false }
+}
+
+function DabGlobalCardImpl({ entry, ctx, compact, selected }) {
+  const h = React.createElement
+  const node = entry.node
+  const role = entry.role ?? dabCardRole(node, null)
+  const statusWord = dabOverviewStatusWord(node)
+  const projectText = node.projectId === 'unassigned'
+    ? dabT('unassigned')
+    : (typeof entry.projectTitle === 'string' && entry.projectTitle !== '' ? entry.projectTitle : (typeof node.projectTitle === 'string' ? node.projectTitle : null))
+  const descendants = Number(entry.descendants) || 0
+  const failover = Array.isArray(node.routeHistory) && node.routeHistory.length > 0
+  const statusText = dabStatusLabel(node.status)
+  const taskLine = dabGlobalTaskLine(entry, node)
+  const parentText = typeof entry.parentTitle === 'string' && entry.parentTitle !== '' ? entry.parentTitle : null
+  const label = [
+    node.title, statusText, role.roleLabel, role.source === 'inferred' ? dabT('roleInferred') : null,
+    projectText, parentText === null ? null : `${dabT('parent')} : ${parentText}`, taskLine.real ? taskLine.text : null,
+    descendants > 0 ? dabT('subagentsCount', { n: descendants }) : null,
+  ].filter(Boolean).join(' — ')
+
+  const mascot = dabMascot(h, {
+    role: role.roleId ?? node.role,
+    resolvedRole: role.roleId === null || role.roleId === undefined ? null : role,
+    name: node.title,
+    status: node.status,
+    size: compact === true ? 36 : 46,
+    variant: compact === true ? 'compact' : 'full',
+    decorative: true,
+  })
+
+  const stop = event => { event.stopPropagation() }
+  return h('div', {
+    className: 'dab-gcard',
+    role: 'button',
+    tabIndex: 0,
+    'aria-label': label,
+    'aria-pressed': selected ? 'true' : 'false',
+    'data-node-id': node.id,
+    'data-status': node.status,
+    'data-seen': node.seen === true ? 'true' : 'false',
+    'data-selected': selected ? 'true' : 'false',
+    'data-calm': node.status === 'running' || node.status === 'recovering' || statusWord !== null ? 'false' : 'true',
+    'data-role': role.roleId ?? 'generic',
+    'data-role-resolution': role.source ?? 'generic',
+    'data-depth': String(Number(entry.depth) || 0),
+    'data-compact': compact === true ? 'true' : 'false',
+    'data-task-state': entry.taskState === null || entry.taskState === undefined ? undefined : entry.taskState,
+    onClick: event => ctx.arbiter.click(node.id, event.detail),
+    onDoubleClick: event => { event.preventDefault(); ctx.arbiter.doubleClick(node.id) },
+    onKeyDown: event => {
+      if (event.target !== event.currentTarget) return
+      if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return
+      event.preventDefault()
+      // Inspect, never navigate: opening the session is the explicit button.
+      if (typeof ctx.arbiter.select === 'function') ctx.arbiter.select(node.id)
+      else ctx.arbiter.key(node.id, event.key)
+    },
+  },
+  h('span', { className: 'dab-gcard-mascot', 'aria-hidden': 'true' }, mascot),
+  h('span', { className: 'dab-gcard-ident' },
+    h('span', { className: 'dab-gcard-row' },
+      h('span', { className: 'dab-gcard-name', title: node.title }, node.title),
+      failover
+        ? h('span', { className: 'dab-gcard-failover', title: dabT('failoverMark'), 'aria-hidden': 'true' }, '⇄')
+        : null),
+    h('span', { className: 'dab-gcard-project' },
+      projectText === null ? null : h('span', { className: 'dab-gcard-project-name', title: projectText }, projectText),
+      statusWord === null ? null : h('span', {
+        className: 'dab-gcard-state',
+        'data-tone': node.status === 'waiting_user' || node.status === 'interrupted' ? 'waiting' : node.status === 'finished_unread' ? 'unread' : 'failed',
+      }, statusWord)),
+    // The task line exists only when the runtime/ledger really has one: an
+    // "Aucune tâche liée" line on every card would be noise, not information.
+    taskLine.real ? h('span', { className: 'dab-gcard-task', title: taskLine.text }, taskLine.text) : null),
+  descendants > 0
+    ? h('span', { className: 'dab-gcard-badge', title: dabT('subagentsCount', { n: descendants }), 'aria-hidden': 'true' }, `↳ ${descendants}`)
+    : null,
+  h('button', {
+    type: 'button',
+    className: 'dab-icon-btn dab-gcard-open',
+    title: `${dabT('openSession')} : ${node.title}`,
+    'aria-label': `${dabT('openSession')} : ${node.title}`,
+    onClick: event => { stop(event); ctx.arbiter.open(node.id) },
+    onDoubleClick: stop,
+    onKeyDown: stop,
+  }, '↗'))
+}
+
+const DabGlobalCard = React.memo(DabGlobalCardImpl, (a, b) => {
+  const x = a.entry
+  const y = b.entry
+  const n = x.node
+  const m = y.node
+  return a.selected === b.selected
+    && a.compact === b.compact
+    && a.ctx.arbiter === b.ctx.arbiter
+    && a.ctx.nowBucket === b.ctx.nowBucket
+    && n.id === m.id && n.status === m.status && n.seen === m.seen && n.title === m.title
+    && n.updatedAt === m.updatedAt && n.taskId === m.taskId && n.goal === m.goal
+    && n.role === m.role && n.projectTitle === m.projectTitle
+    && n.routeHistory === m.routeHistory
+    && x.taskState === y.taskState && x.taskTitle === y.taskTitle
+    && x.descendants === y.descendants && x.depth === y.depth
+    && x.role?.roleId === y.role?.roleId && x.role?.source === y.role?.source
+})
+
+/**
+ * The cockpit grid: three ordered sections, each with a real count and a uniform
+ * adaptive grid. Attention is always first; an empty section is not rendered.
+ */
+function DabGlobalOverview({ overview, ctx, compact, empty }) {
+  const h = React.createElement
+  const sections = Array.isArray(overview?.sections) ? overview.sections : []
+  const shown = sections.filter(section => Array.isArray(section.entries) && section.entries.length > 0)
+  if (shown.length === 0) return empty ?? null
+  return h('div', { className: 'dab-overview', 'data-compact': compact === true ? 'true' : 'false' },
+    shown.map(section => {
+      const meta = DAB_OVERVIEW_SECTIONS.find(item => item[0] === section.id) ?? ['other', 'sectionOther', 'idle']
+      return h('section', { key: section.id, className: 'dab-section', 'data-section': section.id, 'aria-label': dabT(meta[1]) },
+        h('div', { className: 'dab-section-head' },
+          h('span', { className: 'dab-section-dot', 'data-tone': meta[2], 'aria-hidden': 'true' }),
+          h('h2', { className: 'dab-section-title' }, dabT(meta[1])),
+          h('span', { className: 'dab-section-count' }, dabCountText(section.entries.length, 'agentSingular', 'agentPlural'))),
+        h('div', { className: 'dab-agent-grid', role: 'list' },
+          section.entries.map(entry => h('div', { key: entry.node.id, role: 'listitem', className: 'dab-agent-cell' },
+            h(DabGlobalCard, {
+              entry,
+              ctx,
+              compact: compact === true,
+              selected: ctx.selectedId === entry.node.id,
+            })))))
+    }))
+}
+
+
+// ---- src/client/ui/superbar.js ----
+/**
+ * Super Orchestrator band of the responsive cockpit.
+ *
+ * This is a PRESENTATIONAL component over the host supervision payload: it
+ * shows the crowned (or bolt) mascot of the workspace layer, the real workspace
+ * status and supervision mode, the real supervised-project count, and the mini
+ * avatars of the project orchestrators the projection actually found. Clicking a
+ * mini avatar inspects that agent; clicking the band expands the SHARED
+ * supervision body (capabilities, recommendations, blocks, dependencies) from
+ * ui/hierarchy.js. It never creates an agent or an orchestration engine: when no
+ * project orchestrator is declared, the band says so instead of inventing one.
+ *
+ * @module dsh-agent-board/client/ui/superbar
+ */
+
+const DAB_SUPER_BODY_ID = 'dab-super-body'
+
+/** A short, real status word for the band (never a made-up status). */
+function dabSuperStatusLabel(status) {
+  if (typeof dabSupervisionStatusLabel === 'function') return dabSupervisionStatusLabel(status)
+  return status === 'active' || status === 'idle' || status === 'blocked' ? status : dabT('statusUnknown')
+}
+
+function DabSuperOrchestratorBarImpl({ workspace, totals, projects, orchestrators: orchestratorList, mode, open, onToggle, onSelect, compact }) {
+  const h = React.createElement
+  // Prefer the real, filter-independent orchestrator list from the hierarchy.
+  // The fallback keeps the component usable with only the visible projects.
+  const orchestrators = Array.isArray(orchestratorList)
+    ? orchestratorList
+    : (Array.isArray(projects) ? projects.filter(project => project?.orchestrator !== null && project?.orchestrator !== undefined)
+      .map(project => ({ projectId: project.id, projectTitle: project.title, orchestrator: project.orchestrator })) : [])
+  const visible = orchestrators.slice(0, 6)
+  const extra = orchestrators.length - visible.length
+  const projectCount = Number(totals?.projects) || 0
+  const modeLabel = mode === 'off' ? dabT('modeObserve') : (typeof dabModeLabel === 'function' ? dabModeLabel(mode) : null)
+  const miniSize = compact === true ? 22 : 26
+  const countText = (count, singular, plural) => (typeof dabCountText === 'function'
+    ? dabCountText(count, singular, plural)
+    : `${count} ${dabT(count === 1 ? singular : plural)}`)
+  const projectText = countText(projectCount, 'projectSingular', 'projectPlural')
+  const orchestratorsText = countText(orchestrators.length, 'orchestratorSingular', 'orchestratorPlural')
+
+  return h('div', { className: 'dab-super', 'data-status': workspace?.status ?? 'unknown', 'data-available': workspace?.available === true ? 'true' : 'false' },
+    h('button', {
+      type: 'button',
+      className: 'dab-super-main',
+      'aria-expanded': open,
+      'aria-controls': DAB_SUPER_BODY_ID,
+      title: open ? dabT('supervisionCollapse') : dabT('supervisionExpand'),
+      onClick: onToggle,
+    },
+    h('span', { className: 'dab-super-mascot', 'aria-hidden': 'true' },
+      dabMascot(h, {
+        role: 'super_orchestrator',
+        emblem: workspace?.emblem === 'bolt' ? 'bolt' : 'crown',
+        name: dabT('superOrchestrator'),
+        status: 'unknown',
+        size: compact === true ? 34 : 42,
+        variant: 'full',
+        decorative: true,
+      })),
+    h('span', { className: 'dab-super-ident' },
+      h('span', { className: 'dab-super-title' },
+        dabT('superOrchestrator'),
+        h('span', { className: 'dab-super-state', 'data-status': workspace?.status ?? 'unknown' },
+          h('span', { className: 'dab-dot', 'data-tone': workspace?.status === 'active' ? 'running' : workspace?.status === 'blocked' ? 'failed' : 'idle', 'aria-hidden': 'true' }),
+          dabSuperStatusLabel(workspace?.status))),
+      h('span', { className: 'dab-super-sub' },
+        projectText,
+        h('span', { className: 'dab-super-sep', 'aria-hidden': 'true' }, '·'),
+        h('span', { className: 'dab-super-orch-count' }, orchestratorsText),
+        modeLabel === null ? null : h('span', { className: 'dab-tag' }, `${dabT('supervisionMode')} : ${modeLabel}`))),
+    h('span', { className: 'dab-caret', 'aria-hidden': 'true' }, open ? '▾' : '▸')),
+
+    // Mini orchestrator avatars: real agents only. A project without a declared
+    // orchestrator is not rendered as a fake avatar.
+    orchestrators.length === 0
+      ? h('span', { className: 'dab-super-none' }, dabT('superNoOrchestrator'))
+      : h('span', { className: 'dab-super-orchs', role: 'group', 'aria-label': orchestratorsText },
+        visible.map(entry => h('button', {
+          key: entry.orchestrator.id,
+          type: 'button',
+          className: 'dab-super-orch',
+          title: `${entry.orchestrator.name} · ${entry.projectTitle}${entry.orchestrator.source === 'inferred' ? ` · ${dabT('roleInferred')}` : ''}`,
+          'aria-label': `${dabT('inspectorTitle')} : ${entry.orchestrator.name} (${entry.projectTitle})`,
+          onClick: () => onSelect(entry.orchestrator.id),
+        }, dabMascot(h, {
+          role: entry.orchestrator.roleId,
+          resolvedRole: entry.orchestrator,
+          name: entry.orchestrator.name,
+          status: entry.orchestrator.status,
+          size: miniSize,
+          variant: 'compact',
+          decorative: true,
+        }))),
+        extra > 0 ? h('span', { className: 'dab-super-more', title: `${extra}` }, `+${extra}`) : null),
+
+    h(DabSupervisionBody, { workspace, totals, projects: projects ?? [], id: DAB_SUPER_BODY_ID, hidden: !open }))
+}
+
+/**
+ * Memoized on the facts that actually change: the supervision signature, the
+ * open state and the orchestrator identities. A projection tick that leaves the
+ * layer unchanged never re-renders the band.
+ */
+const DabSuperOrchestratorBar = React.memo(DabSuperOrchestratorBarImpl, (a, b) => (
+  a.open === b.open
+  && a.compact === b.compact
+  && a.mode === b.mode
+  && a.onSelect === b.onSelect
+  && a.onToggle === b.onToggle
+  && a.workspace?.status === b.workspace?.status
+  && a.workspace?.available === b.workspace?.available
+  && a.workspace?.emblem === b.workspace?.emblem
+  && a.totals?.projects === b.totals?.projects
+  && a.totals?.agents === b.totals?.agents
+  && a.orchestrators === b.orchestrators
+  && a.projects === b.projects
+))
 
 
 // ---- src/client/ui/tree.js ----
@@ -6269,6 +7311,95 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
 }
 
 
+// ---- src/client/ui/inspector.js ----
+/**
+ * Agent inspector shell: a RIGHT-SIDE DRAWER on a wide panel and a BOTTOM SHEET
+ * on a narrow one.
+ *
+ * The content stays `DabAgentPreview` (ui/preview.js): the same facts, the same
+ * "open session" action, the same acknowledgement semantics. This module only
+ * owns presentation and focus: it overlays the grid instead of shrinking it,
+ * traps Tab, closes on Escape and on the scrim, and restores focus to the card
+ * that opened it. It never navigates by itself.
+ *
+ * @module dsh-agent-board/client/ui/inspector
+ */
+
+const DAB_FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+function DabInspector({ node, parent, role, taskState, onOpen, onSelect, onClose, openError, onDismiss, dismissed, narrow }) {
+  const h = React.createElement
+  const panelRef = React.useRef(null)
+  const restoreRef = React.useRef(null)
+  const closeRef = React.useRef(onClose)
+  closeRef.current = onClose
+
+  React.useEffect(() => {
+    restoreRef.current = typeof document !== 'undefined' ? document.activeElement : null
+    const panel = panelRef.current
+    const first = panel?.querySelector(DAB_FOCUSABLE)
+    // Defer one frame: the panel is mounted, the browser has laid it out.
+    const handle = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame(() => { try { first?.focus?.({ preventScroll: true }) } catch { first?.focus?.() } })
+      : null
+    const onKey = event => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        closeRef.current?.()
+        return
+      }
+      if (event.key !== 'Tab' || panel === null || panel === undefined) return
+      const items = [...panel.querySelectorAll(DAB_FOCUSABLE)].filter(element => element.offsetParent !== null || element === document.activeElement)
+      if (items.length === 0) return
+      const firstItem = items[0]
+      const lastItem = items[items.length - 1]
+      if (event.shiftKey && (document.activeElement === firstItem || !panel.contains(document.activeElement))) {
+        event.preventDefault()
+        lastItem.focus()
+      } else if (!event.shiftKey && (document.activeElement === lastItem || !panel.contains(document.activeElement))) {
+        event.preventDefault()
+        firstItem.focus()
+      }
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('keydown', onKey, true)
+      if (handle !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(handle)
+      const back = restoreRef.current
+      if (back !== null && back !== undefined && back.isConnected !== false && typeof back.focus === 'function') {
+        try { back.focus({ preventScroll: true }) } catch { try { back.focus() } catch { /* detached */ } }
+      } else {
+        // The inspected card acknowledged itself out of the active filter: focus
+        // the nearest remaining card (then a filter chip, then the search) instead
+        // of dropping focus on <body>. Order matters: querySelector with a list
+        // would return whichever control comes first in the document.
+        const fallback = document.querySelector('.dab-gcard') ?? document.querySelector('.dab-chip-btn') ?? document.querySelector('.dab-search input')
+        try { fallback?.focus?.({ preventScroll: true }) } catch { /* headless */ }
+      }
+    }
+    // Mount-only: the identity of the callbacks must never re-run the focus dance.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return h('div', { className: 'dab-insp-overlay', 'data-narrow': narrow === true ? 'true' : 'false' },
+    h('div', { className: 'dab-insp-scrim', 'aria-hidden': 'true', onClick: () => closeRef.current?.() }),
+    h('div', {
+      className: 'dab-insp-panel',
+      ref: panelRef,
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-label': `${dabT('inspectorTitle')} — ${node.title}`,
+      'data-inspector-for': node.id,
+    },
+    h('span', { className: 'dab-insp-grip', 'aria-hidden': 'true' }),
+    h('div', { className: 'dab-insp-body' },
+      h(DabAgentPreview, {
+        node, parent, role, taskState, onOpen, onSelect, onClose, openError, onDismiss, dismissed,
+      }))))
+}
+
+
 // ---- src/client/ui/history.js ----
 /**
  * HistoryDrawer: on-demand, searchable, paginated list of every calm session
@@ -6336,10 +7467,17 @@ function DabHistoryDrawer({ projection, project, selectedId, arbiter, onClose, r
 
 // ---- src/client/ui/toolbar.js ----
 /**
- * Toolbar (counters, search, project filter, view filters, orchestrator
- * controls) and the orchestrator side panels (proposals/executions, adapters).
- * The orchestrator controls are the pre-existing ones; when the host API is
- * unreachable they are disabled and say so instead of pretending to work.
+ * Cockpit header and filter bar.
+ *
+ * Desktop: one 52–60 px header (title, live state, supervision mode, stop,
+ * refresh, history, settings) and one 40–45 px filter bar (search, view filters,
+ * view switch, filters popover). Narrow panel: the header collapses to a single
+ * line and the secondary controls move into one menu; the stop control stays
+ * directly reachable while executions are in flight.
+ *
+ * The existing orchestrator controls, the host state panel and the additive
+ * GOAL 4 filters are preserved, never re-implemented: the toolbar only decides
+ * where they are rendered.
  *
  * @module dsh-agent-board/client/ui/toolbar
  */
@@ -6350,6 +7488,13 @@ const DAB_ICONS = {
   more: ['M5 12h.01', 'M12 12h.01', 'M19 12h.01'],
   stop: ['M7 7h10v10H7z'],
   play: ['M8 5l11 7-11 7z'],
+  search: ['M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14', 'M16.2 16.2 21 21'],
+  filter: ['M4 6h16', 'M7 12h10', 'M10 18h4'],
+  settings: ['M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7', 'M12 3v2', 'M12 19v2', 'M4.2 7.5l1.7 1', 'M18.1 15.5l1.7 1', 'M4.2 16.5l1.7-1', 'M18.1 8.5l1.7-1'],
+  globe: ['M4 4h7v7H4z', 'M13 4h7v7h-7z', 'M4 13h7v7H4z', 'M13 13h7v7h-7z'],
+  projects: ['M4 6h4', 'M11 6h9', 'M4 12h4', 'M11 12h9', 'M4 18h4', 'M11 18h9'],
+  hierarchy: ['M12 4v4', 'M6 12h12', 'M4 16h4v4H4z', 'M10 16h4v4h-4z', 'M16 16h4v4h-4z', 'M6 12v4', 'M18 12v4'],
+  close: ['M6 6l12 12', 'M18 6 6 18'],
 }
 
 /** Existing agent statuses offered by the additive status filter. */
@@ -6362,6 +7507,12 @@ const DAB_FILTER_STATUSES = Object.freeze([
 const DAB_FILTER_TASK_STATES = Object.freeze(['todo', 'in_progress', 'in_review', 'blocked', 'done', 'canceled', 'archived'])
 
 const DAB_GENERIC_ROLE_FILTER = typeof GENERIC_ROLE_FILTER === 'string' ? GENERIC_ROLE_FILTER : 'generic'
+
+const DAB_VIEW_OPTIONS = Object.freeze([
+  ['global', 'viewGlobal', 'globe'],
+  ['projects', 'viewProjects', 'projects'],
+  ['hierarchy', 'viewHierarchy', 'hierarchy'],
+])
 
 function dabRoleFilterOptions() {
   const options = [['', dabT('roleAll')]]
@@ -6424,38 +7575,52 @@ function DabSelect({ label, value, options, onChange, title, disabled, style }) 
       : null)
 }
 
+/**
+ * One popover menu: a trigger button and a panel that closes on outside click
+ * and Escape. Used for the filters, the settings and the narrow-panel menu.
+ */
+function DabMenu({ label, icon, badge, open, setOpen, align = 'end', children, className, title }) {
+  const h = React.createElement
+  const ref = React.useRef(null)
+  React.useEffect(() => {
+    if (!open) return undefined
+    const onDown = event => { if (ref.current !== null && !ref.current.contains(event.target)) setOpen(false) }
+    const onKey = event => { if (event.key === 'Escape') setOpen(false) }
+    document.addEventListener('pointerdown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open, setOpen])
+  return h('div', { className: `dab-menu ${className ?? ''}`, ref },
+    h('button', {
+      type: 'button', className: 'dab-icon-btn dab-menu-btn', 'aria-haspopup': 'dialog', 'aria-expanded': open,
+      'aria-label': label, title: title ?? label, onClick: () => setOpen(!open),
+    }, dabIcon(icon),
+    typeof badge === 'number' && badge > 0 ? h('span', { className: 'dab-menu-badge', 'aria-hidden': 'true' }, String(badge)) : null),
+    open ? h('div', { className: 'dab-menu-pop', role: 'dialog', 'aria-label': label, 'data-align': align }, children) : null)
+}
+
 function DabToolbar(props) {
   const h = React.createElement
-  const { counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh, ui, setUi, projects, onHistory, narrow, taskStateAvailable, taskStateUnavailableReason } = props
-  const counter = (tone, value, label) => value > 0
-    ? h('span', { className: 'dab-counter', key: tone, title: `${value} ${label}`, 'aria-label': `${value} ${label}` }, h('span', { className: 'dab-dot', 'data-tone': tone }), h('b', null, value))
-    : null
+  const {
+    counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh,
+    ui, setUi, projects, onHistory, narrow, taskStateAvailable, taskStateUnavailableReason, onToggleCompact,
+  } = props
   const modeNotice = mode === 'off' ? dabT('offNotice') : mode === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice')
   const notice = secondary ? dabT('secondaryInstance') : stopped ? dabT('stoppedNotice') : modeNotice
   const [menuOpen, setMenuOpen] = React.useState(false)
+  const [filtersOpen, setFiltersOpen] = React.useState(false)
+  const [settingsOpen, setSettingsOpen] = React.useState(false)
   const state = props.statePanel ?? null
-  const alert = secondary || stopped || hostDown
+  const hostAlert = secondary || stopped || hostDown
   const iconBtn = (icon, label, onClick, extra = {}) => h('button', { type: 'button', className: 'dab-icon-btn', onClick, 'aria-label': label, title: label, ...extra }, dabIcon(icon))
   const select = (label, value, options, onChange, extra = {}) => h(DabSelect, { label, value, options, onChange, title: extra.title, disabled: extra.disabled, style: extra.style })
-
-  const counters = h('span', { className: 'dab-counters' },
-    counter('running', counts.running, dabT('running')),
-    counter('waiting', counts.waiting, dabT('waiting')),
-    counter('unread', counts.unread, dabCountNoun(counts.unread, 'unreadSingular', 'unreadPlural')),
-    counter('failed', counts.failed, dabT('failed')),
-    narrow ? null : h('span', { className: 'dab-muted', title: `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}` }, `${visibleCount}/${counts.total}`))
 
   const projectSelect = select(dabT('projects'), ui.project ?? '',
     [['', dabT('allProjects')], ...projects.map(project => [project.id, `${project.id === 'unassigned' ? dabT('unassigned') : project.title} (${project.agents})`])],
     value => setUi({ project: value === '' ? null : value }), { style: narrow ? { flex: '1 1 auto', minWidth: 0 } : undefined })
-  const filterSelect = select(dabT('filterLabel'), ui.filter,
-    [['attention', dabT('filterAttention')], ['recent', dabT('filterRecent')], ['all', dabT('filterAll')]], value => setUi({ filter: value }))
-  const viewSelect = select(dabT('viewLabel'), ui.compact ? 'compact' : 'tree',
-    [['tree', dabT('treeView')], ['compact', dabT('compact')]], value => setUi({ compact: value === 'compact' }))
-  // Additive filters (GOAL 4): role, agent status, view mode and — only when the
-  // Task Board integration reports it available — the linked Task Board state.
-  const viewModeSelect = select(dabT('viewModeLabel'), ui.viewMode === 'hierarchy' ? 'hierarchy' : 'projects',
-    [['projects', dabT('viewProjects')], ['hierarchy', dabT('viewHierarchy')]], value => setUi({ viewMode: value }))
   const roleSelect = select(dabT('role'), typeof ui.roleFilter === 'string' ? ui.roleFilter : '',
     dabRoleFilterOptions(), value => setUi({ roleFilter: value === '' ? null : value }))
   const statusSelect = select(dabT('statusFilterLabel'), typeof ui.statusFilter === 'string' ? ui.statusFilter : '',
@@ -6471,56 +7636,138 @@ function DabToolbar(props) {
       value => setUi({ taskStateFilter: value === '' ? null : value }))
     : select(dabT('taskStateFilterLabel'), '', [['', dabT('taskStateUnavailable')]], () => {},
       { disabled: true, title: taskStateUnavailableReason ?? dabT('taskStateUnavailable') })
-  const clearFilters = dabHierarchyFiltersActive(ui)
+  const filtersActive = dabHierarchyFiltersActive(ui) || ui.project !== null
+  const activeFilterCount = (ui.project !== null ? 1 : 0)
+    + (typeof ui.roleFilter === 'string' && ui.roleFilter !== '' ? 1 : 0)
+    + (typeof ui.statusFilter === 'string' && ui.statusFilter !== '' ? 1 : 0)
+    + (typeof ui.taskStateFilter === 'string' && ui.taskStateFilter !== '' ? 1 : 0)
+  const clearFilters = filtersActive
     ? h('button', {
       type: 'button', className: 'dab-btn', 'data-variant': 'ghost',
-      onClick: () => setUi({ roleFilter: null, statusFilter: null, taskStateFilter: null }),
+      onClick: () => setUi({ roleFilter: null, statusFilter: null, taskStateFilter: null, project: null }),
     }, dabT('clearFilters'))
     : null
+  const compactToggle = h('button', {
+    type: 'button', className: 'dab-btn', 'data-variant': 'ghost', 'aria-pressed': ui.compact === true ? 'true' : 'false',
+    onClick: () => onToggleCompact(),
+  }, dabT('compact'))
   const modeSelect = select(dabT('orchestratorLabel'), mode,
     ['off', 'supervised', 'autonomous'].map(value => [value, `${dabT('orchestratorLabel')} : ${dabT(value)}`]), onMode,
     { disabled: busy || hostDown || secondary, title: hostDown ? dabT('orchestratorDown') : notice })
   const stopOrResume = stopped && mode !== 'off' && !secondary
     ? iconBtn('play', dabT('resume'), onResume, { disabled: busy || hostDown, 'data-tone': 'resume' })
     : iconBtn('stop', canStop ? dabT('stop') : dabT('stopNone'), onStop, { disabled: busy || hostDown || !canStop || secondary, 'data-danger': 'true' })
-  const alertDot = alert ? h('span', { className: 'dab-dot', 'data-tone': 'failed', title: hostDown ? dabT('orchestratorDown') : notice, role: 'img', 'aria-label': hostDown ? dabT('orchestratorDown') : notice }) : null
+  const stopText = stopped && mode !== 'off' && !secondary ? dabT('resume') : dabT('stopShort')
+  const stopButton = h('button', {
+    type: 'button', className: 'dab-btn dab-stop', 'data-danger': 'true', title: notice,
+    disabled: busy || hostDown || (!canStop && !(stopped && mode !== 'off')) || secondary,
+    onClick: stopped && mode !== 'off' && !secondary ? onResume : onStop,
+  }, h('span', { 'aria-hidden': 'true' }, stopped && mode !== 'off' && !secondary ? '▶' : '■'), h('span', { className: 'dab-stop-text' }, stopText))
 
-  const search = h('input', {
-    type: 'search', className: 'dab-input', placeholder: dabT('search'), 'aria-label': dabT('search'), value: ui.query,
-    onChange: event => setUi({ query: event.target.value }),
-    onKeyDown: event => { if (event.key === 'Escape') setUi({ query: '' }) },
-  })
-  const history = iconBtn('history', dabT('history'), onHistory, { 'aria-haspopup': 'dialog' })
-  const refresh = iconBtn('refresh', dabT('refresh'), onRefresh, { disabled: busy })
+  const liveTone = hostDown ? 'failed' : secondary ? 'idle' : 'running'
+  const liveText = hostDown ? dabT('liveDown') : secondary ? dabT('liveSecondary') : dabT('liveConnected')
+  const liveChip = h('span', { className: 'dab-live', 'data-tone': liveTone, title: hostDown ? (props.hostError ?? dabT('orchestratorDown')) : notice },
+    h('span', { className: 'dab-dot', 'data-tone': liveTone, 'aria-hidden': 'true' }),
+    narrow ? null : h('span', { className: 'dab-live-text' }, liveText))
 
-  if (narrow) {
-    return h('header', { className: 'dab-toolbar' },
-      h('div', { className: 'dab-bar', style: { flexWrap: 'nowrap' } },
-        counters, projectSelect, alertDot, history, refresh,
-        iconBtn('more', dabT('moreControls'), () => setMenuOpen(value => !value), { 'aria-expanded': menuOpen })),
-      h('div', { className: 'dab-bar', style: { flexWrap: 'nowrap' } }, search),
-      menuOpen
-        ? h('div', { className: 'dab-mobile-menu' },
-          h('div', { className: 'dab-bar' }, viewModeSelect, filterSelect),
-          h('div', { className: 'dab-bar' }, roleSelect, statusSelect),
-          h('div', { className: 'dab-bar' }, viewSelect, taskStateSelect, clearFilters),
-          h('div', { className: 'dab-bar' }, modeSelect, stopOrResume, h('span', { className: 'dab-grow' }), state),
-          h('div', { className: alert ? 'dab-alert' : 'dab-notice' }, hostDown ? dabT('orchestratorDown') : notice))
-        : null,
-    )
-  }
+  const modeSeg = h('div', { className: 'dab-seg dab-mode', role: 'group', 'aria-label': dabT('orchestratorLabel') },
+    ['off', 'supervised', 'autonomous'].map(value => h('button', {
+      key: value,
+      type: 'button',
+      className: 'dab-seg-btn',
+      'aria-pressed': mode === value ? 'true' : 'false',
+      disabled: busy || hostDown || secondary,
+      title: value === 'off' ? dabT('offNotice') : value === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice'),
+      onClick: () => { if (mode !== value) onMode(value) },
+    }, dabT(value === 'off' ? 'modeObserve' : value))))
+
+  const viewSwitch = h('div', { className: 'dab-seg dab-viewswitch', role: 'group', 'aria-label': dabT('viewLabel') },
+    DAB_VIEW_OPTIONS.map(([value, labelKey, icon]) => h('button', {
+      key: value,
+      type: 'button',
+      className: 'dab-seg-btn',
+      'aria-pressed': (ui.viewMode ?? 'global') === value ? 'true' : 'false',
+      title: dabT(labelKey),
+      onClick: () => setUi({ viewMode: value }),
+    }, dabIcon(icon), narrow ? null : h('span', { className: 'dab-seg-text' }, dabT(labelKey)))))
+
+  const chips = h('div', { className: 'dab-chips', role: 'group', 'aria-label': dabT('filterLabel') },
+    [['attention', 'filterActive'], ['all', 'filterAll'], ['action', 'filterAction']].map(([value, labelKey]) => h('button', {
+      key: value,
+      type: 'button',
+      className: 'dab-chip-btn',
+      'aria-pressed': ui.filter === value ? 'true' : 'false',
+      onClick: () => setUi({ filter: value }),
+    }, dabT(labelKey))),
+    h('button', {
+      type: 'button', className: 'dab-chip-btn dab-chip-history', 'aria-haspopup': 'dialog',
+      onClick: onHistory, title: dabT('historyHint'),
+    }, dabT('history')))
+
+  const search = h('label', { className: 'dab-search' },
+    h('span', { className: 'dab-search-ico', 'aria-hidden': 'true' }, dabIcon('search')),
+    h('input', {
+      type: 'search', className: 'dab-input', placeholder: dabT('search'), 'aria-label': dabT('search'), value: ui.query,
+      onChange: event => setUi({ query: event.target.value }),
+      onKeyDown: event => { if (event.key === 'Escape') setUi({ query: '' }) },
+    }))
+
+  const filterPanel = h('div', { className: 'dab-filter-pop' },
+    h('div', { className: 'dab-menu-row' }, projectSelect),
+    h('div', { className: 'dab-menu-row' }, roleSelect),
+    h('div', { className: 'dab-menu-row' }, statusSelect),
+    h('div', { className: 'dab-menu-row' }, taskStateSelect),
+    h('div', { className: 'dab-menu-row dab-menu-row-actions' }, compactToggle, h('span', { className: 'dab-grow' }), clearFilters),
+    h('div', { className: 'dab-menu-note' }, `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}`))
+
+  const settingsPanel = h('div', { className: 'dab-settings-pop' },
+    h('div', { className: hostAlert ? 'dab-alert' : 'dab-notice' }, hostDown ? dabT('orchestratorDown') : notice),
+    state,
+    h('div', { className: 'dab-menu-row dab-menu-row-actions' },
+      h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy }, dabT('refresh')),
+      h('button', { type: 'button', className: 'dab-btn', onClick: () => setSettingsOpen(false) }, dabT('close'))))
+
+  const headActions = h('div', { className: 'dab-head-actions' },
+    liveChip,
+    narrow ? null : modeSeg,
+    narrow ? (canStop ? stopButton : null) : stopButton,
+    narrow ? null : iconBtn('refresh', dabT('refresh'), onRefresh, { disabled: busy }),
+    narrow ? null : iconBtn('history', dabT('history'), onHistory, { 'aria-haspopup': 'dialog' }),
+    h(DabMenu, {
+      label: dabT('settings'), icon: 'settings', open: settingsOpen, setOpen: setSettingsOpen, title: dabT('settings'),
+    }, settingsPanel),
+    narrow
+      ? h(DabMenu, { label: dabT('moreControls'), icon: 'more', open: menuOpen, setOpen: setMenuOpen },
+        h('div', { className: 'dab-narrow-menu' },
+          h('div', { className: 'dab-menu-label' }, dabT('orchestratorLabel')),
+          modeSeg,
+          h('div', { className: 'dab-menu-row' }, modeSelect),
+          h('div', { className: 'dab-menu-row dab-menu-row-actions' }, stopOrResume, h('span', { className: 'dab-grow' }),
+            h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy }, dabT('refresh'))),
+          h('div', { className: 'dab-menu-label' }, dabT('filtersLabel')),
+          filterPanel))
+      : null)
 
   return h('header', { className: 'dab-toolbar' },
-    h('div', { className: 'dab-bar', style: { flexWrap: 'nowrap' } },
-      counters,
-      h('div', { className: 'dab-search-wrap' }, search),
-      projectSelect, filterSelect,
+    h('div', { className: 'dab-head' },
+      h('div', { className: 'dab-head-ident' },
+        h('span', { className: 'dab-head-mark', 'aria-hidden': 'true' }, '◈'),
+        h('div', { className: 'dab-head-text' },
+          h('h1', { className: 'dab-title' }, dabT('title')),
+          h('div', { className: 'dab-subtitle' }, `${dabT('cockpitSubtitle')} · ${counts.total} ${dabT('agentPlural')}`))),
+      headActions),
+    h('div', { className: 'dab-filters' },
+      search,
+      chips,
       h('span', { className: 'dab-grow' }),
-      alertDot, modeSelect, stopOrResume, state, history, refresh),
-    h('div', { className: 'dab-bar' },
-      viewModeSelect, roleSelect, statusSelect, taskStateSelect, viewSelect, clearFilters),
-  )
+      narrow ? null : h('span', { className: 'dab-shown', title: `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}` }, `${visibleCount}/${counts.total}`),
+      viewSwitch,
+      h(DabMenu, {
+        label: dabT('filtersLabel'), icon: 'filter', badge: activeFilterCount,
+        open: filtersOpen, setOpen: setFiltersOpen, title: filtersActive ? `${activeFilterCount} ${dabT('filtersLabel')}` : dabT('noFiltersActive'),
+      }, filterPanel)))
 }
+
 function DabExecutionList({ host, onApprove, onReject }) {
   const h = React.createElement
   const proposals = Array.isArray(host.proposals) ? host.proposals : []
@@ -6548,15 +7795,13 @@ function DabExecutionList({ host, onApprove, onReject }) {
   )
 }
 
-function DabOrchestratorState({ host, hostError }) {
+/** Host state, adapters and reconcile notes: the settings popover content. */
+function DabOrchestratorStateContent({ host, hostError }) {
   const h = React.createElement
   const sync = host.sync
   const adapters = host.adapters?.adapters ?? []
   const healthy = sync?.ok === true && !hostError
-  return h('details', { className: 'dab-state' },
-    h('summary', { className: 'dab-btn', title: dabT('orchestratorState'), 'aria-label': dabT('orchestratorState') },
-      h('span', { className: 'dab-dot', 'data-tone': healthy ? 'unread' : 'failed' }), dabT('stateShort')),
-    h('div', { className: 'dab-state-pop' },
+  return h('div', { className: 'dab-state-content' },
     h('div', { className: 'dab-label' }, dabT('orchestratorState')),
     h('div', { className: 'dab-muted', style: { marginTop: '6px' } },
       sync === null || sync === undefined
@@ -6574,8 +7819,16 @@ function DabOrchestratorState({ host, hostError }) {
       h('span', { className: 'dab-grow' }, adapter.title ?? adapter.id),
       h('span', { className: 'dab-tag' }, adapter.status ?? '?'),
       adapter.validatedLive === true ? null : h('span', { className: 'dab-tag' }, dabT('notLive'))))),
-    ),
-  )
+    healthy ? null : h('span', { className: 'dab-dot', 'data-tone': 'failed', 'aria-hidden': 'true' }))
+}
+
+/** Legacy details wrapper (kept for the hierarchy view). */
+function DabOrchestratorState({ host, hostError }) {
+  const h = React.createElement
+  return h('details', { className: 'dab-state' },
+    h('summary', { className: 'dab-btn', title: dabT('orchestratorState'), 'aria-label': dabT('orchestratorState') },
+      h('span', { className: 'dab-dot', 'data-tone': (host.sync?.ok === true && !hostError) ? 'unread' : 'failed' }), dabT('stateShort')),
+    h('div', { className: 'dab-state-pop' }, h(DabOrchestratorStateContent, { host, hostError })))
 }
 
 
@@ -6583,15 +7836,21 @@ function DabOrchestratorState({ host, hostError }) {
 /**
  * Agent Board panel entry (React via plain createElement, no JSX build).
  *
- * Composition:
- *   AgentBoard (this file)       state, store subscription, routing
- *   ├─ DabToolbar                ui/toolbar.js
- *   ├─ DabProjectGroup           ui/tree.js  → DabAgentTree → DabAgentCard (ui/card.js)
- *   ├─ DabAgentPreview           ui/preview.js
- *   └─ DabHistoryDrawer          ui/history.js
+ * Composition (responsive cockpit):
+ *   AgentBoard (this file)        state, store subscription, routing
+ *   ├─ DabToolbar                 ui/toolbar.js    header + filter bar + controls
+ *   ├─ DabSuperOrchestratorBar    ui/superbar.js   real supervision band
+ *   ├─ DabOverviewStats           ui/overview.js   four runtime indicators
+ *   ├─ DabGlobalOverview          ui/overview.js   attention-first adaptive grid
+ *   ├─ DabHierarchyView           ui/hierarchy.js  workspace → project → teams
+ *   ├─ DabProjectGroup            ui/tree.js       tree / compact projects view
+ *   ├─ DabInspector               ui/inspector.js  desktop drawer / mobile sheet
+ *   ├─ DabAgentPreview            ui/preview.js    inspector content
+ *   └─ DabHistoryDrawer           ui/history.js    history drawer
+ *
  * Pure logic lives in supervisor/projection.js (status, project, parentage),
- * board/view.js (visibility, sorting, history) and board/interaction.js
- * (click/double-click arbitration).
+ * board/view.js (visibility, sorting, history), board/overview.js (cockpit
+ * sections and indicator buckets) and board/interaction.js (click arbitration).
  *
  * This file is concatenated into the browser artifact by scripts/build-client.mjs.
  *
@@ -6600,16 +7859,20 @@ function DabOrchestratorState({ host, hostError }) {
 
 const DAB_PANEL_ID = 'dsh-agent-board'
 const DAB_UI_KEY = 'dsh-agent-board:ui:v2'
+const DAB_VIEW_MODES = Object.freeze(['global', 'projects', 'hierarchy'])
 
 /** UI state survives a panel remount (navigation to a session and back). */
 const DAB_MEMORY = { scrollTop: 0, selectedId: null }
 
 function dabDefaultUi() {
   return {
+    // The cockpit is the default presentation (GOAL 5). The previous default,
+    // the projects tree, stays one click away and keeps its saved preference.
+    viewMode: 'global',
     filter: 'attention', query: '', project: null, compact: false,
     folded: [], expanded: [], collapsed: [], dismissed: [], treeLimit: {},
     // GOAL 4 additive preferences (validated and bounded on read).
-    viewMode: 'projects', roleFilter: null, statusFilter: null, taskStateFilter: null, supervisionOpen: null,
+    roleFilter: null, statusFilter: null, taskStateFilter: null, supervisionOpen: false,
   }
 }
 
@@ -6635,11 +7898,11 @@ function dabReadUi() {
       expanded: Array.isArray(parsed.expanded) ? parsed.expanded.slice(0, 200) : [],
       collapsed: Array.isArray(parsed.collapsed) ? parsed.collapsed.slice(0, 200) : [],
       dismissed: Array.isArray(parsed.dismissed) ? parsed.dismissed.slice(-500) : [],
-      viewMode: parsed.viewMode === 'hierarchy' ? 'hierarchy' : 'projects',
+      viewMode: DAB_VIEW_MODES.includes(parsed.viewMode) ? parsed.viewMode : base.viewMode,
       roleFilter: filters.role,
       statusFilter: filters.status,
       taskStateFilter: filters.taskState,
-      supervisionOpen: typeof parsed.supervisionOpen === 'boolean' ? parsed.supervisionOpen : null,
+      supervisionOpen: typeof parsed.supervisionOpen === 'boolean' ? parsed.supervisionOpen : base.supervisionOpen,
     }
   } catch {
     return base
@@ -6660,6 +7923,7 @@ function dabMakePage(store, ctx) {
     const snapshot = React.useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
     const [ui, setUiState] = React.useState(dabReadUi)
     const [selectedId, setSelectedId] = React.useState(DAB_MEMORY.selectedId)
+    const [focus, setFocus] = React.useState(null)
     const [historyOpen, setHistoryOpen] = React.useState(false)
     const [busy, setBusy] = React.useState(false)
     const [notice, setNotice] = React.useState('')
@@ -6727,6 +7991,7 @@ function dabMakePage(store, ctx) {
       ? host.supervision
       : null
     const taskStates = React.useMemo(() => (typeof taskStateIndex === 'function' ? taskStateIndex(supervision) : null), [supervision])
+    const taskTitles = React.useMemo(() => (typeof taskTitleIndex === 'function' ? taskTitleIndex(supervision) : null), [supervision])
     const filters = React.useMemo(() => normalizeHierarchyFilters({
       role: ui.roleFilter, status: ui.statusFilter, taskState: ui.taskStateFilter,
     }), [ui.roleFilter, ui.statusFilter, ui.taskStateFilter])
@@ -6757,7 +8022,14 @@ function dabMakePage(store, ctx) {
       filters, taskStates, foldedProjects, mode,
     }), [projection, view, supervision, filters, taskStates, foldedProjects, mode])
 
-    // Every width keeps the overview: all projects, each foldable.
+    // The cockpit model: flat, attention-first, from the same projection.
+    const overview = React.useMemo(() => buildOverview(projection, {
+      filter: ui.filter, query: ui.query, project: ui.project, dismissed: dismissedSet,
+      roles: hierarchy.roles, taskStates, taskTitles, filters, focus, selectedId,
+      now: nowBucket * 60000 + 60000, aggregates,
+    }), [projection, aggregates, ui.filter, ui.query, ui.project, dismissedSet, hierarchy.roles, taskStates, taskTitles, filters, focus, selectedId, nowBucket])
+
+    // Every width keeps the projects overview: all projects, each foldable.
     const shownProjects = React.useMemo(() => {
       if (ui.viewMode === 'hierarchy') return []
       return filteredView.projects.map(project => {
@@ -6889,74 +8161,115 @@ function dabMakePage(store, ctx) {
       taskStates,
       onFoldProject: project => onFold(project.unassigned ? `open:${project.id}` : project.id),
     }
-    // Collapsed by default when a single project exists; the operator's explicit
-    // choice (persisted) always wins.
-    const supervisionOpen = ui.supervisionOpen === null || ui.supervisionOpen === undefined
-      ? hierarchy.projects.length !== 1
-      : ui.supervisionOpen === true
+    // The supervision body is collapsed by default in the cockpit: the band is a
+    // compact summary, the details are opt-in.
+    const barOpen = ui.supervisionOpen === true
 
-    const empty = shownProjects.length === 0 && ui.viewMode !== 'hierarchy'
-      ? h('div', { className: 'dab-empty' },
-        h('div', null, ui.query !== '' ? dabT('emptySearch') : (filtersActive ? dabT('emptyFiltered') : dabT('emptyAttention'))),
-        ui.query === '' && !filtersActive ? h('div', { className: 'dab-muted' }, dabT('emptyHint')) : null,
-        filtersActive
-          ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setUi({ roleFilter: null, statusFilter: null, taskStateFilter: null }) }, dabT('clearFilters'))
-          : null,
-        ui.query === '' && !filtersActive ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setHistoryOpen(true) }, dabIcon('history'), ` ${dabT('history')}`) : null)
-      : null
-
-    return h('div', { className: 'dab-root', ref: rootRef, 'data-dsh-agent-board': '', 'data-narrow': narrow ? 'true' : 'false' },
-      h(DabToolbar, {
-        counts, visibleCount: filteredView.visibleCount, mode, busy, hostDown, canStop, ui, setUi, projects: projectList, narrow,
-        taskStateAvailable: hierarchy.totals.taskStateAvailable,
-        taskStateUnavailableReason: hierarchy.workspace.taskboard !== null && hierarchy.workspace.taskboard !== undefined && hierarchy.workspace.taskboard.available === false
-          ? (typeof hierarchy.workspace.taskboard.reason === 'string' ? hierarchy.workspace.taskboard.reason : null)
-          : null,
-        stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
-        secondary: host.instance?.primary === false,
-        onMode: value => act('mode', () => store.setMode(value)),
-        onStop: () => act('stop', () => store.stop()),
-        onResume: () => act('resume', () => store.resume()),
-        onRefresh: () => { void store.refreshHost(); void act('refresh', () => store.refreshHost()) },
-        onHistory: () => setHistoryOpen(true),
-        statePanel: h(DabOrchestratorState, { host, hostError: snapshot.hostError }),
-      }),
-      h('div', { className: 'dab-main' },
-        h('div', { className: 'dab-scroll', ref: scrollRef, onScroll: event => { DAB_MEMORY.scrollTop = event.currentTarget.scrollTop } },
-          notice !== '' ? h('div', { className: 'dab-alert', role: 'status', style: { marginBottom: '8px' } }, notice) : null,
-          h(DabSupervisionBand, {
-            workspace: hierarchy.workspace,
-            totals: hierarchy.totals,
-            projects: hierarchy.projects,
-            open: supervisionOpen,
-            onToggle: () => setUi({ supervisionOpen: !supervisionOpen }),
-          }),
-          h(DabExecutionList, { host, onApprove: id => act('approve', () => store.decide(id, true)), onReject: id => act('reject', () => store.decide(id, false)) }),
-          empty,
-          ui.viewMode === 'hierarchy'
-            ? h(DabHierarchyView, { hierarchy, ctx: ctxValue, compact: ui.compact })
-            : h('div', { className: 'dab-projects' }, shownProjects.map(project => h(DabProjectGroup, {
-              key: project.id, project, ctx: ctxValue, compact: ui.compact,
-              // "Unassigned" starts folded (opt-in), every real project starts open.
-              folded: project.unassigned
-                ? !foldedSet.has(`open:${project.id}`) && ui.query === '' && ui.project !== project.id
-                : foldedSet.has(project.id),
-              onFold: id => onFold(project.unassigned ? `open:${id}` : id),
-              treeLimit: ui.treeLimit[project.id] ?? DEFAULT_TREE_LIMIT,
-              onMoreTrees,
-            })))),
-        selectedNode !== null
-          ? h(DabAgentPreview, {
-            node: selectedNode, parent: parentNode, onOpen: openSession, onSelect: selectNode, onClose: () => setSelectedId(null), openError, onDismiss, dismissed: dismissedSet.has(selectedNode.id),
-            role: hierarchy.roles.get(selectedNode.id) ?? null,
-            taskState: selectedNode.taskId !== null && selectedNode.taskId !== undefined && taskStates instanceof Map
-              ? taskStates.get(String(selectedNode.taskId)) ?? null
-              : null,
-          })
-          : null),
-      historyOpen
-        ? h(DabHistoryDrawer, { projection, project: ui.project, selectedId, arbiter, onClose: () => setHistoryOpen(false), roles: hierarchy.roles, taskStates })
+    const filtersActiveAll = filtersActive || ui.project !== null || focus !== null
+    const empty = h('div', { className: 'dab-empty' },
+      h('div', null, ui.query !== '' ? dabT('emptySearch') : (filtersActiveAll ? dabT('emptyFiltered') : dabT('emptyAttention'))),
+      ui.query === '' && !filtersActiveAll ? h('div', { className: 'dab-muted' }, dabT('emptyHint')) : null,
+      filtersActiveAll
+        ? h('button', {
+          type: 'button', className: 'dab-btn',
+          onClick: () => { setUi({ roleFilter: null, statusFilter: null, taskStateFilter: null, project: null }); setFocus(null) },
+        }, dabT('clearFilters'))
         : null,
+      ui.query === '' && !filtersActiveAll ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setHistoryOpen(true) }, dabIcon('history'), ` ${dabT('history')}`) : null)
+
+    const globalView = h('div', { className: 'dab-global' },
+      h(DabSuperOrchestratorBar, {
+        workspace: hierarchy.workspace,
+        totals: hierarchy.totals,
+        projects: hierarchy.projects,
+        orchestrators: hierarchy.orchestrators,
+        mode,
+        open: barOpen,
+        compact: narrow,
+        onToggle: () => setUi({ supervisionOpen: !barOpen }),
+        onSelect: selectNode,
+      }),
+      h(DabOverviewStats, {
+        counts: overview.counts,
+        focus,
+        onFocus: setFocus,
+        reviewAvailable: overview.counts.reviewAvailable === true,
+        reviewReason: hierarchy.workspace.taskboard !== null && hierarchy.workspace.taskboard !== undefined && hierarchy.workspace.taskboard.available === false
+          ? String(hierarchy.workspace.taskboard.reason ?? dabT('taskStateUnavailable'))
+          : dabT('statReviewUnavailable'),
+        compact: narrow,
+      }),
+      h(DabGlobalOverview, {
+        overview,
+        ctx: ctxValue,
+        compact: ui.compact === true,
+        empty,
+      }))
+
+    const projectsView = h('div', { className: 'dab-global' },
+      h(DabSuperOrchestratorBar, {
+        workspace: hierarchy.workspace,
+        totals: hierarchy.totals,
+        projects: hierarchy.projects,
+        orchestrators: hierarchy.orchestrators,
+        mode,
+        open: barOpen,
+        compact: narrow,
+        onToggle: () => setUi({ supervisionOpen: !barOpen }),
+        onSelect: selectNode,
+      }),
+      h('div', { className: 'dab-projects' }, shownProjects.map(project => h(DabProjectGroup, {
+        key: project.id, project, ctx: ctxValue, compact: ui.compact,
+        // "Unassigned" starts folded (opt-in), every real project starts open.
+        folded: project.unassigned
+          ? !foldedSet.has(`open:${project.id}`) && ui.query === '' && ui.project !== project.id
+          : foldedSet.has(project.id),
+        onFold: id => onFold(project.unassigned ? `open:${id}` : id),
+        treeLimit: ui.treeLimit[project.id] ?? DEFAULT_TREE_LIMIT,
+        onMoreTrees,
+      }))))
+
+    return h('div', {
+      className: 'dab-root', ref: rootRef, 'data-dsh-agent-board': '', 'data-narrow': narrow ? 'true' : 'false',
+      'data-view': ui.viewMode ?? 'global', 'data-compact': ui.compact === true ? 'true' : 'false',
+    },
+    h(DabToolbar, {
+      counts, visibleCount: overview.counts.shown, mode, busy, hostDown, canStop, stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
+      secondary: host.instance?.primary === false, ui, setUi, projects: projectList, narrow,
+      taskStateAvailable: hierarchy.totals.taskStateAvailable,
+      taskStateUnavailableReason: hierarchy.workspace.taskboard !== null && hierarchy.workspace.taskboard !== undefined && hierarchy.workspace.taskboard.available === false
+        ? (typeof hierarchy.workspace.taskboard.reason === 'string' ? hierarchy.workspace.taskboard.reason : null)
+        : null,
+      onMode: value => act('mode', () => store.setMode(value)),
+      onStop: () => act('stop', () => store.stop()),
+      onResume: () => act('resume', () => store.resume()),
+      onRefresh: () => { void store.refreshHost(); void act('refresh', () => store.refreshHost()) },
+      onHistory: () => setHistoryOpen(true),
+      onToggleCompact: () => setUi({ compact: !ui.compact }),
+      statePanel: h(DabOrchestratorStateContent, { host, hostError: snapshot.hostError }),
+      hostError: snapshot.hostError,
+    }),
+    h('div', { className: 'dab-main' },
+      h('div', { className: 'dab-scroll', ref: scrollRef, onScroll: event => { DAB_MEMORY.scrollTop = event.currentTarget.scrollTop } },
+        notice !== '' ? h('div', { className: 'dab-alert', role: 'status', style: { marginBottom: '8px' } }, notice) : null,
+        h(DabExecutionList, { host, onApprove: id => act('approve', () => store.decide(id, true)), onReject: id => act('reject', () => store.decide(id, false)) }),
+        (ui.viewMode ?? 'global') === 'hierarchy'
+          ? h(DabHierarchyView, { hierarchy, ctx: ctxValue, compact: ui.compact })
+          : (ui.viewMode === 'projects' ? projectsView : globalView)),
+      selectedNode !== null
+        ? h(DabInspector, {
+          node: selectedNode, parent: parentNode, onOpen: openSession, onSelect: selectNode, onClose: () => setSelectedId(null), openError, onDismiss,
+          dismissed: dismissedSet.has(selectedNode.id),
+          role: hierarchy.roles.get(selectedNode.id) ?? null,
+          taskState: selectedNode.taskId !== null && selectedNode.taskId !== undefined && taskStates instanceof Map
+            ? taskStates.get(String(selectedNode.taskId)) ?? null
+            : null,
+          narrow,
+        })
+        : null),
+    historyOpen
+      ? h(DabHistoryDrawer, { projection, project: ui.project, selectedId, arbiter, onClose: () => setHistoryOpen(false), roles: hierarchy.roles, taskStates })
+      : null,
     )
   }
 }
