@@ -93,10 +93,11 @@ profile and can be installed with `plugin_manager install_bundle`).
 
 ## 5. Tests
 
-- `node --test tests/` — **411 tests, 411 pass, 0 fail** (including the
+- `node --test tests/` — **412 tests, 412 pass, 0 fail** (including the
   artifact-integrity byte comparison of the generated `src/client.js`, a host
   regression test proving the supervision payload is built eagerly from the real
-  agents before the 15 s projection timer, and the declared→deduced role tests).
+  agents before the 15 s projection timer, the declared→deduced role tests, and a
+  CSS regression test pinning the status dot to the bottom-left).
 - Isolated real DSH host E2E (`scripts/e2e/run-e2e.mjs --keep-running`): **15/15
   assertions PASS** with the new build (fake OpenAI-compatible provider, simulated
   Task Board, no credentials); the board audit shows the new `delegation_allowed`
@@ -136,12 +137,15 @@ OpenAI-compatible provider + simulated Task Board, Playwright Chromium.
 | Task Board state readable in default `off` mode | OK (filter present after the bounded startup read) |
 | Keyboard: Enter toggles the band | OK (`aria-expanded` + `aria-controls` resolve to the hidden body) |
 | Role mascots (15 + bolt) rendered from the exact data URIs | OK, gallery |
+| Status dot clear of the role pictogram (bottom-left) | OK (numeric + zoomed render) |
 | Undeclared agents get a deduced mascot, marked « déduit » | OK, all E2E cards (Worker default) |
 | Status-colour independence | OK (dot separate; Worker stays green when not running) |
 
 Evidence: `docs/e2e/screenshots/goal4-1366-light-projects.png`,
 `goal4-1366-light-hierarchy.png`, `goal4-1366-dark-hierarchy.png`,
-`goal4-390-light-hierarchy.png`, `goal4-mascots-gallery.png`.
+`goal4-390-light-hierarchy.png`, `goal4-mascots-gallery.png`,
+`goal5-inferred-roles.png`, `goal6-status-dot-bottom-left.png`,
+`goal6-status-dot-zoom.png`.
 
 What was **not** exercised visually: a populated panel with agents whose declared
 role resolves to the 15 mascots (the simulated profile's agents declare no role,
@@ -175,9 +179,11 @@ b3bdd35 feat(supervision): Super Orchestrator layer, delegation limits and host 
 b9db3a6 build(client): bundle the mascot, hierarchy and supervision modules
 ab73c76 docs(goal4): integration notes, delivery evidence and independent review
 9fc9810 docs(goal4): record the pushed branch and pull request
-9fc9810 docs(goal4): record the pushed branch and pull request
 a90c992 feat(roles): deduce undeclared roles from declared text (marked "déduit")
 8cd3e89 docs(goal4): record the role deduction and the final 411-test result
+90a1186 docs(goal4): replace the commit placeholders with the recorded hashes
+c69ed55 fix(ui): anchor the status dot bottom-left, clear of the role pictogram
+(this commit) docs(goal4): record the dot position and the final 412-test result
 ```
 
 The working tree is clean after this commit. The branch was pushed to
