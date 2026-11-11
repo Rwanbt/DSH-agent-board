@@ -249,7 +249,53 @@ The panel renders the hierarchy with `src/board/hierarchy.js`, which **reuses**
 workspace level, role projection, declared orchestrator, counts and filters. The
 mascots come from `src/contracts/agent-roles.js` (15 approved roles, declared-name
 aliases, generic fallback) and the inlined `AGENT_BOT_ASSETS` data URIs; role
-colour never encodes status.
+colour never encodes status. `buildHierarchyView()` also exposes the
+**filter-independent** `orchestrators` list (every project that really has one),
+so the cockpit band never under-counts supervision because a project's agents are
+folded or filtered out.
+
+## Cockpit view model (GOAL 5)
+
+`src/board/overview.js` is the data half of the responsive cockpit: a **flat**,
+attention-first list of cards plus the four runtime indicators. It is pure and
+reuses `board/view.js` for visibility, `isAttention`, `isActionRequired`,
+`sortAttention` and subtree aggregates, and `board/hierarchy.js` for role
+resolution and the agent filters.
+
+```text
+projection ─► buildOverview(projection, {filter, query, project, dismissed,
+                                          roles, taskStates, taskTitles, filters,
+                                          focus, selectedId, now})
+              sections[attention|running|other]
+              entries[]   ({node, role, projectTitle, parentTitle, taskState,
+                            taskTitle, descendants, depth, tier})
+              counts{total, agents, active, attention, review, other, shown,
+                     reviewAvailable}
+```
+
+Invariants encoded in the module and its tests:
+
+- **No derived status.** A card's section is its projection status
+  (`attention` = intervention required, `running` = live/recovering, `other` =
+  results and calm work). The Task Board workflow state is a separate fact.
+- **Each node counted once**, with the precedence
+  `attention > active > review > other`, over every non-blank node; the sum equals
+  `counts.agents`. Indicators are global (filter-independent); `counts.shown` is
+  the number of rendered cards.
+- **`review` is only a readable ledger fact** (`in_review`). An unreadable ledger
+  sets `reviewAvailable:false` and the UI shows `—` with the real reason.
+- **Search** covers title, resolved role id and label, project, task id, Task
+  Board task title, model/provider, session id and goal; a non-empty search
+  overrides the view filter, exactly like `buildBoardView`.
+- **Pinning.** Selecting a result acknowledges it (existing behaviour), which can
+  move it out of the active filter; `selectedId` pins the inspected card so the
+  grid never loses it while the inspector is open. The pin still honours the
+  project, query, agent filters and the selected indicator.
+
+The React layer (`src/client/ui/overview.js`, `superbar.js`, `inspector.js`,
+`toolbar.js`) only renders this model: it never re-derives a status, a section or
+a count. All layout decisions use container queries on the panel width, not the
+window width.
 
 ## Failover, three stages
 

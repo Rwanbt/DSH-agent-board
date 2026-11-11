@@ -21,6 +21,24 @@ future storage migration. Canonical definitions live in
 | `AgentAvatarModel` | `{ roleId, roleLabel, family, shape, color, resolution, rawRole, variant, size, src, emblem, status, tone, taskState, taskTone, altParts[] }` | pure view model; unknown role ⇒ `roleId:null`, `src:null`, no guessed mascot; the raw value is preserved |
 | `SupervisionPayload` | host `/state`.`supervision`: `{ version, at, workspace, projects[], blocks[], crossProjectDependencies[], recommendations[], capabilities, capabilityReasons, limits, taskboard }` | workspace node is `synthetic:true` (the supervision layer, not an agent); recommendations are `applies:false`; unavailable capabilities carry a reason |
 | `CoordinationModel` | `{ available, reason, source, tasks[], dependencies[], capabilities, notes }` | read-only mapping of the Task Board ledger; no write method exists |
+| `OverviewModel` | `buildOverview()` output: `{ sections[{id:'attention'\|'running'\|'other', entries[]}], entries[], counts{total,agents,active,attention,review,other,shown,reviewAvailable}, filter, query, focus }` | one node per card, each agent counted in exactly ONE bucket (`attention+active+review+other === agents`); no status derived from age/role/model/task; `review` is only a readable Task Board `in_review`; `selectedId` pins the inspected card without breaking the project/query/agent filters |
+
+## Cockpit indicators and sections (GOAL 5)
+
+- **Sections**: `attention` = `waiting_user`, `provider_unavailable`, unseen
+  `failed`/`interrupted`; `running` = `running`, `recovering`; `other` = unread
+  results, seen failures/interruptions, read/idle. Fixed order, attention first.
+- **Buckets**: same predicates, plus `review` = linked Task Board `in_review`,
+  with precedence `attention > active > review > other`. Buckets are global and
+  filter-independent; the number of rendered cards is `counts.shown`.
+- **Filters**: `attention` (default, "En cours"), `action` ("À traiter": only
+  intervention-required), `recent` (24 h window), `all`. A non-empty search
+  overrides the view filter. Project, role, agent status and Task Board state
+  filters combine; a Task Board state filter is ignored when the ledger is
+  unreadable and reported as such.
+- **Truth rules**: no percentage, no invented task/activity, the mascot carries
+  the role while the status stays a separate dot **and** a text word on attention
+  cards; `En revue` shows `—` with the reason when the ledger cannot be read.
 
 ## Supervision and delegation rules
 

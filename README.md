@@ -26,6 +26,16 @@ execution record while the board keeps the model failover.
 > hierarchy and the Super Orchestrator supervision layer are implemented and
 > tested; the Task Board coordination stays read-only with documented proposals
 > (`docs/MASCOTS-SUPER-ORCHESTRATOR.md`).
+>
+> **GOAL 5 (responsive cockpit):** the approved UX mockup is reproduced on the
+> real plugin: global multi-project cockpit by default, compact header + one
+> filter bar, real Super Orchestrator band, four runtime indicators,
+> attention-first adaptive grid (240–290 px cards on desktop, two-column mosaic
+> on mobile), desktop inspector drawer and mobile bottom sheet, light/dark
+> themes, keyboard and container-query responsive behaviour. Evidence, measured
+> sizes and every deliberate deviation are recorded in
+> [`docs/GOAL5-DELIVERY.md`](docs/GOAL5-DELIVERY.md); the engineering contract is
+> [`docs/UX-COCKPIT-CONTRACT.md`](docs/UX-COCKPIT-CONTRACT.md).
 
 ## Branches
 
@@ -36,6 +46,7 @@ execution record while the board keeps the model failover.
 | `fix/agent-board-runtime-e2e` | Feature history of the GOAL 2 corrections and review rounds (merged into `dev`). |
 | `goal3/supervision-orchestration` | GOAL 3 work: unified execution contract, layered routing/budget/fencing, supervision fidelity, adapters, benchmarks, reviews (to be merged into `dev`). |
 | `feat/agent-board-mascots-super-orchestrator` | GOAL 4: the 15 Mascot SVGs byte-identical, role registry/aliases, `AgentAvatar`, role-aware cards + hierarchy + filters, the Super Orchestrator supervision layer and the Task Board coordination read model. |
+| `feat/agent-board-responsive-cockpit` | GOAL 5: the responsive cockpit (global multi-project view by default, compact header/filters, Super Orchestrator band, runtime indicators, adaptive grid, inspector drawer / bottom sheet, two-column mobile mosaic). |
 
 The board never pushes, merges or opens a PR on a forge: the forge adapters are
 read-only and the Task Board stays the sole owner of tickets and executions.
@@ -50,17 +61,25 @@ read-only and the Task Board stays the sole owner of tickets and executions.
   text keeps a neutral generic identity. The mascot colour is identity; runtime
   status is a separate dot. Assets are inlined as data URIs, so there is no
   external request and no CSP exception.
+- **Supervision cockpit (default view)** — every project at once, attention first:
+  a 52–60 px header, one 40–45 px filter bar (search, `En cours / Tout / À traiter /
+  Historique`, view switch, filters popover), a 62 px Super Orchestrator band
+  (official crowned mascot, real status, project/orchestrator counts, mini
+  orchestrator avatars, expandable capabilities with reasons), four real
+  indicators (`Actifs`, `À traiter`, `En revue`, `Autres`, each one a filter), and
+  an adaptive grid of supervision cards. `En revue` is the linked Task Board
+  `in_review` state and shows `—` with the reason when the ledger is unreadable;
+  no percentage, no invented task, no fake activity is ever displayed.
 - **Supervision** — a workspace-level Super Orchestrator **layer** (not an AI
   agent) that aggregates real project/agent/task facts, exposes blocks and
   cross-project dependencies, proposes (never applies) reassignments, and gates
-  board-owned delegations with concurrency/hourly/depth/cycle limits. The panel
-  shows a `Projets` view (the existing view and semantics, now with mascots and
-  roles on the cards) and a `Hiérarchie` view, with role/status/
-  Task-Board-state filters.
+  board-owned delegations with concurrency/hourly/depth/cycle limits. Besides the
+  cockpit, the panel keeps a `Projets` view (tree, with mascots and roles) and a
+  `Hiérarchie` view, with role/status/Task-Board-state filters.
 - **Cards & branches** — sessions from the native `sessions.list` snapshot,
   sub-agents from the `subagentCatalog` projection and/or `parentId`, grouped by
   DSH workspace, collapsible sub-trees, compact mode, responsive down to a phone
-  viewport, DSH theme tokens (light/dark).
+  viewport with a two-column mosaic, DSH theme tokens (light/dark).
 - **Exact statuses, with provenance** — `running` (animated ring),
   `waiting_user` (yellow, from `uiSession.sessionStatus.pendingInteraction`),
   `recovering` (route switch in progress), `interrupted` (an assignment was
@@ -79,10 +98,11 @@ read-only and the Task Board stays the sole owner of tickets and executions.
   `native`/`assignment`/`unknown` source; a model change updates the chip and
   appends to the route history **without** creating a second card. A native
   session never borrows the board's route.
-- **Click = preview, double-click = open** — a single click expands the last
-  useful assistant segment, the expected action, the model/provider and the
-  assigned task; a double-click (or the explicit “Open session” button, for
-  touch/keyboard) navigates through `uiWorkspace.openSession`.
+- **Click = inspect, explicit button = open** — a single click (or Enter) opens
+  the inspector: a right-side drawer over the grid on desktop, a bottom sheet on
+  mobile, with the last useful assistant segment, the expected action, the
+  model/provider, the parent/children, the assigned task and an explicit
+  “Open session” button that navigates through `uiWorkspace.openSession`.
 - **Orchestration** — OFF (observe only), SUPERVISED (proposals wait for
   approval), AUTONOMOUS (launches inside the mandate), plus a separate
   **Stop executions** action that cancels in-flight agents and blocks new
@@ -225,6 +245,24 @@ read-only from the board's perspective; `done` stays human-only.
 Every request goes through `ctx.connection.requestRejection` before the
 handler runs.
 
+## Screenshots (integrated plugin, isolated DSH host)
+
+Real captures of the plugin served by an isolated DSH host (simulated provider
+and simulated Task Board, five workspaces, 21 real sessions):
+
+- [1920 px, light](docs/e2e/screenshots/cockpit-1920-light.png) ·
+  [1920 px, dark](docs/e2e/screenshots/cockpit-1920-dark.png)
+- [1366 px, light](docs/e2e/screenshots/cockpit-1366-light.png) ·
+  [1366 px, dark](docs/e2e/screenshots/cockpit-1366-dark.png)
+- [390 px, light](docs/e2e/screenshots/cockpit-390-light.png) ·
+  [360 px](docs/e2e/screenshots/cockpit-360-light.png) ·
+  [320 px](docs/e2e/screenshots/cockpit-320-light.png)
+- [desktop inspector drawer](docs/e2e/screenshots/cockpit-1366-inspector.png) ·
+  [mobile bottom sheet](docs/e2e/screenshots/cockpit-390-sheet.png)
+- [projects tree](docs/e2e/screenshots/cockpit-1366-projects.png) ·
+  [hierarchy](docs/e2e/screenshots/cockpit-1366-hierarchy.png) ·
+  [supervision details](docs/e2e/screenshots/cockpit-1366-superbar-open.png)
+
 ## Tests
 
 ```sh
@@ -240,6 +278,7 @@ node scripts/bench/projection-bench.mjs   # 5/20/50/150 agents, 1000 sessions
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Responsive cockpit contract](docs/UX-COCKPIT-CONTRACT.md) · [GOAL 5 delivery record](docs/GOAL5-DELIVERY.md)
 - [Mascots, supervision & Super Orchestrator](docs/MASCOTS-SUPER-ORCHESTRATOR.md)
 - [Contracts & adapters](docs/CONTRACTS.md)
 - [Task Board execution contract (proposed, simulated)](docs/TASKBOARD-CONTRACT.md)

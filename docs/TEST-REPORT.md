@@ -4,6 +4,52 @@ Run date: 2026-11-09 (Europe/Paris). Host: DSH `0.2.2-rc.1`, profile `desktop`,
 GUI `http://127.0.0.1:62337`. Everything below was executed on this machine; no
 result is inferred from a mock unless it says so.
 
+> **GOAL 5 update (2026-11-11, branch `feat/agent-board-responsive-cockpit`).**
+> The suite is now **445 tests / 445 pass / 0 fail / 0 skipped** (~2.6 s,
+> `node --test tests/`), including the artifact check that rebuilds
+> `src/client.js` in memory and compares it byte-for-byte (the reviewed module
+> list is now 23 modules). New coverage:
+> - `tests/overview.test.js` (11 tests): section order and attention-first
+>   sorting, the mutually exclusive `attention/active/review/other` buckets on a
+>   150-node fixture (60/45/15/30 = 150), "an intervention is never hidden by the
+>   default filter", search by task title / task id / model / provider / session /
+>   role / project / goal, indicator focus (including clear and invalid), project
+>   and agent filters, Task Board state ignored when the ledger is unreadable,
+>   dismissed nodes, empty/partial projection, cycle safety, and a 15/50/150
+>   performance guard (0.36 / 0.90 / 2.68 ms per round).
+> - `tests/cockpit-render.test.js` (19 tests): the authored UI modules are
+>   concatenated exactly like the build and hydrated with a React stub — header
+>   and filter rows, the three real modes, stop reachability (wide and narrow),
+>   the four indicators and the `—` when the ledger is unreadable, indicator
+>   focus/clear, global card identity/status independence/descendant badge/15
+>   distinct mascots/explicit session opening, deduced role marking, section
+>   order, the 150-agent bound, the real Super Orchestrator band (no invented
+>   agent, hidden body, shared capabilities), the inspector dialog and the
+>   responsive CSS contract (container queries, 248 px desktop grid, two-column
+>   mosaic, drawer/sheet rules, safe-area, reduced motion, no hard-coded palette,
+>   status dot bottom-left, static preview inside the sheet).
+> - `tests/board-view.test.js` extended for the `action` filter and the Task
+>   Board task-title search.
+>
+> Integrated verification on an isolated DSH host (5 workspaces, 21 real
+> sessions, simulated provider + simulated Task Board): search counts
+> (project 3, task title 1, task id 1, model 16, role 1), filters (9 default,
+> 17 all, 0 + empty state for "À traiter"), indicator focus (3 review cards,
+> toggle off), keyboard (Enter opens the drawer, Escape closes, focus returns to
+> the grid), bottom sheet at 66 % of the panel with a scrollable body,
+> 7 measured viewports without horizontal overflow, and **0 console/page
+> errors**. Evidence: `docs/e2e/screenshots/cockpit-*.png`,
+> `docs/GOAL5-DELIVERY.md`.
+>
+> **Known flake (not hidden):** `review-backend-restart-lease.test.js` and
+> `review-supervision-artifact.test.js` are timing-sensitive and can fail under
+> the full parallel load (observed once: 2 failures, then 445/445 on rerun and
+> 445/445 with `--test-concurrency=1`). They pass individually and serially.
+>
+> **Not tested:** a real Android device, a real provider outage, a real Task
+> Board ledger, a real screen reader, non-Windows rendering, DOM paint cost of
+> >100 cards on a low-end device.
+
 > **GOAL 4 update (2026-11-11, branch `feat/agent-board-mascots-super-orchestrator`).**
 > The suite is now **412 tests / 412 pass / 0 fail / 0 skipped** (~9 s), including
 > the artifact-integrity check that rebuilds `src/client.js` in memory and compares
