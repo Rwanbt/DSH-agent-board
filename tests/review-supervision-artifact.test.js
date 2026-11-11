@@ -20,6 +20,7 @@ const PARTS = [
   'src/supervisor/super-orchestrator.js',
   'src/board/view.js',
   'src/board/hierarchy.js',
+  'src/board/overview.js',
   'src/board/interaction.js',
   'src/client/core.js',
   'src/client/ui/strings.js',
@@ -28,22 +29,23 @@ const PARTS = [
   'src/client/ui/avatar.js',
   'src/client/ui/card.js',
   'src/client/ui/hierarchy.js',
+  'src/client/ui/overview.js',
+  'src/client/ui/superbar.js',
   'src/client/ui/tree.js',
   'src/client/ui/preview.js',
+  'src/client/ui/inspector.js',
   'src/client/ui/history.js',
   'src/client/ui/toolbar.js',
   'src/client/app.js',
 ]
 
-const IMPORT_LINE = /^\s*import\s+(?:[^'"]*?\s+from\s+)?['"][^'"]+['"]\s*;?\s*$/
-const EXPORT_PREFIX = /^export\s+(?=(?:async\s+)?(?:function|const|let|var|class)\b)/
+// Same transformation as scripts/build-client.mjs: multi-line tolerant, so a
+// formatted `import {\n … } from '…'` can never leak into the artifact.
+const IMPORT_STATEMENT = /^[ \t]*import\s+(?:[^'"]*?\s+from\s+)?['"][^'"]+['"][ \t]*;?[ \t]*\r?\n?/gm
+const EXPORT_PREFIX = /^export\s+(?=(?:async\s+)?(?:function|const|let|var|class)\b)/gm
 
 function transform(source) {
-  return source
-    .split('\n')
-    .filter(line => !IMPORT_LINE.test(line))
-    .map(line => line.replace(EXPORT_PREFIX, ''))
-    .join('\n')
+  return source.replace(IMPORT_STATEMENT, '').replace(EXPORT_PREFIX, '')
 }
 
 async function rebuiltBundle() {

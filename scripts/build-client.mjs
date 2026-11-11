@@ -31,6 +31,9 @@ const PARTS = [
   'src/supervisor/super-orchestrator.js',
   'src/board/view.js',
   'src/board/hierarchy.js',
+  // Cockpit view model (GOAL 5): flat, attention-first sections and the four
+  // indicator buckets. Pure, built on top of view.js/hierarchy.js.
+  'src/board/overview.js',
   'src/board/interaction.js',
   'src/client/core.js',
   'src/client/ui/strings.js',
@@ -40,22 +43,25 @@ const PARTS = [
   'src/client/ui/avatar.js',
   'src/client/ui/card.js',
   'src/client/ui/hierarchy.js',
+  // Cockpit components: indicators/grid (overview), supervision band (superbar).
+  'src/client/ui/overview.js',
+  'src/client/ui/superbar.js',
   'src/client/ui/tree.js',
   'src/client/ui/preview.js',
+  'src/client/ui/inspector.js',
   'src/client/ui/history.js',
   'src/client/ui/toolbar.js',
   'src/client/app.js',
 ]
 
-const IMPORT_LINE = /^\s*import\s+(?:[^'"]*?\s+from\s+)?['"][^'"]+['"]\s*;?\s*$/
-const EXPORT_PREFIX = /^export\s+(?=(?:async\s+)?(?:function|const|let|var|class)\b)/
+const IMPORT_STATEMENT = /^[ \t]*import\s+(?:[^'"]*?\s+from\s+)?['"][^'"]+['"][ \t]*;?[ \t]*\r?\n?/gm
+const EXPORT_PREFIX = /^export\s+(?=(?:async\s+)?(?:function|const|let|var|class)\b)/gm
 
 function transform(source) {
-  return source
-    .split('\n')
-    .filter(line => !IMPORT_LINE.test(line))
-    .map(line => line.replace(EXPORT_PREFIX, ''))
-    .join('\n')
+  // Strip ESM syntax. The import pattern is multi-line tolerant (`[^'"]` crosses
+  // newlines), so a formatted `import {\n  a,\n  b,\n} from '…'` never leaks into
+  // the browser artifact.
+  return source.replace(IMPORT_STATEMENT, '').replace(EXPORT_PREFIX, '')
 }
 
 const transformed = []

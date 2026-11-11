@@ -1,8 +1,15 @@
 /**
- * Toolbar (counters, search, project filter, view filters, orchestrator
- * controls) and the orchestrator side panels (proposals/executions, adapters).
- * The orchestrator controls are the pre-existing ones; when the host API is
- * unreachable they are disabled and say so instead of pretending to work.
+ * Cockpit header and filter bar.
+ *
+ * Desktop: one 52–60 px header (title, live state, supervision mode, stop,
+ * refresh, history, settings) and one 40–45 px filter bar (search, view filters,
+ * view switch, filters popover). Narrow panel: the header collapses to a single
+ * line and the secondary controls move into one menu; the stop control stays
+ * directly reachable while executions are in flight.
+ *
+ * The existing orchestrator controls, the host state panel and the additive
+ * GOAL 4 filters are preserved, never re-implemented: the toolbar only decides
+ * where they are rendered.
  *
  * @module dsh-agent-board/client/ui/toolbar
  */
@@ -13,6 +20,13 @@ const DAB_ICONS = {
   more: ['M5 12h.01', 'M12 12h.01', 'M19 12h.01'],
   stop: ['M7 7h10v10H7z'],
   play: ['M8 5l11 7-11 7z'],
+  search: ['M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14', 'M16.2 16.2 21 21'],
+  filter: ['M4 6h16', 'M7 12h10', 'M10 18h4'],
+  settings: ['M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7', 'M12 3v2', 'M12 19v2', 'M4.2 7.5l1.7 1', 'M18.1 15.5l1.7 1', 'M4.2 16.5l1.7-1', 'M18.1 8.5l1.7-1'],
+  globe: ['M4 4h7v7H4z', 'M13 4h7v7h-7z', 'M4 13h7v7H4z', 'M13 13h7v7h-7z'],
+  projects: ['M4 6h4', 'M11 6h9', 'M4 12h4', 'M11 12h9', 'M4 18h4', 'M11 18h9'],
+  hierarchy: ['M12 4v4', 'M6 12h12', 'M4 16h4v4H4z', 'M10 16h4v4h-4z', 'M16 16h4v4h-4z', 'M6 12v4', 'M18 12v4'],
+  close: ['M6 6l12 12', 'M18 6 6 18'],
 }
 
 /** Existing agent statuses offered by the additive status filter. */
@@ -25,6 +39,12 @@ const DAB_FILTER_STATUSES = Object.freeze([
 const DAB_FILTER_TASK_STATES = Object.freeze(['todo', 'in_progress', 'in_review', 'blocked', 'done', 'canceled', 'archived'])
 
 const DAB_GENERIC_ROLE_FILTER = typeof GENERIC_ROLE_FILTER === 'string' ? GENERIC_ROLE_FILTER : 'generic'
+
+const DAB_VIEW_OPTIONS = Object.freeze([
+  ['global', 'viewGlobal', 'globe'],
+  ['projects', 'viewProjects', 'projects'],
+  ['hierarchy', 'viewHierarchy', 'hierarchy'],
+])
 
 function dabRoleFilterOptions() {
   const options = [['', dabT('roleAll')]]
@@ -87,38 +107,52 @@ function DabSelect({ label, value, options, onChange, title, disabled, style }) 
       : null)
 }
 
+/**
+ * One popover menu: a trigger button and a panel that closes on outside click
+ * and Escape. Used for the filters, the settings and the narrow-panel menu.
+ */
+function DabMenu({ label, icon, badge, open, setOpen, align = 'end', children, className, title }) {
+  const h = React.createElement
+  const ref = React.useRef(null)
+  React.useEffect(() => {
+    if (!open) return undefined
+    const onDown = event => { if (ref.current !== null && !ref.current.contains(event.target)) setOpen(false) }
+    const onKey = event => { if (event.key === 'Escape') setOpen(false) }
+    document.addEventListener('pointerdown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open, setOpen])
+  return h('div', { className: `dab-menu ${className ?? ''}`, ref },
+    h('button', {
+      type: 'button', className: 'dab-icon-btn dab-menu-btn', 'aria-haspopup': 'dialog', 'aria-expanded': open,
+      'aria-label': label, title: title ?? label, onClick: () => setOpen(!open),
+    }, dabIcon(icon),
+    typeof badge === 'number' && badge > 0 ? h('span', { className: 'dab-menu-badge', 'aria-hidden': 'true' }, String(badge)) : null),
+    open ? h('div', { className: 'dab-menu-pop', role: 'dialog', 'aria-label': label, 'data-align': align }, children) : null)
+}
+
 function DabToolbar(props) {
   const h = React.createElement
-  const { counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh, ui, setUi, projects, onHistory, narrow, taskStateAvailable, taskStateUnavailableReason } = props
-  const counter = (tone, value, label) => value > 0
-    ? h('span', { className: 'dab-counter', key: tone, title: `${value} ${label}`, 'aria-label': `${value} ${label}` }, h('span', { className: 'dab-dot', 'data-tone': tone }), h('b', null, value))
-    : null
+  const {
+    counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh,
+    ui, setUi, projects, onHistory, narrow, taskStateAvailable, taskStateUnavailableReason, onToggleCompact,
+  } = props
   const modeNotice = mode === 'off' ? dabT('offNotice') : mode === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice')
   const notice = secondary ? dabT('secondaryInstance') : stopped ? dabT('stoppedNotice') : modeNotice
   const [menuOpen, setMenuOpen] = React.useState(false)
+  const [filtersOpen, setFiltersOpen] = React.useState(false)
+  const [settingsOpen, setSettingsOpen] = React.useState(false)
   const state = props.statePanel ?? null
-  const alert = secondary || stopped || hostDown
+  const hostAlert = secondary || stopped || hostDown
   const iconBtn = (icon, label, onClick, extra = {}) => h('button', { type: 'button', className: 'dab-icon-btn', onClick, 'aria-label': label, title: label, ...extra }, dabIcon(icon))
   const select = (label, value, options, onChange, extra = {}) => h(DabSelect, { label, value, options, onChange, title: extra.title, disabled: extra.disabled, style: extra.style })
-
-  const counters = h('span', { className: 'dab-counters' },
-    counter('running', counts.running, dabT('running')),
-    counter('waiting', counts.waiting, dabT('waiting')),
-    counter('unread', counts.unread, dabCountNoun(counts.unread, 'unreadSingular', 'unreadPlural')),
-    counter('failed', counts.failed, dabT('failed')),
-    narrow ? null : h('span', { className: 'dab-muted', title: `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}` }, `${visibleCount}/${counts.total}`))
 
   const projectSelect = select(dabT('projects'), ui.project ?? '',
     [['', dabT('allProjects')], ...projects.map(project => [project.id, `${project.id === 'unassigned' ? dabT('unassigned') : project.title} (${project.agents})`])],
     value => setUi({ project: value === '' ? null : value }), { style: narrow ? { flex: '1 1 auto', minWidth: 0 } : undefined })
-  const filterSelect = select(dabT('filterLabel'), ui.filter,
-    [['attention', dabT('filterAttention')], ['recent', dabT('filterRecent')], ['all', dabT('filterAll')]], value => setUi({ filter: value }))
-  const viewSelect = select(dabT('viewLabel'), ui.compact ? 'compact' : 'tree',
-    [['tree', dabT('treeView')], ['compact', dabT('compact')]], value => setUi({ compact: value === 'compact' }))
-  // Additive filters (GOAL 4): role, agent status, view mode and — only when the
-  // Task Board integration reports it available — the linked Task Board state.
-  const viewModeSelect = select(dabT('viewModeLabel'), ui.viewMode === 'hierarchy' ? 'hierarchy' : 'projects',
-    [['projects', dabT('viewProjects')], ['hierarchy', dabT('viewHierarchy')]], value => setUi({ viewMode: value }))
   const roleSelect = select(dabT('role'), typeof ui.roleFilter === 'string' ? ui.roleFilter : '',
     dabRoleFilterOptions(), value => setUi({ roleFilter: value === '' ? null : value }))
   const statusSelect = select(dabT('statusFilterLabel'), typeof ui.statusFilter === 'string' ? ui.statusFilter : '',
@@ -134,56 +168,138 @@ function DabToolbar(props) {
       value => setUi({ taskStateFilter: value === '' ? null : value }))
     : select(dabT('taskStateFilterLabel'), '', [['', dabT('taskStateUnavailable')]], () => {},
       { disabled: true, title: taskStateUnavailableReason ?? dabT('taskStateUnavailable') })
-  const clearFilters = dabHierarchyFiltersActive(ui)
+  const filtersActive = dabHierarchyFiltersActive(ui) || ui.project !== null
+  const activeFilterCount = (ui.project !== null ? 1 : 0)
+    + (typeof ui.roleFilter === 'string' && ui.roleFilter !== '' ? 1 : 0)
+    + (typeof ui.statusFilter === 'string' && ui.statusFilter !== '' ? 1 : 0)
+    + (typeof ui.taskStateFilter === 'string' && ui.taskStateFilter !== '' ? 1 : 0)
+  const clearFilters = filtersActive
     ? h('button', {
       type: 'button', className: 'dab-btn', 'data-variant': 'ghost',
-      onClick: () => setUi({ roleFilter: null, statusFilter: null, taskStateFilter: null }),
+      onClick: () => setUi({ roleFilter: null, statusFilter: null, taskStateFilter: null, project: null }),
     }, dabT('clearFilters'))
     : null
+  const compactToggle = h('button', {
+    type: 'button', className: 'dab-btn', 'data-variant': 'ghost', 'aria-pressed': ui.compact === true ? 'true' : 'false',
+    onClick: () => onToggleCompact(),
+  }, dabT('compact'))
   const modeSelect = select(dabT('orchestratorLabel'), mode,
     ['off', 'supervised', 'autonomous'].map(value => [value, `${dabT('orchestratorLabel')} : ${dabT(value)}`]), onMode,
     { disabled: busy || hostDown || secondary, title: hostDown ? dabT('orchestratorDown') : notice })
   const stopOrResume = stopped && mode !== 'off' && !secondary
     ? iconBtn('play', dabT('resume'), onResume, { disabled: busy || hostDown, 'data-tone': 'resume' })
     : iconBtn('stop', canStop ? dabT('stop') : dabT('stopNone'), onStop, { disabled: busy || hostDown || !canStop || secondary, 'data-danger': 'true' })
-  const alertDot = alert ? h('span', { className: 'dab-dot', 'data-tone': 'failed', title: hostDown ? dabT('orchestratorDown') : notice, role: 'img', 'aria-label': hostDown ? dabT('orchestratorDown') : notice }) : null
+  const stopText = stopped && mode !== 'off' && !secondary ? dabT('resume') : dabT('stopShort')
+  const stopButton = h('button', {
+    type: 'button', className: 'dab-btn dab-stop', 'data-danger': 'true', title: notice,
+    disabled: busy || hostDown || (!canStop && !(stopped && mode !== 'off')) || secondary,
+    onClick: stopped && mode !== 'off' && !secondary ? onResume : onStop,
+  }, h('span', { 'aria-hidden': 'true' }, stopped && mode !== 'off' && !secondary ? '▶' : '■'), h('span', { className: 'dab-stop-text' }, stopText))
 
-  const search = h('input', {
-    type: 'search', className: 'dab-input', placeholder: dabT('search'), 'aria-label': dabT('search'), value: ui.query,
-    onChange: event => setUi({ query: event.target.value }),
-    onKeyDown: event => { if (event.key === 'Escape') setUi({ query: '' }) },
-  })
-  const history = iconBtn('history', dabT('history'), onHistory, { 'aria-haspopup': 'dialog' })
-  const refresh = iconBtn('refresh', dabT('refresh'), onRefresh, { disabled: busy })
+  const liveTone = hostDown ? 'failed' : secondary ? 'idle' : 'running'
+  const liveText = hostDown ? dabT('liveDown') : secondary ? dabT('liveSecondary') : dabT('liveConnected')
+  const liveChip = h('span', { className: 'dab-live', 'data-tone': liveTone, title: hostDown ? (props.hostError ?? dabT('orchestratorDown')) : notice },
+    h('span', { className: 'dab-dot', 'data-tone': liveTone, 'aria-hidden': 'true' }),
+    narrow ? null : h('span', { className: 'dab-live-text' }, liveText))
 
-  if (narrow) {
-    return h('header', { className: 'dab-toolbar' },
-      h('div', { className: 'dab-bar', style: { flexWrap: 'nowrap' } },
-        counters, projectSelect, alertDot, history, refresh,
-        iconBtn('more', dabT('moreControls'), () => setMenuOpen(value => !value), { 'aria-expanded': menuOpen })),
-      h('div', { className: 'dab-bar', style: { flexWrap: 'nowrap' } }, search),
-      menuOpen
-        ? h('div', { className: 'dab-mobile-menu' },
-          h('div', { className: 'dab-bar' }, viewModeSelect, filterSelect),
-          h('div', { className: 'dab-bar' }, roleSelect, statusSelect),
-          h('div', { className: 'dab-bar' }, viewSelect, taskStateSelect, clearFilters),
-          h('div', { className: 'dab-bar' }, modeSelect, stopOrResume, h('span', { className: 'dab-grow' }), state),
-          h('div', { className: alert ? 'dab-alert' : 'dab-notice' }, hostDown ? dabT('orchestratorDown') : notice))
-        : null,
-    )
-  }
+  const modeSeg = h('div', { className: 'dab-seg dab-mode', role: 'group', 'aria-label': dabT('orchestratorLabel') },
+    ['off', 'supervised', 'autonomous'].map(value => h('button', {
+      key: value,
+      type: 'button',
+      className: 'dab-seg-btn',
+      'aria-pressed': mode === value ? 'true' : 'false',
+      disabled: busy || hostDown || secondary,
+      title: value === 'off' ? dabT('offNotice') : value === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice'),
+      onClick: () => { if (mode !== value) onMode(value) },
+    }, dabT(value === 'off' ? 'modeObserve' : value))))
+
+  const viewSwitch = h('div', { className: 'dab-seg dab-viewswitch', role: 'group', 'aria-label': dabT('viewLabel') },
+    DAB_VIEW_OPTIONS.map(([value, labelKey, icon]) => h('button', {
+      key: value,
+      type: 'button',
+      className: 'dab-seg-btn',
+      'aria-pressed': (ui.viewMode ?? 'global') === value ? 'true' : 'false',
+      title: dabT(labelKey),
+      onClick: () => setUi({ viewMode: value }),
+    }, dabIcon(icon), narrow ? null : h('span', { className: 'dab-seg-text' }, dabT(labelKey)))))
+
+  const chips = h('div', { className: 'dab-chips', role: 'group', 'aria-label': dabT('filterLabel') },
+    [['attention', 'filterActive'], ['all', 'filterAll'], ['action', 'filterAction']].map(([value, labelKey]) => h('button', {
+      key: value,
+      type: 'button',
+      className: 'dab-chip-btn',
+      'aria-pressed': ui.filter === value ? 'true' : 'false',
+      onClick: () => setUi({ filter: value }),
+    }, dabT(labelKey))),
+    h('button', {
+      type: 'button', className: 'dab-chip-btn dab-chip-history', 'aria-haspopup': 'dialog',
+      onClick: onHistory, title: dabT('historyHint'),
+    }, dabT('history')))
+
+  const search = h('label', { className: 'dab-search' },
+    h('span', { className: 'dab-search-ico', 'aria-hidden': 'true' }, dabIcon('search')),
+    h('input', {
+      type: 'search', className: 'dab-input', placeholder: dabT('search'), 'aria-label': dabT('search'), value: ui.query,
+      onChange: event => setUi({ query: event.target.value }),
+      onKeyDown: event => { if (event.key === 'Escape') setUi({ query: '' }) },
+    }))
+
+  const filterPanel = h('div', { className: 'dab-filter-pop' },
+    h('div', { className: 'dab-menu-row' }, projectSelect),
+    h('div', { className: 'dab-menu-row' }, roleSelect),
+    h('div', { className: 'dab-menu-row' }, statusSelect),
+    h('div', { className: 'dab-menu-row' }, taskStateSelect),
+    h('div', { className: 'dab-menu-row dab-menu-row-actions' }, compactToggle, h('span', { className: 'dab-grow' }), clearFilters),
+    h('div', { className: 'dab-menu-note' }, `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}`))
+
+  const settingsPanel = h('div', { className: 'dab-settings-pop' },
+    h('div', { className: hostAlert ? 'dab-alert' : 'dab-notice' }, hostDown ? dabT('orchestratorDown') : notice),
+    state,
+    h('div', { className: 'dab-menu-row dab-menu-row-actions' },
+      h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy }, dabT('refresh')),
+      h('button', { type: 'button', className: 'dab-btn', onClick: () => setSettingsOpen(false) }, dabT('close'))))
+
+  const headActions = h('div', { className: 'dab-head-actions' },
+    liveChip,
+    narrow ? null : modeSeg,
+    narrow ? (canStop ? stopButton : null) : stopButton,
+    narrow ? null : iconBtn('refresh', dabT('refresh'), onRefresh, { disabled: busy }),
+    narrow ? null : iconBtn('history', dabT('history'), onHistory, { 'aria-haspopup': 'dialog' }),
+    h(DabMenu, {
+      label: dabT('settings'), icon: 'settings', open: settingsOpen, setOpen: setSettingsOpen, title: dabT('settings'),
+    }, settingsPanel),
+    narrow
+      ? h(DabMenu, { label: dabT('moreControls'), icon: 'more', open: menuOpen, setOpen: setMenuOpen },
+        h('div', { className: 'dab-narrow-menu' },
+          h('div', { className: 'dab-menu-label' }, dabT('orchestratorLabel')),
+          modeSeg,
+          h('div', { className: 'dab-menu-row' }, modeSelect),
+          h('div', { className: 'dab-menu-row dab-menu-row-actions' }, stopOrResume, h('span', { className: 'dab-grow' }),
+            h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy }, dabT('refresh'))),
+          h('div', { className: 'dab-menu-label' }, dabT('filtersLabel')),
+          filterPanel))
+      : null)
 
   return h('header', { className: 'dab-toolbar' },
-    h('div', { className: 'dab-bar', style: { flexWrap: 'nowrap' } },
-      counters,
-      h('div', { className: 'dab-search-wrap' }, search),
-      projectSelect, filterSelect,
+    h('div', { className: 'dab-head' },
+      h('div', { className: 'dab-head-ident' },
+        h('span', { className: 'dab-head-mark', 'aria-hidden': 'true' }, '◈'),
+        h('div', { className: 'dab-head-text' },
+          h('h1', { className: 'dab-title' }, dabT('title')),
+          h('div', { className: 'dab-subtitle' }, `${dabT('cockpitSubtitle')} · ${counts.total} ${dabT('agentPlural')}`))),
+      headActions),
+    h('div', { className: 'dab-filters' },
+      search,
+      chips,
       h('span', { className: 'dab-grow' }),
-      alertDot, modeSelect, stopOrResume, state, history, refresh),
-    h('div', { className: 'dab-bar' },
-      viewModeSelect, roleSelect, statusSelect, taskStateSelect, viewSelect, clearFilters),
-  )
+      narrow ? null : h('span', { className: 'dab-shown', title: `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}` }, `${visibleCount}/${counts.total}`),
+      viewSwitch,
+      h(DabMenu, {
+        label: dabT('filtersLabel'), icon: 'filter', badge: activeFilterCount,
+        open: filtersOpen, setOpen: setFiltersOpen, title: filtersActive ? `${activeFilterCount} ${dabT('filtersLabel')}` : dabT('noFiltersActive'),
+      }, filterPanel)))
 }
+
 function DabExecutionList({ host, onApprove, onReject }) {
   const h = React.createElement
   const proposals = Array.isArray(host.proposals) ? host.proposals : []
@@ -211,15 +327,13 @@ function DabExecutionList({ host, onApprove, onReject }) {
   )
 }
 
-function DabOrchestratorState({ host, hostError }) {
+/** Host state, adapters and reconcile notes: the settings popover content. */
+function DabOrchestratorStateContent({ host, hostError }) {
   const h = React.createElement
   const sync = host.sync
   const adapters = host.adapters?.adapters ?? []
   const healthy = sync?.ok === true && !hostError
-  return h('details', { className: 'dab-state' },
-    h('summary', { className: 'dab-btn', title: dabT('orchestratorState'), 'aria-label': dabT('orchestratorState') },
-      h('span', { className: 'dab-dot', 'data-tone': healthy ? 'unread' : 'failed' }), dabT('stateShort')),
-    h('div', { className: 'dab-state-pop' },
+  return h('div', { className: 'dab-state-content' },
     h('div', { className: 'dab-label' }, dabT('orchestratorState')),
     h('div', { className: 'dab-muted', style: { marginTop: '6px' } },
       sync === null || sync === undefined
@@ -237,6 +351,14 @@ function DabOrchestratorState({ host, hostError }) {
       h('span', { className: 'dab-grow' }, adapter.title ?? adapter.id),
       h('span', { className: 'dab-tag' }, adapter.status ?? '?'),
       adapter.validatedLive === true ? null : h('span', { className: 'dab-tag' }, dabT('notLive'))))),
-    ),
-  )
+    healthy ? null : h('span', { className: 'dab-dot', 'data-tone': 'failed', 'aria-hidden': 'true' }))
+}
+
+/** Legacy details wrapper (kept for the hierarchy view). */
+function DabOrchestratorState({ host, hostError }) {
+  const h = React.createElement
+  return h('details', { className: 'dab-state' },
+    h('summary', { className: 'dab-btn', title: dabT('orchestratorState'), 'aria-label': dabT('orchestratorState') },
+      h('span', { className: 'dab-dot', 'data-tone': (host.sync?.ok === true && !hostError) ? 'unread' : 'failed' }), dabT('stateShort')),
+    h('div', { className: 'dab-state-pop' }, h(DabOrchestratorStateContent, { host, hostError })))
 }
