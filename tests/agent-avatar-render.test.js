@@ -196,3 +196,14 @@ test('unknown statuses render the neutral idle tone', () => {
   assert.equal(tree.props['data-tone'], 'idle')
   assert.equal(byClass(tree, 'dab-avatar-dot')[0].props['data-tone'], 'idle')
 })
+
+test('the status dot is anchored bottom-LEFT so the role pictogram stays visible', async () => {
+  // The kit draws the role pictogram (network/wrench/search/…) in the
+  // bottom-right of the character: the dot must not cover identity.
+  const css = await readFile(join(ROOT, 'src', 'client', 'ui', 'styles.js'), 'utf8')
+  const block = css.match(/\.dab-avatar-dot \{[^}]*\}/)
+  assert.ok(block, 'the .dab-avatar-dot rule exists')
+  assert.match(block[0], /left:\s*0/, 'the dot is anchored on the left')
+  assert.match(block[0], /right:\s*auto/, 'the right anchor is explicitly removed')
+  assert.match(block[0], /bottom:\s*0/, 'the dot stays on the bottom edge')
+})
