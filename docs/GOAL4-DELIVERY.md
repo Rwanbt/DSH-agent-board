@@ -10,9 +10,9 @@
 | P | Deliverable | State |
 |---|---|---|
 | P0 | 15 mascots + bolt emblem, 32 SVGs byte-identical to the approved kit, inlined as data URIs | **implemented** |
-| P0 | `AgentRole` registry, exact palette, declared-name aliases, generic fallback | **implemented** |
+| P0 | `AgentRole` registry, exact palette, declared-name aliases, documented text deduction, generic fallback | **implemented** |
 | P0 | Reusable `DabAgentAvatar` (full/compact, size, status dot, selection, accessible name) | **implemented** |
-| P1 | Role-aware cards (mascot, role chip, project context, linked task state, sub-agents, real activity) | **implemented** |
+| P1 | Role-aware cards (mascot, role chip + « déduit » provenance, project context, linked task state, sub-agents, real activity) | **implemented** |
 | P1 | Supervision band + `Hiérarchie` view (workspace → project → declared orchestrator → agents) | **implemented** |
 | P1 | Role / status / Task Board state filters, persisted and bounded | **implemented** |
 | P1 | Light/dark, phone layout, keyboard, reduced motion, contrast-safe badges | **implemented** (visual pass below) |
@@ -22,6 +22,21 @@
 | P3 | Task Board coordination read model (tasks, `dependsOn`, cross-project edges) | **implemented — read only** |
 | P3 | Coordination proposals | **proposal only** (no board-facing write API) |
 | P3 | Reassignment / priority / Kanban writes | **unavailable** (documented endpoints, never called) |
+
+### Role deduction (post-delivery adjustment)
+
+The first delivery only resolved **declared** roles, so a profile whose agents
+declare none (like the isolated E2E) showed the generic grey identity on every
+card while only the Super Orchestrator had a mascot. That is now fixed: an
+undeclared role is **deduced from text the runtime already declares** (session
+title, goal objective, linked Task Board task title) with an ordered,
+word-bounded keyword table, always marked `source:'inferred'`, labelled
+**« déduit »** on the card and in the inspector, with the matched signal in the
+tooltip. A declared role always wins; a model/provider is never an input; only an
+agent with no declared role and no usable text keeps the generic identity.
+Verified on the isolated host: all three E2E cards now render the Worker mascot
+with "Worker · déduit" (default, no keyword), and the gallery still proves the 15
+declared roles. Evidence: `docs/e2e/screenshots/goal5-inferred-roles.png`.
 
 ## 2. Architecture
 
@@ -78,10 +93,10 @@ profile and can be installed with `plugin_manager install_bundle`).
 
 ## 5. Tests
 
-- `node --test tests/` — **408 tests, 408 pass, 0 fail** (including the
-  artifact-integrity byte comparison of the generated `src/client.js`, and a host
+- `node --test tests/` — **411 tests, 411 pass, 0 fail** (including the
+  artifact-integrity byte comparison of the generated `src/client.js`, a host
   regression test proving the supervision payload is built eagerly from the real
-  agents before the 15 s projection timer).
+  agents before the 15 s projection timer, and the declared→deduced role tests).
 - Isolated real DSH host E2E (`scripts/e2e/run-e2e.mjs --keep-running`): **15/15
   assertions PASS** with the new build (fake OpenAI-compatible provider, simulated
   Task Board, no credentials); the board audit shows the new `delegation_allowed`
@@ -90,9 +105,10 @@ profile and can be installed with `plugin_manager install_bundle`).
   here and the run is reproducible with the command above.
 - Asset tests: presence, variants, bolt emblem, `viewBox`, exact palette,
   no script/external reference, data-URI byte equality, generated-module drift.
-- Role/avatar tests: aliases, unknown generic fallback, model-never-a-role,
-  11 statuses mapped, review-vs-Reviewer, size/variant, generic without src,
-  component render smoke with a React stub.
+- Role/avatar tests: aliases, declared-first precedence, documented text deduction
+  (accent/case/word-boundary cases, default worker, no signal ⇒ generic),
+  model-never-a-role, 11 statuses mapped, review-vs-Reviewer, size/variant,
+  generic without src, component render smoke with a React stub.
 - Hierarchy tests: one/many projects, missing orchestrator, `supervision:null`,
   unknown roles, filters, 150-agent build (~11 ms).
 - Supervision/delegation tests: multi-project aggregation, blocks, cross-project
@@ -120,6 +136,7 @@ OpenAI-compatible provider + simulated Task Board, Playwright Chromium.
 | Task Board state readable in default `off` mode | OK (filter present after the bounded startup read) |
 | Keyboard: Enter toggles the band | OK (`aria-expanded` + `aria-controls` resolve to the hidden body) |
 | Role mascots (15 + bolt) rendered from the exact data URIs | OK, gallery |
+| Undeclared agents get a deduced mascot, marked « déduit » | OK, all E2E cards (Worker default) |
 | Status-colour independence | OK (dot separate; Worker stays green when not running) |
 
 Evidence: `docs/e2e/screenshots/goal4-1366-light-projects.png`,
@@ -139,7 +156,10 @@ See [LIMITATIONS.md](LIMITATIONS.md) rows 19–27. The important ones for this g
 2. no inbound orchestrator-report channel;
 3. the Super Orchestrator is a policy/observability layer, not an autonomous agent;
 4. delegation limits cover board-owned launches only;
-5. a role must be declared to get a mascot (otherwise generic identity);
+5. a role is declared or **deduced from the runtime's own declared text** (title,
+   goal, task title) with a fixed keyword table; the deduction is labelled
+   « déduit » and never grants a permission, and an agent with no text at all
+   keeps the generic identity;
 6. no cross-plugin deep link to a Task Board task (no documented client
    navigation API), so the card/preview shows the linked task id and state.
 
@@ -153,7 +173,10 @@ Branch `feat/agent-board-mascots-super-orchestrator`, base `905e367`:
 b3bdd35 feat(supervision): Super Orchestrator layer, delegation limits and host events
 8a065ef feat(taskboard): read-only coordination model with documented proposals
 b9db3a6 build(client): bundle the mascot, hierarchy and supervision modules
-<this commit> docs(goal4): integration notes, delivery evidence and independent review
+ab73c76 docs(goal4): integration notes, delivery evidence and independent review
+9fc9810 docs(goal4): record the pushed branch and pull request
+<follow-up> feat(roles): deduce undeclared roles from declared text (marked "déduit")
+<this commit> docs(goal4): record the role deduction and the final 411-test result
 ```
 
 The working tree is clean after this commit. The branch was pushed to
