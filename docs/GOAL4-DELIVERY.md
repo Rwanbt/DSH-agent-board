@@ -156,15 +156,10 @@ b9db3a6 build(client): bundle the mascot, hierarchy and supervision modules
 <this commit> docs(goal4): integration notes, delivery evidence and independent review
 ```
 
-The working tree is clean after this commit. The branch was **not** pushed and no
-PR was opened: the sandbox has no forge credential, and pushing is a user action.
-Push/PR commands, once authenticated:
-
-```sh
-git push -u origin feat/agent-board-mascots-super-orchestrator
-gh pr create --base dev --head feat/agent-board-mascots-super-orchestrator \
-  --title "Mascots, supervision and Super Orchestrator" --body-file docs/GOAL4-DELIVERY.md
-```
+The working tree is clean after this commit. The branch was pushed to
+`origin/feat/agent-board-mascots-super-orchestrator` (never to `dev`/`main`) and
+the pull request is **https://github.com/Rwanbt/DSH-agent-board/pull/1** (base
+`dev`). It is not merged: merging is a user decision.
 
 The independent review is [REVIEW-GOAL4.md](REVIEW-GOAL4.md): **PASS WITH
 FINDINGS**, no P0/P1. Its four P2 findings were closed before the commits (role
