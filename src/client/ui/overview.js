@@ -47,7 +47,7 @@ function dabOverviewStatusWord(node) {
 function DabOverviewStats({ counts, focus, onFocus, reviewAvailable, reviewReason, compact }) {
   const h = React.createElement
   const value = bucket => Number(counts?.[bucket]) || 0
-  return h('div', { className: 'dab-stats', role: 'group', 'aria-label': dabT('statActive') },
+  return h('div', { className: 'dab-stats', role: 'group', 'aria-label': dabT('indicators') },
     DAB_OVERVIEW_BUCKETS.map(([bucket, labelKey, tone]) => {
       const review = bucket === 'review'
       const disabled = review && reviewAvailable !== true

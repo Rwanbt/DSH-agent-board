@@ -394,6 +394,24 @@ test('the cockpit model keeps a 150-agent projection bounded and complete', () =
   assert.ok(overview.entries.length >= 1)
 })
 
+test('rendering 150 cockpit cards stays bounded (component cost, not browser paint)', () => {
+  const projection = buildProjection({ ...largeScenario({ history: 120, active: 30 }), now: NOW })
+  const view = buildBoardView(projection, { now: NOW, filter: 'all' })
+  const hierarchy = buildHierarchyView(projection, view, null, { mode: 'off' })
+  const overview = buildOverview(projection, {
+    filter: 'all', query: '', project: null, dismissed: new Set(), roles: hierarchy.roles,
+    taskStates: null, taskTitles: null, filters: { role: null, status: null, taskState: null }, focus: null, now: NOW,
+  })
+  assert.ok(overview.entries.length >= 100, `the fixture renders a large board (${overview.entries.length} entries)`)
+  const started = performance.now()
+  const tree = render(cockpit.DabGlobalOverview({ overview, ctx: { arbiter: noopArbiter, selectedId: null, nowBucket: 0 }, compact: false, empty: null }))
+  const elapsed = performance.now() - started
+  assert.equal(byClass(tree, 'dab-gcard').length, overview.entries.length, 'every entry is rendered once')
+  // Deliberately generous: this is a regression guard for accidental O(n^2)
+  // work in the render tree (the browser paint is measured separately).
+  assert.ok(elapsed < 1000, `rendering ${overview.entries.length} cards took ${elapsed.toFixed(1)} ms`)
+})
+
 // ---------------------------------------------------------------- super bar
 test('super bar: real layer, real orchestrators, no invented agent', () => {
   const projection = projectionFixture()

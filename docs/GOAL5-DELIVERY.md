@@ -172,14 +172,16 @@ from the declared session text, real Task Board `in_review` tasks.
 
 ## 6. Tests
 
-- Full suite: **445/445** (`node --test tests/`), including
-  `tests/cockpit-render.test.js` (19 render/contract tests that concatenate the
+- Full suite: **446/446** (`node --test tests/`), including
+  `tests/cockpit-render.test.js` (20 render/contract tests that concatenate the
   authored modules exactly like the build and hydrate them with a React stub),
   `tests/overview.test.js` (11 pure model tests, including the 150-node bucket
   partition and the 15/50/150 perf guard) and the extended
   `tests/board-view.test.js`.
 - The bundle (`src/client.js`) is byte-identical to a rebuild
   (`tests/review-supervision-artifact.test.js`).
+- Component cost: rendering the 150-card cockpit tree with the React stub takes
+  ~16 ms (VDOM construction only; browser paint is not measured).
 - Known flake: two timing-sensitive review tests
   (`review-backend-restart-lease`, `review-supervision-artifact`) can fail under
   the full parallel load; they pass alone, serially, and on rerun. Recorded, not

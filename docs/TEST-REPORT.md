@@ -5,7 +5,7 @@ GUI `http://127.0.0.1:62337`. Everything below was executed on this machine; no
 result is inferred from a mock unless it says so.
 
 > **GOAL 5 update (2026-11-11, branch `feat/agent-board-responsive-cockpit`).**
-> The suite is now **445 tests / 445 pass / 0 fail / 0 skipped** (~2.6 s,
+> The suite is now **446 tests / 446 pass / 0 fail / 0 skipped** (~2.6 s,
 > `node --test tests/`), including the artifact check that rebuilds
 > `src/client.js` in memory and compares it byte-for-byte (the reviewed module
 > list is now 23 modules). New coverage:
@@ -17,7 +17,7 @@ result is inferred from a mock unless it says so.
 >   and agent filters, Task Board state ignored when the ledger is unreadable,
 >   dismissed nodes, empty/partial projection, cycle safety, and a 15/50/150
 >   performance guard (0.36 / 0.90 / 2.68 ms per round).
-> - `tests/cockpit-render.test.js` (19 tests): the authored UI modules are
+> - `tests/cockpit-render.test.js` (20 tests): the authored UI modules are
 >   concatenated exactly like the build and hydrated with a React stub — header
 >   and filter rows, the three real modes, stop reachability (wide and narrow),
 >   the four indicators and the `—` when the ledger is unreadable, indicator
@@ -27,7 +27,8 @@ result is inferred from a mock unless it says so.
 >   agent, hidden body, shared capabilities), the inspector dialog and the
 >   responsive CSS contract (container queries, 248 px desktop grid, two-column
 >   mosaic, drawer/sheet rules, safe-area, reduced motion, no hard-coded palette,
->   status dot bottom-left, static preview inside the sheet).
+>   status dot bottom-left, static preview inside the sheet), and a 150-card
+>   component-render guard (~16 ms, VDOM only, not browser paint).
 > - `tests/board-view.test.js` extended for the `action` filter and the Task
 >   Board task-title search.
 >
