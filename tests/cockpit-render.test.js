@@ -125,6 +125,12 @@ function byTag(tree, tag) {
   return collect(tree, node => node.type === tag)
 }
 
+function walkHas(root, target) {
+  let found = false
+  walk(root, node => { if (node === target) found = true })
+  return found
+}
+
 function textOf(node) {
   if (typeof node === 'string' || typeof node === 'number') return String(node)
   if (node === null || typeof node !== 'object') return ''
@@ -176,6 +182,7 @@ function toolbarProps(overrides = {}) {
   const { counts } = cockpitModel(projection)
   return {
     counts,
+    agentTotal: 7,
     visibleCount: 3,
     mode: 'off',
     busy: false,
@@ -215,6 +222,8 @@ test('desktop toolbar: one compact header, one filter row, existing controls pre
   // Title + cockpit subtitle with the REAL agent count.
   assert.equal(textOf(byClass(tree, 'dab-title')[0]), 'Agent Board')
   assert.match(textOf(byClass(tree, 'dab-subtitle')[0]), /Cockpit/)
+  // The header counts AGENTS (non-blank), not every session row.
+  assert.match(textOf(byClass(tree, 'dab-subtitle')[0]), /7 agents/)
   // Search works on agent, project, task.
   const input = byTag(tree, 'input')[0]
   assert.equal(input.props.type, 'search')
@@ -269,6 +278,9 @@ test('the four indicators come from the model and are mutually exclusive', () =>
   // A Task Board that cannot be read shows an explicit dash, never a fake 0.
   assert.equal(textOf(byTag(stats[2], 'strong')[0]), '—')
   assert.equal(stats[2].props['data-disabled'], 'true')
+  assert.equal(stats[2].props.disabled, true, 'an unavailable indicator is a disabled control, not a div')
+  assert.equal(stats[2].props['aria-disabled'], 'true')
+  assert.match(stats[2].props['aria-label'], /ledger unreadable/, 'the real reason is in the accessible name')
   assert.equal(stats[2].props.title, 'ledger unreadable')
   const total = overview.counts.active + overview.counts.attention + overview.counts.review + overview.counts.other
   assert.equal(total, overview.counts.agents, 'every agent counted exactly once')
@@ -296,8 +308,13 @@ test('global card: role mascot, separate status, project, task and descendant ba
     { ...entry, role: roleEntry('worker'), taskTitle: 'Compilation incrémentale' },
     { ctx: { arbiter: { ...noopArbiter, open: id => calls.push(id) }, selectedId: null, nowBucket: 0 } },
   )
-  assert.equal(tree.props['data-role'], 'worker')
-  assert.equal(tree.props['data-status'], node.status)
+  const card = byClass(tree, 'dab-gcard')[0]
+  assert.ok(card !== undefined, 'the card is the button-like element')
+  assert.equal(card.props.role, 'button')
+  assert.equal(card.props['aria-haspopup'], 'dialog', 'the card opens the inspector dialog, it is not a toggle')
+  assert.equal(card.props['aria-pressed'], undefined, 'aria-pressed was the wrong semantics')
+  assert.equal(card.props['data-role'], 'worker')
+  assert.equal(card.props['data-status'], node.status)
   assert.equal(byClass(tree, 'dab-avatar').length, 1)
   assert.equal(byClass(tree, 'dab-avatar-dot').length, 1, 'the status stays a separate dot')
   const images = byTag(tree, 'img')
@@ -307,6 +324,7 @@ test('global card: role mascot, separate status, project, task and descendant ba
   assert.match(textOf(byClass(tree, 'dab-gcard-task')[0]), /Compilation incrémentale/)
   const open = byClass(tree, 'dab-gcard-open')[0]
   assert.equal(open.props['aria-label'], `Open session : ${node.title}`)
+  assert.equal(walkHas(card, open), false, 'the open button is a SIBLING, not a nested button')
   open.props.onClick({ stopPropagation: () => {} })
   assert.deepEqual(calls, [node.id])
 })
@@ -317,9 +335,10 @@ test('global card: a deduced role is named as deduced, never as declared', () =>
   const entry = overview.entries[0]
   const inferred = { roleId: 'verifier', roleLabel: 'Verifier', family: 'validation', source: 'inferred', inference: { rule: 'word:verifi', defaulted: false }, raw: null }
   const tree = cardTree({ ...entry, role: inferred, taskTitle: null })
-  assert.equal(tree.props['data-role'], 'verifier')
-  assert.equal(tree.props['data-role-resolution'], 'inferred')
-  assert.match(tree.props['aria-label'], /deduced/i)
+  const card = byClass(tree, 'dab-gcard')[0]
+  assert.equal(card.props['data-role'], 'verifier')
+  assert.equal(card.props['data-role-resolution'], 'inferred')
+  assert.match(card.props['aria-label'], /deduced/i)
   assert.equal(byClass(tree, 'dab-avatar')[0].props['data-resolution'], 'inferred')
 })
 
@@ -331,7 +350,7 @@ test('global card: every approved role keeps its own official mascot', () => {
   for (const roleId of AGENT_ROLE_IDS) {
     const tree = cardTree({ ...entry, role: roleEntry(roleId) })
     seen.add(byTag(tree, 'img')[0].props.src)
-    assert.equal(tree.props['data-role'], roleId)
+    assert.equal(byClass(tree, 'dab-gcard')[0].props['data-role'], roleId)
     assert.equal(byClass(tree, 'dab-avatar')[0].props['data-role'], roleId)
     assert.ok(AGENT_ROLES[roleId] !== undefined)
   }
@@ -423,6 +442,8 @@ test('super bar: real layer, real orchestrators, no invented agent', () => {
   assert.equal(byClass(tree, 'dab-super').length, 1)
   assert.match(textOf(tree), /Super Orchestrator/)
   assert.equal(byClass(tree, 'dab-super-mascot').length, 1)
+  assert.match(textOf(tree), /Supervision/, 'the band says it is the supervision layer, not an agent')
+  assert.equal(byClass(tree, 'dab-super-layer').length, 1)
   // The body is always in the DOM for aria-controls, hidden while collapsed.
   const body = byClass(tree, 'dab-band-body')[0]
   assert.equal(body.props.hidden, true)

@@ -64,7 +64,10 @@ function DabSuperOrchestratorBarImpl({ workspace, totals, projects, orchestrator
         dabT('superOrchestrator'),
         h('span', { className: 'dab-super-state', 'data-status': workspace?.status ?? 'unknown' },
           h('span', { className: 'dab-dot', 'data-tone': workspace?.status === 'active' ? 'running' : workspace?.status === 'blocked' ? 'failed' : 'idle', 'aria-hidden': 'true' }),
-          dabSuperStatusLabel(workspace?.status))),
+          h('span', { className: 'dab-super-state-text' }, dabSuperStatusLabel(workspace?.status))),
+        // The layer is NOT an agent: say it in the compact band too, not only in
+        // the expandable body, so a collapsed band cannot read as an idle agent.
+        h('span', { className: 'dab-super-layer', title: dabT('supervisionLayer') }, dabT('supervision'))),
       h('span', { className: 'dab-super-sub' },
         projectText,
         h('span', { className: 'dab-super-sep', 'aria-hidden': 'true' }, '·'),

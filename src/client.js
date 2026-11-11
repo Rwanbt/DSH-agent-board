@@ -4007,7 +4007,11 @@ function buildOverview(projection, options = {}) {
   const sections = []
   const entries = []
   for (const id of OVERVIEW_SECTIONS) {
-    const sectionEntries = included.filter(entry => sectionOf(entry.node) === id).sort(sortAttention)
+    // `sortAttention` reads status/updatedAt/title/id, so it must receive the
+    // NODES, not the Entry wrappers (comparing wrappers is a silent no-op).
+    const sectionEntries = included
+      .filter(entry => sectionOf(entry.node) === id)
+      .sort((a, b) => sortAttention(a.node, b.node))
     sections.push({ id, entries: sectionEntries })
     entries.push(...sectionEntries)
   }
@@ -5613,6 +5617,10 @@ const DAB_CSS = `
 .dab-super-state[data-status="active"] .dab-dot { background: var(--dsw-alias-state-success-primary); }
 .dab-super-state[data-status="blocked"] .dab-dot { background: var(--dsw-alias-state-error-primary); }
 .dab-super-sub { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+/* The band represents the supervision LAYER, not an agent: the marker is visible
+   even when the details are collapsed. */
+.dab-super-layer { display: inline-flex; align-items: center; padding: 0 6px; border-radius: 999px; corner-shape: round;
+  background: var(--dab-chip-fill); color: var(--dsw-alias-label-secondary); font-size: 10px; line-height: 16px; font-weight: 500; }
 .dab-super-sep { opacity: .6; }
 .dab-super-orchs { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; }
 .dab-super-orch { display: inline-flex; border: 1px solid var(--dsw-alias-border-l3, transparent); border-radius: 9px;
@@ -5650,6 +5658,8 @@ const DAB_CSS = `
 .dab-section-dot[data-tone="idle"] { background: var(--dsw-alias-state-info-primary, var(--dsw-alias-brand-primary)); }
 .dab-agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 248px), 1fr)); gap: 9px; min-width: 0; }
 .dab-agent-cell { min-width: 0; }
+.dab-gcard-wrap { position: relative; display: flex; height: 100%; min-width: 0; }
+.dab-gcard-wrap > .dab-gcard { flex: 1 1 auto; }
 
 /* ---------- global card */
 .dab-gcard { position: relative; display: flex; align-items: center; gap: 11px; min-width: 0; min-height: 92px; height: 100%;
@@ -5657,6 +5667,7 @@ const DAB_CSS = `
   cursor: pointer; user-select: none; outline: none;
   transition: background-color .12s ease, border-color .12s ease, box-shadow .12s ease; }
 .dab-gcard[data-selected="true"] { box-shadow: 0 0 0 1.5px var(--dsw-alias-brand-primary); }
+.dab-gcard:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
 .dab-gcard[data-status="waiting_user"] { border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 48%, transparent); }
 .dab-gcard[data-status="interrupted"] { border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 32%, transparent); }
 .dab-gcard[data-status="failed"][data-seen="false"] { border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 48%, transparent); }
@@ -5680,8 +5691,8 @@ const DAB_CSS = `
 .dab-gcard-badge { position: absolute; top: 7px; right: 8px; padding: 0 5px; border-radius: 6px; background: var(--dab-chip-fill);
   font-size: 10px; line-height: 16px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
 .dab-gcard-open { position: absolute; right: 3px; bottom: 3px; width: 26px; height: 26px; opacity: 0; }
-.dab-gcard:focus-within .dab-gcard-open, .dab-gcard[data-selected="true"] .dab-gcard-open { opacity: 1; }
-@media (hover: hover) { .dab-gcard:hover .dab-gcard-open { opacity: 1; } }
+.dab-gcard-wrap:focus-within .dab-gcard-open, .dab-gcard[data-selected="true"] ~ .dab-gcard-open { opacity: 1; }
+@media (hover: hover) { .dab-gcard-wrap:hover .dab-gcard-open { opacity: 1; } }
 @media (hover: none) { .dab-gcard-open { opacity: .75; } }
 
 /* ---------- inspector: desktop drawer overlaying the grid */
@@ -5741,6 +5752,7 @@ const DAB_CSS = `
   /* The mode is already in the header menu on a narrow panel: a third line of
      text would push the band past the mobile budget. */
   .dab-super-sub .dab-tag { display: none; }
+  .dab-super-state-text { display: none; }
   /* Mobile band = mascot, name, state, project count. The orchestrator mini
      avatars live in the expandable details, exactly like the mockup. */
   .dab-super-orchs { display: none; }
@@ -5776,10 +5788,11 @@ const DAB_CSS = `
 }
 /* Coarse pointers: real touch targets, no hover-only affordances. */
 @media (pointer: coarse) {
-  .dab-chip-btn, .dab-seg-btn { min-height: 36px; }
+  .dab-chip-btn, .dab-seg-btn { min-height: 40px; }
   .dab-stat { min-height: 48px; }
-  .dab-icon-btn, .dab-menu-btn { width: 36px; height: 36px; }
-  .dab-gcard-open { width: 32px; height: 32px; opacity: .85; }
+  .dab-icon-btn, .dab-menu-btn { width: 40px; height: 40px; }
+  .dab-stop { min-height: 40px; }
+  .dab-gcard-open { width: 36px; height: 36px; opacity: .85; }
 }
 @media (prefers-reduced-motion: reduce) {
   .dab-gcard { transition: none; }
@@ -6686,7 +6699,12 @@ function DabOverviewStats({ counts, focus, onFocus, reviewAvailable, reviewReaso
         h('span', { key: 'label', className: 'dab-stat-label' }, dabT(labelKey)),
       ]
       if (disabled) {
-        return h('div', { key: bucket, className: 'dab-stat', 'data-bucket': bucket, 'data-disabled': 'true', title }, inner)
+        // A disabled control still carries its real reason in its accessible
+        // name: the reason must not live in a hover-only `title`.
+        return h('button', {
+          key: bucket, type: 'button', className: 'dab-stat', 'data-bucket': bucket,
+          'data-disabled': 'true', disabled: true, 'aria-disabled': 'true', 'aria-label': `${dabT(labelKey)} : ${title}`, title,
+        }, inner)
       }
       return h('button', {
         key: bucket,
@@ -6747,12 +6765,16 @@ function DabGlobalCardImpl({ entry, ctx, compact, selected }) {
   })
 
   const stop = event => { event.stopPropagation() }
-  return h('div', {
+  // The card is a button-like GROUP and the explicit "open session" action is a
+  // SIBLING button (a button may not contain another button). `aria-expanded` is
+  // the accurate state: the card opens the inspector dialog, it is not a toggle.
+  const card = h('div', {
     className: 'dab-gcard',
     role: 'button',
     tabIndex: 0,
     'aria-label': label,
-    'aria-pressed': selected ? 'true' : 'false',
+    'aria-haspopup': 'dialog',
+    'aria-expanded': selected ? 'true' : 'false',
     'data-node-id': node.id,
     'data-status': node.status,
     'data-seen': node.seen === true ? 'true' : 'false',
@@ -6792,16 +6814,19 @@ function DabGlobalCardImpl({ entry, ctx, compact, selected }) {
     taskLine.real ? h('span', { className: 'dab-gcard-task', title: taskLine.text }, taskLine.text) : null),
   descendants > 0
     ? h('span', { className: 'dab-gcard-badge', title: dabT('subagentsCount', { n: descendants }), 'aria-hidden': 'true' }, `↳ ${descendants}`)
-    : null,
-  h('button', {
-    type: 'button',
-    className: 'dab-icon-btn dab-gcard-open',
-    title: `${dabT('openSession')} : ${node.title}`,
-    'aria-label': `${dabT('openSession')} : ${node.title}`,
-    onClick: event => { stop(event); ctx.arbiter.open(node.id) },
-    onDoubleClick: stop,
-    onKeyDown: stop,
-  }, '↗'))
+    : null)
+
+  return h('div', { className: 'dab-gcard-wrap' },
+    card,
+    h('button', {
+      type: 'button',
+      className: 'dab-icon-btn dab-gcard-open',
+      title: `${dabT('openSession')} : ${node.title}`,
+      'aria-label': `${dabT('openSession')} : ${node.title}`,
+      onClick: event => { stop(event); ctx.arbiter.open(node.id) },
+      onDoubleClick: stop,
+      onKeyDown: stop,
+    }, '↗'))
 }
 
 const DabGlobalCard = React.memo(DabGlobalCardImpl, (a, b) => {
@@ -6815,11 +6840,14 @@ const DabGlobalCard = React.memo(DabGlobalCardImpl, (a, b) => {
     && a.ctx.nowBucket === b.ctx.nowBucket
     && n.id === m.id && n.status === m.status && n.seen === m.seen && n.title === m.title
     && n.updatedAt === m.updatedAt && n.taskId === m.taskId && n.goal === m.goal
+    && n.error === m.error && n.waitingDetail === m.waitingDetail && n.archived === m.archived
     && n.role === m.role && n.projectTitle === m.projectTitle
     && n.routeHistory === m.routeHistory
     && x.taskState === y.taskState && x.taskTitle === y.taskTitle
+    && x.projectTitle === y.projectTitle && x.parentTitle === y.parentTitle
     && x.descendants === y.descendants && x.depth === y.depth
     && x.role?.roleId === y.role?.roleId && x.role?.source === y.role?.source
+    && x.role?.roleLabel === y.role?.roleLabel
 })
 
 /**
@@ -6918,7 +6946,10 @@ function DabSuperOrchestratorBarImpl({ workspace, totals, projects, orchestrator
         dabT('superOrchestrator'),
         h('span', { className: 'dab-super-state', 'data-status': workspace?.status ?? 'unknown' },
           h('span', { className: 'dab-dot', 'data-tone': workspace?.status === 'active' ? 'running' : workspace?.status === 'blocked' ? 'failed' : 'idle', 'aria-hidden': 'true' }),
-          dabSuperStatusLabel(workspace?.status))),
+          h('span', { className: 'dab-super-state-text' }, dabSuperStatusLabel(workspace?.status))),
+        // The layer is NOT an agent: say it in the compact band too, not only in
+        // the expandable body, so a collapsed band cannot read as an idle agent.
+        h('span', { className: 'dab-super-layer', title: dabT('supervisionLayer') }, dabT('supervision'))),
       h('span', { className: 'dab-super-sub' },
         projectText,
         h('span', { className: 'dab-super-sep', 'aria-hidden': 'true' }, '·'),
@@ -7545,6 +7576,9 @@ function DabSelect({ label, value, options, onChange, title, disabled, style }) 
   const rootRef = React.useRef(null)
   const listRef = React.useRef(null)
   const current = options.find(([optionValue]) => optionValue === value) ?? options[0]
+  // HTML ids must not contain spaces: the translated label ("État Task Board")
+  // would break aria-activedescendant.
+  const slug = String(label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'select'
   React.useEffect(() => {
     if (!open) return undefined
     const close = event => { if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false) }
@@ -7560,7 +7594,7 @@ function DabSelect({ label, value, options, onChange, title, disabled, style }) 
     else if (event.key === 'Home') { event.preventDefault(); setActive(0) }
     else if (event.key === 'End') { event.preventDefault(); setActive(options.length - 1) }
     else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick(active) }
-    else if (event.key === 'Escape' || event.key === 'Tab') { setOpen(false); if (event.key === 'Escape') rootRef.current?.querySelector('button')?.focus() }
+    else if (event.key === 'Escape' || event.key === 'Tab') { event.stopPropagation(); setOpen(false); if (event.key === 'Escape') rootRef.current?.querySelector('button')?.focus() }
   }
   return h('div', { className: 'dab-dd', ref: rootRef, style },
     h('button', {
@@ -7569,9 +7603,9 @@ function DabSelect({ label, value, options, onChange, title, disabled, style }) 
       onKeyDown: event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show() } },
     }, h('span', { className: 'dab-dd-text' }, current?.[1] ?? '')),
     open
-      ? h('ul', { className: 'dab-dd-pop', role: 'listbox', 'aria-label': label, tabIndex: -1, ref: listRef, onKeyDown: onListKey, 'aria-activedescendant': `dab-opt-${label}-${active}` },
+      ? h('ul', { className: 'dab-dd-pop', role: 'listbox', 'aria-label': label, tabIndex: -1, ref: listRef, onKeyDown: onListKey, 'aria-activedescendant': `dab-opt-${slug}-${active}` },
         options.map(([optionValue, text], index) => h('li', {
-          key: optionValue, id: `dab-opt-${label}-${index}`, role: 'option', className: 'dab-dd-opt', 'aria-selected': optionValue === value, 'data-active': index === active,
+          key: optionValue, id: `dab-opt-${slug}-${index}`, role: 'option', className: 'dab-dd-opt', 'aria-selected': optionValue === value, 'data-active': index === active,
           onPointerEnter: () => setActive(index), onClick: () => pick(index),
         }, h('span', { className: 'dab-dd-text' }, text), optionValue === value ? h('span', { className: 'dab-dd-check', 'aria-hidden': 'true' }, '✓') : null)))
       : null)
@@ -7608,7 +7642,7 @@ function DabToolbar(props) {
   const h = React.createElement
   const {
     counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh,
-    ui, setUi, projects, onHistory, narrow, taskStateAvailable, taskStateUnavailableReason, onToggleCompact,
+    ui, setUi, projects, onHistory, narrow, taskStateAvailable, taskStateUnavailableReason, onToggleCompact, agentTotal,
   } = props
   const modeNotice = mode === 'off' ? dabT('offNotice') : mode === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice')
   const notice = secondary ? dabT('secondaryInstance') : stopped ? dabT('stoppedNotice') : modeNotice
@@ -7653,12 +7687,10 @@ function DabToolbar(props) {
     type: 'button', className: 'dab-btn', 'data-variant': 'ghost', 'aria-pressed': ui.compact === true ? 'true' : 'false',
     onClick: () => onToggleCompact(),
   }, dabT('compact'))
-  const modeSelect = select(dabT('orchestratorLabel'), mode,
-    ['off', 'supervised', 'autonomous'].map(value => [value, `${dabT('orchestratorLabel')} : ${dabT(value)}`]), onMode,
-    { disabled: busy || hostDown || secondary, title: hostDown ? dabT('orchestratorDown') : notice })
   const stopText = stopped && mode !== 'off' && !secondary ? dabT('resume') : dabT('stopShort')
+  const stopLabel = stopped && mode !== 'off' && !secondary ? dabT('resume') : (canStop ? dabT('stop') : dabT('stopNone'))
   const stopButton = h('button', {
-    type: 'button', className: 'dab-btn dab-stop', 'data-danger': 'true', title: notice,
+    type: 'button', className: 'dab-btn dab-stop', 'data-danger': 'true', title: `${stopLabel} — ${notice}`, 'aria-label': stopLabel,
     disabled: busy || hostDown || (!canStop && !(stopped && mode !== 'off')) || secondary,
     onClick: stopped && mode !== 'off' && !secondary ? onResume : onStop,
   }, h('span', { 'aria-hidden': 'true' }, stopped && mode !== 'off' && !secondary ? '▶' : '■'), h('span', { className: 'dab-stop-text' }, stopText))
@@ -7740,7 +7772,6 @@ function DabToolbar(props) {
         h('div', { className: 'dab-narrow-menu' },
           h('div', { className: 'dab-menu-label' }, dabT('orchestratorLabel')),
           modeSeg,
-          h('div', { className: 'dab-menu-row' }, modeSelect),
           h('div', { className: 'dab-menu-row dab-menu-row-actions' }, stopButton, h('span', { className: 'dab-grow' }),
             h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy }, dabT('refresh'))),
           h('div', { className: 'dab-menu-label' }, dabT('filtersLabel')),
@@ -7753,7 +7784,7 @@ function DabToolbar(props) {
         h('span', { className: 'dab-head-mark', 'aria-hidden': 'true' }, '◈'),
         h('div', { className: 'dab-head-text' },
           h('h1', { className: 'dab-title' }, dabT('title')),
-          h('div', { className: 'dab-subtitle' }, `${dabT('cockpitSubtitle')} · ${counts.total} ${dabT('agentPlural')}`))),
+          h('div', { className: 'dab-subtitle' }, `${dabT('cockpitSubtitle')} · ${Number.isFinite(Number(agentTotal)) ? Number(agentTotal) : counts.total} ${dabT('agentPlural')}`))),
       headActions),
     h('div', { className: 'dab-filters' },
       search,
@@ -7890,7 +7921,10 @@ function dabReadUi() {
     })
     return {
       ...base,
-      filter: VIEW_FILTERS.includes(parsed.filter) ? parsed.filter : base.filter,
+      // 'recent' is still a supported model filter (history/API) but the cockpit
+      // no longer exposes a chip for it: a persisted value is migrated to the
+      // default "current work" filter instead of showing no selected chip.
+      filter: parsed.filter === 'recent' ? base.filter : (VIEW_FILTERS.includes(parsed.filter) ? parsed.filter : base.filter),
       project: typeof parsed.project === 'string' ? parsed.project : null,
       compact: parsed.compact === true,
       folded: Array.isArray(parsed.folded) ? parsed.folded.slice(0, 200) : [],
@@ -7911,6 +7945,13 @@ function dabReadUi() {
 function dabWriteUi(ui) {
   try {
     const { query: _query, treeLimit: _limit, ...persisted } = ui
+    // Bound the persisted arrays on WRITE too, keeping the most recent entries:
+    // an unbounded fold/dismiss history must not grow the localStorage value
+    // forever (the read path also validates and bounds it).
+    persisted.folded = persisted.folded.slice(-200)
+    persisted.expanded = persisted.expanded.slice(-200)
+    persisted.collapsed = persisted.collapsed.slice(-200)
+    persisted.dismissed = persisted.dismissed.slice(-500)
     globalThis.localStorage?.setItem(DAB_UI_KEY, JSON.stringify(persisted))
   } catch { /* private mode */ }
 }
@@ -8099,7 +8140,7 @@ function dabMakePage(store, ctx) {
     const onDismiss = React.useCallback((id, on) => {
       setUiState(current => {
         const rest = current.dismissed.filter(entry => entry !== id)
-        const next = { ...current, dismissed: on ? [...rest, id] : rest }
+        const next = { ...current, dismissed: on ? [...rest, id].slice(-500) : rest }
         dabWriteUi(next)
         return next
       })
@@ -8115,14 +8156,14 @@ function dabMakePage(store, ctx) {
         const expandedNext = new Set(current.expanded)
         if (collapsed) collapsedNext.delete(id)
         else { collapsedNext.add(id); expandedNext.delete(id) }
-        const next = { ...current, collapsed: [...collapsedNext], expanded: [...expandedNext] }
+        const next = { ...current, collapsed: [...collapsedNext].slice(-200), expanded: [...expandedNext].slice(-200) }
         dabWriteUi(next)
         return next
       })
     }, [])
     const onRevealHidden = React.useCallback(id => {
       setUiState(current => {
-        const next = { ...current, expanded: [...new Set([...current.expanded, id])], collapsed: current.collapsed.filter(entry => entry !== id) }
+        const next = { ...current, expanded: [...new Set([...current.expanded, id])].slice(-200), collapsed: current.collapsed.filter(entry => entry !== id) }
         dabWriteUi(next)
         return next
       })
@@ -8132,7 +8173,7 @@ function dabMakePage(store, ctx) {
         const folded = new Set(current.folded)
         if (folded.has(id)) folded.delete(id)
         else folded.add(id)
-        const next = { ...current, folded: [...folded] }
+        const next = { ...current, folded: [...folded].slice(-200) }
         dabWriteUi(next)
         return next
       })
@@ -8233,7 +8274,7 @@ function dabMakePage(store, ctx) {
       'data-view': ui.viewMode ?? 'global', 'data-compact': ui.compact === true ? 'true' : 'false',
     },
     h(DabToolbar, {
-      counts, visibleCount: overview.counts.shown, mode, busy, hostDown, canStop, stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
+      counts, visibleCount: overview.counts.shown, agentTotal: overview.counts.agents, mode, busy, hostDown, canStop, stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
       secondary: host.instance?.primary === false, ui, setUi, projects: projectList, narrow,
       taskStateAvailable: hierarchy.totals.taskStateAvailable,
       taskStateUnavailableReason: hierarchy.workspace.taskboard !== null && hierarchy.workspace.taskboard !== undefined && hierarchy.workspace.taskboard.available === false

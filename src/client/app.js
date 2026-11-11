@@ -56,7 +56,10 @@ function dabReadUi() {
     })
     return {
       ...base,
-      filter: VIEW_FILTERS.includes(parsed.filter) ? parsed.filter : base.filter,
+      // 'recent' is still a supported model filter (history/API) but the cockpit
+      // no longer exposes a chip for it: a persisted value is migrated to the
+      // default "current work" filter instead of showing no selected chip.
+      filter: parsed.filter === 'recent' ? base.filter : (VIEW_FILTERS.includes(parsed.filter) ? parsed.filter : base.filter),
       project: typeof parsed.project === 'string' ? parsed.project : null,
       compact: parsed.compact === true,
       folded: Array.isArray(parsed.folded) ? parsed.folded.slice(0, 200) : [],
@@ -77,6 +80,13 @@ function dabReadUi() {
 function dabWriteUi(ui) {
   try {
     const { query: _query, treeLimit: _limit, ...persisted } = ui
+    // Bound the persisted arrays on WRITE too, keeping the most recent entries:
+    // an unbounded fold/dismiss history must not grow the localStorage value
+    // forever (the read path also validates and bounds it).
+    persisted.folded = persisted.folded.slice(-200)
+    persisted.expanded = persisted.expanded.slice(-200)
+    persisted.collapsed = persisted.collapsed.slice(-200)
+    persisted.dismissed = persisted.dismissed.slice(-500)
     globalThis.localStorage?.setItem(DAB_UI_KEY, JSON.stringify(persisted))
   } catch { /* private mode */ }
 }
@@ -265,7 +275,7 @@ function dabMakePage(store, ctx) {
     const onDismiss = React.useCallback((id, on) => {
       setUiState(current => {
         const rest = current.dismissed.filter(entry => entry !== id)
-        const next = { ...current, dismissed: on ? [...rest, id] : rest }
+        const next = { ...current, dismissed: on ? [...rest, id].slice(-500) : rest }
         dabWriteUi(next)
         return next
       })
@@ -281,14 +291,14 @@ function dabMakePage(store, ctx) {
         const expandedNext = new Set(current.expanded)
         if (collapsed) collapsedNext.delete(id)
         else { collapsedNext.add(id); expandedNext.delete(id) }
-        const next = { ...current, collapsed: [...collapsedNext], expanded: [...expandedNext] }
+        const next = { ...current, collapsed: [...collapsedNext].slice(-200), expanded: [...expandedNext].slice(-200) }
         dabWriteUi(next)
         return next
       })
     }, [])
     const onRevealHidden = React.useCallback(id => {
       setUiState(current => {
-        const next = { ...current, expanded: [...new Set([...current.expanded, id])], collapsed: current.collapsed.filter(entry => entry !== id) }
+        const next = { ...current, expanded: [...new Set([...current.expanded, id])].slice(-200), collapsed: current.collapsed.filter(entry => entry !== id) }
         dabWriteUi(next)
         return next
       })
@@ -298,7 +308,7 @@ function dabMakePage(store, ctx) {
         const folded = new Set(current.folded)
         if (folded.has(id)) folded.delete(id)
         else folded.add(id)
-        const next = { ...current, folded: [...folded] }
+        const next = { ...current, folded: [...folded].slice(-200) }
         dabWriteUi(next)
         return next
       })
@@ -399,7 +409,7 @@ function dabMakePage(store, ctx) {
       'data-view': ui.viewMode ?? 'global', 'data-compact': ui.compact === true ? 'true' : 'false',
     },
     h(DabToolbar, {
-      counts, visibleCount: overview.counts.shown, mode, busy, hostDown, canStop, stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
+      counts, visibleCount: overview.counts.shown, agentTotal: overview.counts.agents, mode, busy, hostDown, canStop, stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
       secondary: host.instance?.primary === false, ui, setUi, projects: projectList, narrow,
       taskStateAvailable: hierarchy.totals.taskStateAvailable,
       taskStateUnavailableReason: hierarchy.workspace.taskboard !== null && hierarchy.workspace.taskboard !== undefined && hierarchy.workspace.taskboard.available === false

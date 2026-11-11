@@ -75,6 +75,9 @@ function DabSelect({ label, value, options, onChange, title, disabled, style }) 
   const rootRef = React.useRef(null)
   const listRef = React.useRef(null)
   const current = options.find(([optionValue]) => optionValue === value) ?? options[0]
+  // HTML ids must not contain spaces: the translated label ("État Task Board")
+  // would break aria-activedescendant.
+  const slug = String(label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'select'
   React.useEffect(() => {
     if (!open) return undefined
     const close = event => { if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false) }
@@ -90,7 +93,7 @@ function DabSelect({ label, value, options, onChange, title, disabled, style }) 
     else if (event.key === 'Home') { event.preventDefault(); setActive(0) }
     else if (event.key === 'End') { event.preventDefault(); setActive(options.length - 1) }
     else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick(active) }
-    else if (event.key === 'Escape' || event.key === 'Tab') { setOpen(false); if (event.key === 'Escape') rootRef.current?.querySelector('button')?.focus() }
+    else if (event.key === 'Escape' || event.key === 'Tab') { event.stopPropagation(); setOpen(false); if (event.key === 'Escape') rootRef.current?.querySelector('button')?.focus() }
   }
   return h('div', { className: 'dab-dd', ref: rootRef, style },
     h('button', {
@@ -99,9 +102,9 @@ function DabSelect({ label, value, options, onChange, title, disabled, style }) 
       onKeyDown: event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show() } },
     }, h('span', { className: 'dab-dd-text' }, current?.[1] ?? '')),
     open
-      ? h('ul', { className: 'dab-dd-pop', role: 'listbox', 'aria-label': label, tabIndex: -1, ref: listRef, onKeyDown: onListKey, 'aria-activedescendant': `dab-opt-${label}-${active}` },
+      ? h('ul', { className: 'dab-dd-pop', role: 'listbox', 'aria-label': label, tabIndex: -1, ref: listRef, onKeyDown: onListKey, 'aria-activedescendant': `dab-opt-${slug}-${active}` },
         options.map(([optionValue, text], index) => h('li', {
-          key: optionValue, id: `dab-opt-${label}-${index}`, role: 'option', className: 'dab-dd-opt', 'aria-selected': optionValue === value, 'data-active': index === active,
+          key: optionValue, id: `dab-opt-${slug}-${index}`, role: 'option', className: 'dab-dd-opt', 'aria-selected': optionValue === value, 'data-active': index === active,
           onPointerEnter: () => setActive(index), onClick: () => pick(index),
         }, h('span', { className: 'dab-dd-text' }, text), optionValue === value ? h('span', { className: 'dab-dd-check', 'aria-hidden': 'true' }, '✓') : null)))
       : null)
@@ -138,7 +141,7 @@ function DabToolbar(props) {
   const h = React.createElement
   const {
     counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh,
-    ui, setUi, projects, onHistory, narrow, taskStateAvailable, taskStateUnavailableReason, onToggleCompact,
+    ui, setUi, projects, onHistory, narrow, taskStateAvailable, taskStateUnavailableReason, onToggleCompact, agentTotal,
   } = props
   const modeNotice = mode === 'off' ? dabT('offNotice') : mode === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice')
   const notice = secondary ? dabT('secondaryInstance') : stopped ? dabT('stoppedNotice') : modeNotice
@@ -183,12 +186,10 @@ function DabToolbar(props) {
     type: 'button', className: 'dab-btn', 'data-variant': 'ghost', 'aria-pressed': ui.compact === true ? 'true' : 'false',
     onClick: () => onToggleCompact(),
   }, dabT('compact'))
-  const modeSelect = select(dabT('orchestratorLabel'), mode,
-    ['off', 'supervised', 'autonomous'].map(value => [value, `${dabT('orchestratorLabel')} : ${dabT(value)}`]), onMode,
-    { disabled: busy || hostDown || secondary, title: hostDown ? dabT('orchestratorDown') : notice })
   const stopText = stopped && mode !== 'off' && !secondary ? dabT('resume') : dabT('stopShort')
+  const stopLabel = stopped && mode !== 'off' && !secondary ? dabT('resume') : (canStop ? dabT('stop') : dabT('stopNone'))
   const stopButton = h('button', {
-    type: 'button', className: 'dab-btn dab-stop', 'data-danger': 'true', title: notice,
+    type: 'button', className: 'dab-btn dab-stop', 'data-danger': 'true', title: `${stopLabel} — ${notice}`, 'aria-label': stopLabel,
     disabled: busy || hostDown || (!canStop && !(stopped && mode !== 'off')) || secondary,
     onClick: stopped && mode !== 'off' && !secondary ? onResume : onStop,
   }, h('span', { 'aria-hidden': 'true' }, stopped && mode !== 'off' && !secondary ? '▶' : '■'), h('span', { className: 'dab-stop-text' }, stopText))
@@ -270,7 +271,6 @@ function DabToolbar(props) {
         h('div', { className: 'dab-narrow-menu' },
           h('div', { className: 'dab-menu-label' }, dabT('orchestratorLabel')),
           modeSeg,
-          h('div', { className: 'dab-menu-row' }, modeSelect),
           h('div', { className: 'dab-menu-row dab-menu-row-actions' }, stopButton, h('span', { className: 'dab-grow' }),
             h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy }, dabT('refresh'))),
           h('div', { className: 'dab-menu-label' }, dabT('filtersLabel')),
@@ -283,7 +283,7 @@ function DabToolbar(props) {
         h('span', { className: 'dab-head-mark', 'aria-hidden': 'true' }, '◈'),
         h('div', { className: 'dab-head-text' },
           h('h1', { className: 'dab-title' }, dabT('title')),
-          h('div', { className: 'dab-subtitle' }, `${dabT('cockpitSubtitle')} · ${counts.total} ${dabT('agentPlural')}`))),
+          h('div', { className: 'dab-subtitle' }, `${dabT('cockpitSubtitle')} · ${Number.isFinite(Number(agentTotal)) ? Number(agentTotal) : counts.total} ${dabT('agentPlural')}`))),
       headActions),
     h('div', { className: 'dab-filters' },
       search,

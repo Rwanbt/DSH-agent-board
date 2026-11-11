@@ -453,6 +453,10 @@ const DAB_CSS = `
 .dab-super-state[data-status="active"] .dab-dot { background: var(--dsw-alias-state-success-primary); }
 .dab-super-state[data-status="blocked"] .dab-dot { background: var(--dsw-alias-state-error-primary); }
 .dab-super-sub { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+/* The band represents the supervision LAYER, not an agent: the marker is visible
+   even when the details are collapsed. */
+.dab-super-layer { display: inline-flex; align-items: center; padding: 0 6px; border-radius: 999px; corner-shape: round;
+  background: var(--dab-chip-fill); color: var(--dsw-alias-label-secondary); font-size: 10px; line-height: 16px; font-weight: 500; }
 .dab-super-sep { opacity: .6; }
 .dab-super-orchs { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; }
 .dab-super-orch { display: inline-flex; border: 1px solid var(--dsw-alias-border-l3, transparent); border-radius: 9px;
@@ -490,6 +494,8 @@ const DAB_CSS = `
 .dab-section-dot[data-tone="idle"] { background: var(--dsw-alias-state-info-primary, var(--dsw-alias-brand-primary)); }
 .dab-agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 248px), 1fr)); gap: 9px; min-width: 0; }
 .dab-agent-cell { min-width: 0; }
+.dab-gcard-wrap { position: relative; display: flex; height: 100%; min-width: 0; }
+.dab-gcard-wrap > .dab-gcard { flex: 1 1 auto; }
 
 /* ---------- global card */
 .dab-gcard { position: relative; display: flex; align-items: center; gap: 11px; min-width: 0; min-height: 92px; height: 100%;
@@ -497,6 +503,7 @@ const DAB_CSS = `
   cursor: pointer; user-select: none; outline: none;
   transition: background-color .12s ease, border-color .12s ease, box-shadow .12s ease; }
 .dab-gcard[data-selected="true"] { box-shadow: 0 0 0 1.5px var(--dsw-alias-brand-primary); }
+.dab-gcard:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
 .dab-gcard[data-status="waiting_user"] { border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 48%, transparent); }
 .dab-gcard[data-status="interrupted"] { border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 32%, transparent); }
 .dab-gcard[data-status="failed"][data-seen="false"] { border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 48%, transparent); }
@@ -520,8 +527,8 @@ const DAB_CSS = `
 .dab-gcard-badge { position: absolute; top: 7px; right: 8px; padding: 0 5px; border-radius: 6px; background: var(--dab-chip-fill);
   font-size: 10px; line-height: 16px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
 .dab-gcard-open { position: absolute; right: 3px; bottom: 3px; width: 26px; height: 26px; opacity: 0; }
-.dab-gcard:focus-within .dab-gcard-open, .dab-gcard[data-selected="true"] .dab-gcard-open { opacity: 1; }
-@media (hover: hover) { .dab-gcard:hover .dab-gcard-open { opacity: 1; } }
+.dab-gcard-wrap:focus-within .dab-gcard-open, .dab-gcard[data-selected="true"] ~ .dab-gcard-open { opacity: 1; }
+@media (hover: hover) { .dab-gcard-wrap:hover .dab-gcard-open { opacity: 1; } }
 @media (hover: none) { .dab-gcard-open { opacity: .75; } }
 
 /* ---------- inspector: desktop drawer overlaying the grid */
@@ -581,6 +588,7 @@ const DAB_CSS = `
   /* The mode is already in the header menu on a narrow panel: a third line of
      text would push the band past the mobile budget. */
   .dab-super-sub .dab-tag { display: none; }
+  .dab-super-state-text { display: none; }
   /* Mobile band = mascot, name, state, project count. The orchestrator mini
      avatars live in the expandable details, exactly like the mockup. */
   .dab-super-orchs { display: none; }
@@ -616,10 +624,11 @@ const DAB_CSS = `
 }
 /* Coarse pointers: real touch targets, no hover-only affordances. */
 @media (pointer: coarse) {
-  .dab-chip-btn, .dab-seg-btn { min-height: 36px; }
+  .dab-chip-btn, .dab-seg-btn { min-height: 40px; }
   .dab-stat { min-height: 48px; }
-  .dab-icon-btn, .dab-menu-btn { width: 36px; height: 36px; }
-  .dab-gcard-open { width: 32px; height: 32px; opacity: .85; }
+  .dab-icon-btn, .dab-menu-btn { width: 40px; height: 40px; }
+  .dab-stop { min-height: 40px; }
+  .dab-gcard-open { width: 36px; height: 36px; opacity: .85; }
 }
 @media (prefers-reduced-motion: reduce) {
   .dab-gcard { transition: none; }

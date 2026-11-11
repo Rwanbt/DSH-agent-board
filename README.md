@@ -278,7 +278,7 @@ node scripts/bench/projection-bench.mjs   # 5/20/50/150 agents, 1000 sessions
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Responsive cockpit contract](docs/UX-COCKPIT-CONTRACT.md) · [GOAL 5 delivery record](docs/GOAL5-DELIVERY.md)
+- [Responsive cockpit contract](docs/UX-COCKPIT-CONTRACT.md) · [GOAL 5 delivery record](docs/GOAL5-DELIVERY.md) · [independent review](docs/REVIEW-GOAL5.md)
 - [Mascots, supervision & Super Orchestrator](docs/MASCOTS-SUPER-ORCHESTRATOR.md)
 - [Contracts & adapters](docs/CONTRACTS.md)
 - [Task Board execution contract (proposed, simulated)](docs/TASKBOARD-CONTRACT.md)

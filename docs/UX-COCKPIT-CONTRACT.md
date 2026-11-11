@@ -128,13 +128,16 @@ Precedence: **attention > active > review > other**.
 - Filter row, 40–45 px: search, `En cours / Tous / À traiter / Historique`, view
   switch (`Vue globale / Projets / Hiérarchie`), filter popover (project, role,
   status, Task Board state, compact, clear).
-- Narrow (< 720 px): header stays one line (title, live dot, `⋯` menu); the menu
-  holds mode, stop, filters, refresh; filter row is search + view toggle, then a
-  horizontally scrollable chip row. No five-row stack.
+- Narrow (< 720 px): the title block keeps the mockup's compact two lines (title +
+  agent count) with the live dot and the `⋯` menu on the same row — no second row
+  of controls; the menu holds mode, stop, filters, refresh; the filter area is
+  search + view toggle, then a horizontally scrollable chip row. No five-row
+  stack.
 
 ### `DabSuperOrchestratorBar` (`ui/superbar.js`)
 
-One compact band (60–75 px): official crowned mascot, `Super Orchestrator`, real
+One compact band (60–75 px): official crowned mascot, `Super Orchestrator`, a
+visible "Supervision" marker (the layer is not an agent, even collapsed), real
 workspace status + mode, `N projects · M orchestrators`, mini avatars of the real
 project orchestrators (desktop; in the expandable details on a narrow panel, to
 keep the mobile band at ~57 px), and a chevron that expands the
@@ -186,7 +189,7 @@ a wide desktop window (the real DSH side-panel case).
 | 721–1023 px | same grid, 3–4 columns, toolbar wraps into two rows |
 | ≤ 720 px | mosaic `repeat(2, minmax(0, 1fr))`, card ≈ 112–120 px high |
 | ≤ 340 px | single-column fallback for readability |
-| coarse pointer | ≥ 40 px touch targets, 16 px inputs |
+| coarse pointer | 40 px controls, 36 px card action, 16 px inputs |
 
 Container queries on `.dab-root` (`container-name: dab`); no window media queries
 for layout. Vertical natural scrolling; no infinite canvas, no zoom system.
@@ -198,8 +201,18 @@ for layout. Vertical natural scrolling; no infinite canvas, no zoom system.
 3. The mockup's "Autonome" pill on the super band is a mode label, not a status;
    the band shows the real mode and the real workspace status separately.
 4. "En revue / plan" shows only reliable Task Board `in_review` data (`—` when the
-   ledger is unreadable); no planning state is inferred from a role or a name.
+   ledger is unreadable); no planning state is inferred from a role or a name. The
+   unavailable indicator is a DISABLED control whose accessible name carries the
+   real reason (never a hover-only tooltip).
 5. "Historique" opens the existing drawer instead of listing dozens of ended
    sessions inside the cockpit.
 6. Indicators count every node once (attention > active > review > other) and are
    computed from the projection, never from the rendered cards.
+7. Indicator values are global and filter-independent by design; a stat click
+   narrows the grid instead of rewriting the counts.
+8. The `recent` (24 h) view filter stays available to the model and the history
+   drawer but has no cockpit chip; a persisted `recent` preference is migrated to
+   "En cours" so the toolbar never looks unselected.
+9. The inspector scrim is a neutral 26 % black overlay in both themes (a scrim
+   darkens; it is not a themed surface), documented rather than forced into a
+   brand token.

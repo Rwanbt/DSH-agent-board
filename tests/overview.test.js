@@ -95,6 +95,24 @@ test('sections keep the fixed order and sort each section with sortAttention', (
   assert.equal(typeof waiting.tier, 'number')
 })
 
+test('within-section order uses the node facts, not the projection order', () => {
+  // Deliberately shuffled: the shipped bug compared Entry wrappers (no status,
+  // no updatedAt) so every comparison returned 0 and the input order survived.
+  const nodes = [
+    node('a-running-old', { status: STATUS.RUNNING, updatedAt: NOW - 9000 }),
+    node('d-failed-old', { status: STATUS.FAILED, seen: false, updatedAt: NOW - 8000, title: 'Zeta' }),
+    node('b-recovering', { status: STATUS.RECOVERING, updatedAt: NOW - 5000 }),
+    node('e-waiting-new', { status: STATUS.WAITING_USER, updatedAt: NOW - 50 }),
+    node('c-running-new', { status: STATUS.RUNNING, updatedAt: NOW - 100 }),
+    node('f-failed-new', { status: STATUS.FAILED, seen: false, updatedAt: NOW - 10, title: 'Alpha' }),
+  ]
+  const overview = buildOverview(projectionOf(nodes), { now: NOW, filter: 'all' })
+  // attention tier 0 (waiting) before tier 3 (failed unseen), then most recent.
+  assert.deepEqual(overview.sections[0].entries.map(entry => entry.node.id), ['e-waiting-new', 'f-failed-new', 'd-failed-old'])
+  // tier 1 (running) before tier 2.5 (recovering), then most recent within a tier.
+  assert.deepEqual(overview.sections[1].entries.map(entry => entry.node.id), ['c-running-new', 'a-running-old', 'b-recovering'])
+})
+
 test('150 nodes: every node counted exactly once (attention > active > review > other)', () => {
   const nodes = []
   const taskStates = new Map()

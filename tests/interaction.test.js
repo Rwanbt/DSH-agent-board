@@ -49,6 +49,15 @@ test('keyboard: Enter opens, Space previews, other keys ignored', () => {
   assert.deepEqual(log, [['open', 'a'], ['select', 'b']])
 })
 
+test('select() inspects immediately, cancels a pending click and never opens', () => {
+  const { arbiter, log, advance } = harness()
+  arbiter.click('a', 1)
+  arbiter.select('a')
+  advance(1000)
+  arbiter.select('b')
+  assert.deepEqual(log, [['select', 'a'], ['select', 'b']], 'no delayed duplicate, no open')
+})
+
 test('open guard drops a second open of the same id but allows another id', () => {
   const { arbiter, log, advance } = harness()
   arbiter.open('a')
