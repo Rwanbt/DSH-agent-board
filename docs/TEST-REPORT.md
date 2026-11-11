@@ -4,6 +4,22 @@ Run date: 2026-11-09 (Europe/Paris). Host: DSH `0.2.2-rc.1`, profile `desktop`,
 GUI `http://127.0.0.1:62337`. Everything below was executed on this machine; no
 result is inferred from a mock unless it says so.
 
+> **GOAL 4 update (2026-11-11, branch `feat/agent-board-mascots-super-orchestrator`).**
+> The suite is now **408 tests / 408 pass / 0 fail / 0 skipped** (~2.1 s), including
+> the artifact-integrity check that rebuilds `src/client.js` in memory and compares
+> it byte-for-byte with the committed bundle. New coverage: the 32 approved SVGs and
+> the exact palette, role aliases/generic fallback, avatar rendering (React stub),
+> the hierarchy view, the supervision/delegation limits, and the read-only Task
+> Board coordination model. The isolated real-DSH-host E2E still passes (15/15,
+> fake provider + simulated Task Board). Visual evidence:
+> `docs/e2e/screenshots/goal4-*.png`; delivery and limits:
+> `docs/GOAL4-DELIVERY.md`, `docs/MASCOTS-SUPER-ORCHESTRATOR.md`,
+> `docs/REVIEW-GOAL4.md`, `docs/LIMITATIONS.md` (rows 19–27).
+> **Not tested:** a real Task Board write/coordination API (none exists), a
+> populated panel whose agents declare the 15 roles (the simulated profile declares
+> none, so the generic identity is what was inspected), a real screen reader,
+> non-Windows rendering, and a live 15 s supervision soak.
+
 > **GOAL 3 update (2026-11-10, branch `goal3/supervision-orchestration`).** The
 > suite is now **315 tests / 315 pass / 0 fail / 0 todo**, stable over three
 > consecutive runs, plus a **live isolated-host E2E** (`docs/e2e/GOAL3-E2E.md`,

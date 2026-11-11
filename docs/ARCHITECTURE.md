@@ -204,6 +204,53 @@ delegation (tick, dispatch, approval, failover) until `POST /resume` — switchi
 `interrupted` with `stop_failed:<reason>` — it never pretends to be stopped. OFF
 does not kill anything.
 
+## Supervision layer (Super Orchestrator)
+
+`src/supervisor/super-orchestrator.js` is a **pure** aggregation of facts the host
+already owns. The host is the single producer: it publishes one derived payload on
+`/state` and the SSE stream, and the panel renders exactly that payload (the same
+module is bundled for its types/helpers, but the client never recomputes a second
+supervision from different inputs).
+
+```text
+live projection (sessions, statuses, roles, parentage, models)
+        + host facts (mode, stop, assignments+delegation, usage, health, instance)
+        + Task Board coordination read model (tasks, dependsOn, capabilities)
+        ▼
+buildSupervision()  ->  workspace (synthetic SUPERVISION LAYER, role super_orchestrator)
+                        projects[] (declared orchestrator or null, agents, counts, blocks)
+                        blocks[], crossProjectDependencies[], recommendations[]
+                        capabilities{observe,recommend,delegate,reassign,priority,...}
+        ▼
+supervisionEvents(previous, next) -> bounded, deduplicated real transitions
+```
+
+The workspace node is **not an agent**: it is the host policy engine, marked
+`synthetic:true`, labelled "Couche de supervision (non un agent)", with no model
+and no session. Project orchestrators are only agents whose *declared* role
+resolves to `orchestrator`; a project without one shows an explicit gap instead of
+an invented node. Status comes from real facts only: `off` is `idle` (observing),
+Stop or a secondary instance is `blocked`, otherwise `active`. Recommendations are
+local proposals (`applies:false`) and every unavailable capability carries the
+reason that names the missing path.
+
+The delegation gate (`src/orchestrator/delegation.js`) is **additive to, and
+narrower than, `authorizeLaunch`**: it runs after the existing authorization and
+before any lease or session, enforces `maxConcurrentDelegations`,
+`maxDelegationsPerHour`, `maxDelegationDepth`, cross-project refusal and
+dependency-cycle detection, and journals `assignment.delegation` (depth, root,
+parent, project, requester) so depth is read from durable facts, never inferred.
+A handoff continues that record instead of deepening it. The super role grants no
+permission: the mandate, allowed permissions/providers and isolation rules are the
+same as for any other launch.
+
+The panel renders the hierarchy with `src/board/hierarchy.js`, which **reuses**
+`buildBoardView()` output (visibility, attention, sorting, cuts) and only adds the
+workspace level, role projection, declared orchestrator, counts and filters. The
+mascots come from `src/contracts/agent-roles.js` (15 approved roles, declared-name
+aliases, generic fallback) and the inlined `AGENT_BOT_ASSETS` data URIs; role
+colour never encodes status.
+
 ## Failover, three stages
 
 1. **Retry** (`src/routing/router.js`) — 429 and rate-limit wording, 5xx,
