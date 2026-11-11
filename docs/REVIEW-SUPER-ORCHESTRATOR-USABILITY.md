@@ -26,10 +26,15 @@ capacités `unavailable` avec la raison `hôte : supervision non publiée`. C'es
 **exactement** la capture fournie. Ce n'est ni une panne de la couche ni une limite du
 produit : c'est un **décalage de build hôte/client**.
 
-Correctif immédiat : **redémarrer DSH** (ou désactiver/réactiver le plugin
-`dsh-agent-board`, ce qui recharge la moitié hôte). Après rechargement, la bande
-publiera la vraie charge utile ; le statut sera alors `Bloqué` à cause du Stop
-persistant (voir F3) tant que « Reprendre » n'a pas été utilisé.
+Correctif immédiat : **redémarrer complètement DSH**. La désactivation/réactivation du
+plugin via le gestionnaire de plugins **ne recharge pas la moitié hôte** : testé le
+11/11 vers 23:48, l'entrée `include:dsh-agent-board` est passée `disabled` puis
+`enabled` (« applied »), mais le verrou d'instance a conservé le **même**
+`ownerId`/`acquiredAt` (`agent-board:4912:979486d4…`) et a continué son heartbeat —
+preuve que le fiber hôte n'a jamais été recréé. Un simple rafraîchissement de page ne
+change rien non plus (le client est déjà à jour). Après redémarrage, la bande publiera
+la vraie charge utile ; le statut sera alors `Bloqué` à cause du Stop persistant
+(voir F3) tant que « Reprendre » n'a pas été utilisé.
 
 ## 1. Verdict
 
@@ -121,6 +126,10 @@ raisons réelles.
   (par ex. `host: { build, schemaVersion, features: ['supervision'] }`) et faire dire au
   client « Hôte plus ancien que le panneau : redémarrez DSH » quand `supervision` est
   absent ; garder « non publiée » pour le cas d'un hôte à jour en échec.
+- **Trap opérationnel** : ni le gestionnaire de plugins (`set_plugin` disable/enable
+  rapporte « applied ») ni un rafraîchissement de page ne rechargent la moitié hôte.
+  Seul un redémarrage du process DSH le fait — à documenter dans la procédure
+  d'installation/mise à jour.
 
 ### F1 — P1 — Le périmètre de l'autonomie est global et non réglable depuis l'UI
 
@@ -332,7 +341,8 @@ Limites de cette revue :
   sont à 0 ; les faits Task Board, l'état du host et les capacités sont, eux, réels.
 - Pas de test de charge, pas de test multi-hôte, pas de test avec un vrai fournisseur
   en panne.
-- Aucun code modifié par cette revue (un document ajouté).
+- Aucun code modifié par cette revue (un document ajouté). Le plugin a été brièvement
+  désactivé/réactivé pour tester le rechargement de l'hôte ; il est laissé **activé**.
 
 ## 9. Carte des preuves
 
