@@ -7,6 +7,30 @@
 - Task Board réel : `dsh-taskboard` **0.12.0**, révision **1041**, 381 tâches (360 non supprimées)
 - Suite de tests : **451 / 451 passent**, 0 échec (`node --test tests/`, ~2,9 s)
 
+## 0. Le fait qui explique la capture « Inconnu / supervision non publiée »
+
+La bande montre **un client récent devant un hôte ancien** :
+
+| Fait | Preuve |
+|---|---|
+| L'hôte DSH tourne depuis le **11/11 00:14:16** | `Get-Process -Id 4912` → `StartTime` 00:14:16 |
+| À cette heure, HEAD était `905e367` (GOAL 3, 315 tests) | `git log --before='2026-11-11 00:14:16'` |
+| Ce code **ne publie aucune supervision** | `git show 905e367:src/host/index.js` → 0 occurrence de `supervision`, `publicExtra`, `buildSupervision` ; HEAD → 64 |
+| La couche n'existe que depuis `b3bdd35` (16:16:56) | `git log b3bdd35 -1` |
+| Le panneau est le nouveau (GOAL 5) | bande « Super Orchestrator », cockpit global, 8 projets |
+| Aucune décision de délégation n'a jamais été journalisée | `state.audit` : `ack, session_gone, mode_changed, tick, launch, stop_all` — zéro `delegation_*` |
+
+Conséquence : `host.supervision` est `undefined`, donc le client prend son chemin de repli
+(`src/board/hierarchy.js:335-368`) — structure et comptages réels, statut `unknown`,
+capacités `unavailable` avec la raison `hôte : supervision non publiée`. C'est
+**exactement** la capture fournie. Ce n'est ni une panne de la couche ni une limite du
+produit : c'est un **décalage de build hôte/client**.
+
+Correctif immédiat : **redémarrer DSH** (ou désactiver/réactiver le plugin
+`dsh-agent-board`, ce qui recharge la moitié hôte). Après rechargement, la bande
+publiera la vraie charge utile ; le statut sera alors `Bloqué` à cause du Stop
+persistant (voir F3) tant que « Reprendre » n'a pas été utilisé.
+
 ## 1. Verdict
 
 **Votre impression est juste, mais elle ne porte pas sur ce qui est livré.**
@@ -19,7 +43,17 @@ Il y a trois choses différentes derrière le nom « Super Orchestrator » :
 | Un orchestrateur qui décide et applique | Un **moteur de décision** (OFF / Supervisé / Autonome) qui propose et, en autonome, lance des tâches du Task Board | **Techniquement oui**, mais dangereux par défaut (voir F1) |
 | Un rôle d'agent « super orchestrateur » | Un **rôle cosmétique** : `workspace.agent` reste `null` sauf si un agent est explicitement nommé `super-orchestrator` | **Non** (et ce n'est pas prévu) |
 
-Conclusion courte :
+Conclusion courte, en deux temps :
+
+- **Ce que vous voyez aujourd'hui** (« Inconnu », « Supervision non publiée par l'hôte »)
+  est un **décalage de build** : le panneau est neuf, l'hôte tourne sur le code d'il y
+  a 23 h (section 0). Un redémarrage fait apparaître la vraie bande.
+- **Une fois l'hôte à jour**, la couche de supervision fonctionne et reste honnête,
+  mais l'orchestrateur autonome garde des défauts d'usage réels : périmètre global non
+  réglable, capacité « Déléguer » surpromise, Stop persistant, recommandations
+  inapplicables en Arrêt (F1–F10).
+
+En résumé :
 
 - la **couche de supervision** est solide, testée, honnête, branchée sur le vrai ledger : elle n'est pas « cassée » ;
 - l'**orchestrateur autonome** n'est pas utilisable sereinement par un opérateur aujourd'hui : périmètre global non réglable depuis l'UI, capacité « Déléguer » annoncée disponible alors qu'elle est refusée, Stop persistant qui fige la couche en « Bloqué », et 50 recommandations inapplicables en mode Arrêt ;
@@ -44,7 +78,11 @@ Les trois causes de votre impression, par ordre d'impact :
 | 18:54:13 | mode → `off` ; les 8 propositions passent `pending` → `dormant` | `state.audit` + code `host/index.js:2364-2372` |
 | depuis | `stoppedAt` toujours renseigné → la couche est **`blocked / stopped_by_operator`** | `state.json`, `super-orchestrator.js:402-415` |
 
-C'est exactement le scénario « je l'active, il part tout seul ailleurs, je l'arrête ». Le moteur a fait ce qu'on lui a demandé ; c'est le **périmètre par défaut** et le **manque de prévisualisation** qui rendent l'expérience inutilisable.
+C'est exactement le scénario « je l'active, il part tout seul ailleurs, je l'arrête ». Le
+moteur a fait ce qu'on lui a demandé ; c'est le **périmètre par défaut** et le **manque
+de prévisualisation** qui rendent l'expérience inutilisable. À noter : ce lancement a été
+exécuté par l'**hôte GOAL 3 encore en mémoire** (section 0), donc **sans** la gate de
+délégation GOAL 4 ; le journal ne contient aucun `delegation_*`.
 
 ## 3. Ce qui est réellement livré (et qui marche)
 
@@ -53,7 +91,7 @@ C'est exactement le scénario « je l'active, il part tout seul ailleurs, je l'a
 | Observer agents, projets, blocages, dépendances inter-projets | **livré** | projection pure + tests ; 3 orchestrateurs déduits visibles dans la bande |
 | Lire le Task Board réel (lecture seule) | **livré** | `GET /dsh-taskboard/state` → **200** en anonyme ; 360 tâches / 702 arêtes normalisées |
 | Proposer des délégations / déblocages | **livré** | `recommendations[]`, `status:'proposed'`, `applies:false` |
-| Déléguer (lancement) | **livré et vérifié en réel** | lancement du 11/11 18:53:42, une vraie session créée, Stop propre |
+| Déléguer (lancement) | **livré et vérifié en réel** | lancement du 11/11 18:53:42 par l'hôte GOAL 3 en mémoire (session réellement créée, Stop propre) ; la version GOAL 4 ajoute la gate, testée par la suite |
 | Gate de délégation (profondeur, concurrence, budget horaire, cycle, cross-projet) | **livré** | `delegation.js` + tests ; refus avant tout lease/session |
 | Événements de supervision bornés/dédupliqués | **livré** | `supervisionEvents`, plafond 50, ids stables |
 | Réaffecter / prioriser / écrire le Kanban | **non disponible** | `taskboard_write_api_unavailable`, `taskboard_priorities_unavailable` |
@@ -69,6 +107,20 @@ La bande est réelle et rend des faits réels. Capture de référence du dépôt
 raisons réelles.
 
 ## 4. Constats détaillés
+
+### F0 — P1 — Un hôte plus ancien que le panneau est indiscernable d'une absence de supervision
+
+- **Preuve** : la bande affiche « Supervision non publiée par l'hôte : structure et
+  comptages réels, capacités indisponibles » et un statut `Inconnu` alors que le client
+  est à jour et l'hôte vieux de 23 h (section 0). Le client ne dispose d'aucun marqueur
+  de build de l'hôte pour distinguer « l'hôte ne sait pas publier » de « l'hôte a
+  échoué à publier ».
+- **Impact** : l'opérateur conclut que la fonctionnalité n'est pas utilisable, alors
+  qu'un redémarrage suffit. C'est exactement l'impression rapportée.
+- **Correctif** : publier un identifiant de build/capacités de l'hôte dans `/state`
+  (par ex. `host: { build, schemaVersion, features: ['supervision'] }`) et faire dire au
+  client « Hôte plus ancien que le panneau : redémarrez DSH » quand `supervision` est
+  absent ; garder « non publiée » pour le cas d'un hôte à jour en échec.
 
 ### F1 — P1 — Le périmètre de l'autonomie est global et non réglable depuis l'UI
 
@@ -211,6 +263,9 @@ raisons réelles.
 
 ### P0 — ce qui change l'expérience
 
+0. **Détecter le décalage hôte/client** (F0) : publier un identifiant de build dans
+   `/state` et afficher « Hôte plus ancien que le panneau : redémarrez DSH » au lieu de
+   « Supervision non publiée ». C'est le constat qui a déclenché cette revue.
 1. **Périmètre explicite** (F1) : `allowedWorkspaces` = projets choisis, vide = refus ;
    sélecteur dans la bande ou la politique ; ligne « Périmètre : N projets ».
 2. **Prévisualisation avant Autonome** (F1/F8) : un bouton « Simuler » qui affiche les
@@ -267,20 +322,24 @@ taskboard.available = true, 360 tâches, tronqué à 200 dans la charge utile
 
 Limites de cette revue :
 
-- **Pas de vérification visuelle live** : la GUI répond 401 et le jeton de lancement
-  n'a pas pu être récupéré dans cette session. Le rendu de la bande est vérifié sur la
-  capture E2E du dépôt (`docs/e2e/screenshots/cockpit-1366-superbar-open.png`) et par
-  lecture du code.
+- **La GUI live n'a pas pu être interrogée** : elle répond 401 et le jeton de lancement
+  n'a pas pu être récupéré. Le rendu de la bande est vérifié sur la capture E2E du
+  dépôt (`docs/e2e/screenshots/cockpit-1366-superbar-open.png`), sur la **capture de
+  l'opérateur** (état « Inconnu / supervision non publiée ») et par lecture du code.
+- La capture de l'opérateur est **celle d'un hôte GOAL 3** : elle ne montre pas la
+  charge utile courante, mais son chemin de repli ; c'est ce qui a mené à F0.
 - La charge utile reconstruite utilise une projection vide : les compteurs d'agents y
   sont à 0 ; les faits Task Board, l'état du host et les capacités sont, eux, réels.
 - Pas de test de charge, pas de test multi-hôte, pas de test avec un vrai fournisseur
   en panne.
-- Aucun code modifié par cette revue.
+- Aucun code modifié par cette revue (un document ajouté).
 
 ## 9. Carte des preuves
 
 | Sujet | Fichier:ligne |
 |---|---|
+| Repli client quand `supervision` est absent | `src/board/hierarchy.js:335-368` |
+| Publication de `/state` (hôte courant) | `src/host/index.js` `publicStateOf` + `publicExtra` |
 | Statut de la couche (bloqué si Stop) | `src/supervisor/super-orchestrator.js:402-415` |
 | Matrice de capacités | `src/supervisor/super-orchestrator.js:791-818` |
 | Recommandations (ignorent mode/stop) | `src/supervisor/super-orchestrator.js:673-788` |
