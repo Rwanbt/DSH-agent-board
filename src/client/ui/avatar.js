@@ -80,6 +80,10 @@ function DabAgentAvatar(props) {
   const model = dabAgentAvatarModel({
     role: props.role,
     name: props.name,
+    title: props.title,
+    goal: props.goal,
+    taskTitle: props.taskTitle,
+    resolvedRole: props.resolvedRole,
     status: props.status,
     taskState: props.taskState,
     size: props.size,
@@ -129,6 +133,7 @@ function DabAgentAvatar(props) {
     className: 'dab-avatar',
     'data-role': model.roleId ?? 'generic',
     'data-tone': model.tone,
+    'data-resolution': model.resolution,
     'data-variant': model.variant,
     'data-selected': selected ? 'true' : 'false',
     'data-size': String(model.size),

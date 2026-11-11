@@ -11,9 +11,14 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
   const [more, setMore] = React.useState(false)
   React.useEffect(() => { setMore(false) }, [node?.id])
   if (node === null || node === undefined) return null
-  const resolvedRole = role ?? (typeof dabResolveAgentRole === 'function' ? dabResolveAgentRole(node.role) : { roleId: null, roleLabel: null, family: null, source: 'generic', raw: node.role ?? null })
+  const resolvedRole = role ?? (typeof dabResolveRoleForNode === 'function'
+    ? dabResolveRoleForNode({ role: node.role, title: node.title, goal: node.goal })
+    : { roleId: null, roleLabel: null, family: null, source: 'generic', raw: node.role ?? null, inference: null })
   const roleText = resolvedRole?.roleLabel ?? (typeof node.role === 'string' && node.role !== '' ? node.role : null)
   const roleFamily = typeof dabFamilyLabel === 'function' ? dabFamilyLabel(resolvedRole?.family) : null
+  const roleProvenance = resolvedRole?.source === 'inferred'
+    ? ` · ${dabT('roleInferred')}${typeof dabInferenceReason === 'function' && dabInferenceReason(resolvedRole) ? ` (${dabInferenceReason(resolvedRole)})` : ''}`
+    : (resolvedRole?.source === 'alias' ? ` (${dabT('roleDeclaredAlias')})` : '')
   const taskLabel = typeof dabTaskStateLabel === 'function' && typeof taskState === 'string' ? dabTaskStateLabel(taskState) : null
   const preview = node.preview ?? { text: '', final: false }
   const hasFinal = preview.final === true && typeof preview.text === 'string' && preview.text !== ''
@@ -24,7 +29,7 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
     facts.push(h('dt', { key: `${key}-t` }, label), h('dd', { key: `${key}-d`, className: mono ? 'dab-mono' : undefined }, value))
   }
   fact('project', dabT('project'), node.projectId === 'unassigned' ? dabT('unassigned') : node.projectTitle)
-  fact('role', dabT('role'), roleText === null ? null : `${roleText}${roleFamily ? ` · ${roleFamily}` : ''}${resolvedRole?.source === 'alias' ? ` (${dabT('roleDeclaredAlias')})` : ''}`)
+  fact('role', dabT('role'), roleText === null ? null : `${roleText}${roleFamily ? ` · ${roleFamily}` : ''}${roleProvenance}`)
   fact('taskState', dabT('taskStateTitle'), taskLabel)
   fact('provider', dabT('provider'), node.model?.provider, true)
   fact('model', dabT('model'), dabModelChipText(node.model), true)

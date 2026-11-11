@@ -295,6 +295,206 @@ export function dabAvatarVariantForSize(size) {
 }
 
 /**
+ * Declared-text role inference.
+ *
+ * A board session rarely DECLARES a role. To give every card a real mascot
+ * without inventing a role from a model or from behaviour, the role is inferred
+ * from text the runtime ALREADY declares (session title, goal objective, linked
+ * task title). The result is always marked `source:'inferred'` and carries the
+ * matching rule, so the UI can say "déduit" and never present it as declared.
+ *
+ * Rules are checked in order (most specific first); the first matching token
+ * wins. A token matches exactly (`words`) or as a prefix (`stems`); the text is
+ * accent/lowercase-normalized and split on non-alphanumerics, so "Plain" does
+ * not match "plan" and "preview" does not match "review".
+ *
+ * A model/provider is NEVER an input here: two agents sharing one model can have
+ * two different roles. When there is no usable text at all, the agent stays
+ * generic; when there is text but no keyword, it gets the productive default
+ * (`worker`, `defaulted:true`) — still marked inferred.
+ */
+export const AGENT_ROLE_INFERENCE = Object.freeze([
+  Object.freeze({
+    roleId: 'super_orchestrator',
+    phrases: Object.freeze(['super orchestrator', 'multi project', 'multi projets', 'workspace orchestrator']),
+    words: Object.freeze(['supervision']),
+    stems: Object.freeze([]),
+  }),
+  Object.freeze({
+    roleId: 'reviewer',
+    phrases: Object.freeze(['code review', 'peer review']),
+    words: Object.freeze(['review', 'reviews', 'revue', 'revues', 'relire', 'relit', 'critique']),
+    stems: Object.freeze(['review']),
+  }),
+  Object.freeze({
+    roleId: 'auditor',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['audit', 'audits', 'compliance', 'conformite']),
+    stems: Object.freeze(['audit']),
+  }),
+  Object.freeze({
+    roleId: 'verifier',
+    phrases: Object.freeze([]),
+    // "e2e" is deliberately NOT a keyword: it is commonly an environment label
+    // ("E2E simulated card") rather than a role, and it would map every harness
+    // session to Verifier.
+    words: Object.freeze(['qa', 'test', 'tests', 'tester', 'testing', 'verificateur']),
+    stems: Object.freeze(['verif', 'valid', 'test']),
+  }),
+  Object.freeze({
+    roleId: 'guardian',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['security', 'securite', 'guard', 'guardian', 'protection', 'auth', 'authz', 'permission', 'permissions', 'rgpd']),
+    stems: Object.freeze(['secur', 'guard', 'protect']),
+  }),
+  Object.freeze({
+    roleId: 'optimizer',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['optimizer', 'performance', 'perf', 'bench', 'benchmark', 'tuning', 'latence', 'latency', 'speed', 'optimisation', 'optimization']),
+    stems: Object.freeze(['optimis', 'optimiz', 'performance']),
+  }),
+  Object.freeze({
+    roleId: 'knowledge_manager',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['knowledge', 'documentation', 'document', 'documentation', 'doc', 'docs', 'memory', 'memoire', 'wiki', 'notes', 'connaissance', 'connaissances']),
+    stems: Object.freeze(['knowledge', 'document']),
+  }),
+  Object.freeze({
+    roleId: 'integrator',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['integrator', 'integration', 'merge', 'fusion', 'assemble', 'consolidate', 'consolidation']),
+    stems: Object.freeze(['integrat']),
+  }),
+  Object.freeze({
+    roleId: 'researcher',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['research', 'recherche', 'explore', 'explorer', 'exploration', 'investigation', 'search', 'scout', 'veille', 'etude', 'etudes']),
+    stems: Object.freeze(['research', 'explor', 'investigat']),
+  }),
+  Object.freeze({
+    roleId: 'architect',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['architect', 'architecture', 'design', 'conception', 'schema', 'structure', 'ux', 'ui']),
+    stems: Object.freeze(['architect', 'design', 'conception']),
+  }),
+  Object.freeze({
+    roleId: 'planner',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['plan', 'plans', 'planning', 'planification', 'roadmap', 'backlog', 'sprint', 'milestone', 'milestones', 'jalon', 'jalons', 'planificateur']),
+    stems: Object.freeze(['planification']),
+  }),
+  Object.freeze({
+    roleId: 'dispatcher',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['dispatch', 'dispatcher', 'distribue', 'distribution', 'assign', 'assignment', 'affectation', 'repartition']),
+    stems: Object.freeze(['dispatch', 'distrib']),
+  }),
+  Object.freeze({
+    roleId: 'observer',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['observer', 'observation', 'monitor', 'monitoring', 'surveillance', 'watch', 'alert', 'alertes']),
+    stems: Object.freeze(['observ', 'monitor', 'surveill']),
+  }),
+  Object.freeze({
+    roleId: 'orchestrator',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['orchestrator', 'orchestration', 'coordination', 'coordonne', 'lead', 'leads', 'leader', 'pilote', 'supervisor', 'supervise']),
+    stems: Object.freeze(['orchestrat', 'coordinat']),
+  }),
+  Object.freeze({
+    roleId: 'worker',
+    phrases: Object.freeze([]),
+    words: Object.freeze(['worker', 'code', 'coding', 'build', 'fix', 'fixes', 'feature', 'features', 'dev', 'developer', 'implementation', 'tache', 'task']),
+    stems: Object.freeze(['implement', 'developp', 'refactor', 'corrig', 'execute', 'produce']),
+  }),
+])
+
+/** The role given to a text-bearing agent with no keyword and no declaration. */
+export const AGENT_ROLE_INFERENCE_DEFAULT = 'worker'
+
+const MAX_INFERENCE_TEXT = 400
+
+function normalizeInferenceText(value) {
+  if (typeof value !== 'string') return ''
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_INFERENCE_TEXT)
+}
+
+/**
+ * Infer a role from declared text only.
+ *
+ * @param {{title?:string, goal?:string, taskTitle?:string}} [input]
+ * @returns {{ roleId: string, source:'inferred', rule: string, token: string|null, defaulted: boolean, text: string } | null}
+ *   `null` only when there is NO usable text at all (the agent stays generic).
+ */
+export function inferAgentRoleFromText(input = {}) {
+  const rawText = [input.title, input.goal, input.taskTitle]
+    .filter(value => typeof value === 'string' && value.trim() !== '')
+    .join(' · ')
+  const text = normalizeInferenceText(rawText)
+  if (text === '') return null
+  const tokens = text.split(' ')
+  const padded = ` ${text} `
+  for (const rule of AGENT_ROLE_INFERENCE) {
+    for (const phrase of rule.phrases ?? []) {
+      const normalizedPhrase = normalizeInferenceText(phrase)
+      if (normalizedPhrase !== '' && padded.includes(` ${normalizedPhrase} `)) {
+        return { roleId: rule.roleId, source: 'inferred', rule: rule.roleId, token: normalizedPhrase, defaulted: false, text: text.slice(0, 120) }
+      }
+    }
+    for (const word of rule.words ?? []) {
+      if (tokens.includes(normalizeInferenceText(word))) {
+        return { roleId: rule.roleId, source: 'inferred', rule: rule.roleId, token: word, defaulted: false, text: text.slice(0, 120) }
+      }
+    }
+    for (const stem of rule.stems ?? []) {
+      const normalizedStem = normalizeInferenceText(stem)
+      if (normalizedStem !== '' && tokens.some(token => token.startsWith(normalizedStem))) {
+        return { roleId: rule.roleId, source: 'inferred', rule: rule.roleId, token: stem, defaulted: false, text: text.slice(0, 120) }
+      }
+    }
+  }
+  // Text exists but no role keyword: the agent is a productive default, still
+  // INFERRED (never presented as declared).
+  return {
+    roleId: AGENT_ROLE_INFERENCE_DEFAULT,
+    source: 'inferred',
+    rule: `default:${AGENT_ROLE_INFERENCE_DEFAULT}`,
+    token: null,
+    defaulted: true,
+    text: text.slice(0, 120),
+  }
+}
+
+/**
+ * Resolve an agent node: a declared role/name always wins; otherwise infer from
+ * the text the runtime declares. The result shape matches `dabResolveAgentRole`
+ * plus an `inference` fact (null when declared/generic).
+ *
+ * @param {{role?:string, name?:string, title?:string, goal?:string, taskTitle?:string}} [input]
+ * @returns {{ roleId:string|null, source:'explicit'|'alias'|'inferred'|'generic', raw:string|null, role:object|null, inference:object|null }}
+ */
+export function dabResolveRoleForNode(input = {}) {
+  const declared = dabResolveAgentRole({ role: input.role, name: input.name })
+  if (declared.roleId !== null) return { ...declared, inference: null }
+  const inference = inferAgentRoleFromText(input)
+  if (inference === null) return { ...declared, inference: null }
+  return {
+    roleId: inference.roleId,
+    source: 'inferred',
+    raw: declared.raw,
+    role: AGENT_ROLES[inference.roleId] ?? null,
+    inference,
+  }
+}
+
+/**
  * Pure avatar view model. The data-URI source map is injected so this module
  * stays asset-free and unit-testable; the component passes `AGENT_BOT_ASSETS`.
  *
@@ -306,6 +506,10 @@ export function dabAvatarVariantForSize(size) {
  * @param {object} input
  * @param {string|object|null} [input.role] declared role/name
  * @param {string|null} [input.name] display name (never used to infer a role)
+ * @param {string|null} [input.title] declared session title (inference input)
+ * @param {string|null} [input.goal] declared goal objective (inference input)
+ * @param {string|null} [input.taskTitle] linked task title (inference input)
+ * @param {object|null} [input.resolvedRole] already-resolved role (wins, keeps rule)
  * @param {string|null} [input.status] one of the board's EXISTING statuses
  * @param {string|null} [input.taskState] Task Board workflow state (separate)
  * @param {number} [input.size]
@@ -317,7 +521,24 @@ export function dabAvatarVariantForSize(size) {
 export function dabAgentAvatarModel(input = {}) {
   const size = Number.isFinite(Number(input.size)) ? Math.max(8, Math.min(256, Math.trunc(Number(input.size)))) : 40
   const variant = input.variant === 'full' || input.variant === 'compact' ? input.variant : dabAvatarVariantForSize(size)
-  const resolved = dabResolveAgentRole(input.role)
+  const preset = input.resolvedRole
+  const resolved = preset !== null && preset !== undefined && typeof preset.roleId === 'string' && AGENT_ROLES[preset.roleId] !== undefined
+    ? {
+      roleId: preset.roleId,
+      // A pre-resolved INFERRED role must stay inferred: provenance is never
+      // upgraded to "explicit" just because another module resolved it first.
+      source: preset.source === 'explicit' || preset.source === 'alias' ? preset.source : 'inferred',
+      raw: typeof preset.raw === 'string' ? preset.raw : null,
+      role: AGENT_ROLES[preset.roleId],
+      inference: preset.inference ?? null,
+    }
+    : dabResolveRoleForNode({
+      role: input.role,
+      name: input.name,
+      title: input.title,
+      goal: input.goal,
+      taskTitle: input.taskTitle,
+    })
   const role = resolved.role
   const emblem = role?.id === 'super_orchestrator'
     ? (input.emblem === 'bolt' ? 'bolt' : 'crown')
@@ -340,6 +561,8 @@ export function dabAgentAvatarModel(input = {}) {
   const altParts = []
   if (typeof input.name === 'string' && input.name.trim() !== '') altParts.push({ text: input.name.trim() })
   if (role !== null) altParts.push({ text: role.label })
+  // Assistive technology gets the provenance too: a deduced role is announced.
+  if (resolved.source === 'inferred') altParts.push({ labelKey: 'roleInferred' })
   if (statusKnown) altParts.push({ labelKey: AGENT_TONES[tone].labelKey })
   if (taskTone !== null) altParts.push({ labelKey: AGENT_TONES[taskTone].labelKey })
   return {
@@ -350,6 +573,7 @@ export function dabAgentAvatarModel(input = {}) {
     color: role?.color ?? null,
     gradient: role?.gradient ?? null,
     resolution: resolved.source,
+    inference: resolved.inference ?? null,
     rawRole: resolved.raw,
     variant,
     size,

@@ -175,7 +175,7 @@ test('one project: workspace level, real counts, missing orchestrator is an hone
   assert.ok(agentIds(hierarchy).every(id => projection.byId.has(id)))
 })
 
-test('many projects: stable order, orchestrators from DECLARED roles only, blocks and cross-project dependencies', () => {
+test('many projects: stable order, orchestrators from resolved roles, blocks and cross-project dependencies', () => {
   const first = roleHierarchy()
   const second = roleHierarchy()
   const hierarchy = first.hierarchy
@@ -238,15 +238,23 @@ test('supervision null: structure and counts stay real, capabilities are unavail
   assert.equal(hierarchy.projects.find(project => project.id === 'ws:w-alpha').orchestrator?.id, 'alpha-orch')
 })
 
-test('unknown declared roles stay generic; the resolver is injectable and cached per declared role', () => {
+test('undeclared roles are deduced from declared text; a resolver stays injectable and cached per declared role', () => {
   const scenario = roleScenario()
   const projection = buildProjection({ ...scenario, now: NOW })
   const view = buildBoardView(projection, { now: NOW, filter: 'all' })
   const hierarchy = buildHierarchyView(projection, view, supervisionPayload())
-  assert.equal(hierarchy.roles.get('alpha-ui').roleId, null)
-  assert.equal(hierarchy.roles.get('alpha-ui').source, 'generic')
+  // "Polish the UI" contains the token "ui" -> Architect, marked inferred.
+  assert.equal(hierarchy.roles.get('alpha-ui').roleId, 'architect')
+  assert.equal(hierarchy.roles.get('alpha-ui').source, 'inferred')
+  assert.equal(hierarchy.roles.get('alpha-ui').inference.defaulted, false)
+  // No keyword at all -> the productive default, still inferred (never declared).
+  assert.equal(hierarchy.roles.get('beta-plain').roleId, 'worker')
+  assert.equal(hierarchy.roles.get('beta-plain').source, 'inferred')
+  assert.equal(hierarchy.roles.get('beta-plain').inference.defaulted, true)
+  // A declared role always wins over inference.
   assert.equal(hierarchy.roles.get('alpha-dev').roleId, 'worker', 'alias "dev" -> worker')
   assert.equal(hierarchy.roles.get('alpha-dev').source, 'alias')
+  assert.equal(hierarchy.roles.get('alpha-dev').inference, null)
   assert.equal(hierarchy.roles.get('beta-scout').roleId, 'researcher')
   assert.equal(hierarchy.roles.size, projection.nodes.length, 'one resolved role per node')
 
@@ -273,8 +281,15 @@ test('role, status and Task Board state filters narrow the rendered teams withou
   assert.equal(byRole.hierarchy.projects.find(project => project.id === 'ws:w-alpha').counts.agents, 3, 'counts stay real')
   assert.equal(byRole.hierarchy.filters.role, 'orchestrator')
 
+  // Every node is now declared or deduced, so the generic identity is empty by
+  // default; the filter still works when a resolver returns a generic identity.
   const generic = roleHierarchy({ options: { filters: { role: GENERIC_ROLE_FILTER } } })
-  assert.deepEqual(agentIds(generic.hierarchy).sort(), ['alpha-ui', 'beta-plain', 'beta-stop', 'nowhere'])
+  assert.deepEqual(agentIds(generic.hierarchy), [], 'no generic identity remains with inference')
+  const genericStubbed = roleHierarchy({ options: {
+    filters: { role: GENERIC_ROLE_FILTER },
+    resolveRole: value => ({ roleId: null, source: 'generic', raw: value, role: null }),
+  } })
+  assert.ok(agentIds(genericStubbed.hierarchy).length > 0, 'the generic filter still selects generic identities')
   assert.equal(generic.hierarchy.projects.find(project => project.id === 'ws:w-beta').orchestrator?.id, 'beta-lead', 'the orchestrator slot is identity, not an agent filter')
 
   const running = roleHierarchy({ options: { filters: { status: 'running' } } })

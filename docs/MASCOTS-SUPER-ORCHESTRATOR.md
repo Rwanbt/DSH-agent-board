@@ -61,21 +61,35 @@ scripts/mascot-gallery.mjs    -> one HTML gallery of the 32 files (dev utility)
 - Rebuild: `node scripts/build-assets.mjs && node scripts/build-client.mjs`.
   `node scripts/mascot-gallery.mjs [out.html]` writes a visual gallery.
 
-## 3. Role resolution (never inferred)
+## 3. Role resolution: declared first, deduced second
 
-`src/contracts/agent-roles.js` resolves a **declared** role or name:
+`src/contracts/agent-roles.js` resolves a role in this order:
 
-- exact role id (`worker`, `knowledge_manager`, case-insensitive);
-- documented aliases (`lead`/`coordinator` → `orchestrator`, `qa`/`tester` →
-  `verifier`, `dev`/`developer` → `worker`, `scout`/`explorer` → `researcher`,
-  `security` → `guardian`, …), accent- and case-insensitive;
-- anything else → **generic identity**: a neutral grey person mark, no colour, no
-  guessed mascot, and the original string is preserved in `rawRole`.
+1. **Declared** role/name: exact role id (`worker`, `knowledge_manager`,
+   case-insensitive) or a documented alias (`lead`/`coordinator` →
+   `orchestrator`, `qa`/`tester` → `verifier`, `dev`/`developer` → `worker`,
+   `scout`/`explorer` → `researcher`, `security` → `guardian`, …), accent- and
+   case-insensitive.
+2. **Deduced** from text the runtime already declares (session title, goal
+   objective, linked Task Board task title): an ordered, word-bounded keyword
+   table maps e.g. "code review" → Reviewer, "audit/conformité" → Auditor,
+   "validate/test/QA" → Verifier, "security/permissions" → Guardian,
+   "performance/benchmark" → Optimizer, "documentation/memory" →
+   Knowledge Manager, "merge/integration" → Integrator, "research/explore" →
+   Researcher, "architecture/design/UI" → Architect, "plan/sprint/roadmap" →
+   Planner, "dispatch/assign" → Dispatcher, "monitor/observe" → Observer,
+   "lead/orchestrate/coordinate" → Orchestrator, "implement/build/fix" → Worker.
+   Text with no keyword yields the productive default `worker`
+   (`defaulted:true`). Deduction is always `source:'inferred'`, carries the
+   matched token/rule, is visibly labelled **« déduit »** and is announced to
+   assistive technology — it is never presented as a declared role.
+3. Only an agent with **no declared role and no usable text at all** keeps the
+   neutral **generic identity** (grey person mark, no colour, no mascot).
 
-A model/provider is **never** used to infer a role: the same DeepSeek model can
-be a Worker, a Reviewer and a Planner at the same time. Nothing about parent/child
-links or launches changes a role either. Unknown roles are displayed as
-`Rôle non déclaré` (with the generic mark) and the raw value stays available.
+A model/provider is **never** an input: the same DeepSeek model can be a Worker,
+a Reviewer and a Planner at the same time. Nothing about parent/child links or
+launches changes a role either. The original declared string is preserved in
+`rawRole` and shown in the tooltip/inspector.
 
 ## 4. Status is independent from role colour
 
@@ -103,8 +117,9 @@ permanent role is Reviewer never becomes "in review" because of it.
 
 ## 5. UI
 
-- **Card**: mascot, name, the resolved role chip (family in the role tooltip and
-  the inspector), project context (the group heading, the tooltip and the
+- **Card**: mascot, name, the resolved role chip (a deduced role is visibly
+  marked « déduit » with its matching signal; family in the role tooltip and the
+  inspector), project context (the group heading, the tooltip and the
   inspector), linked Task Board state, active
   heading, the tooltip and the inspector), linked Task Board state, active
   sub-agent count, and the *real* activity (`N tours · M étapes`). There is no

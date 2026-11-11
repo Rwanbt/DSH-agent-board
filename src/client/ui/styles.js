@@ -245,6 +245,10 @@ const DAB_CSS = `
   background: var(--dab-chip-fill); color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 16px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dab-role-chip[data-resolution="generic"] { background: transparent; box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary)); }
+/* A deduced role is marked, never presented as declared: dotted chip edge + a
+   small muted suffix. No role colour is added here (the mascot carries it). */
+.dab-role-chip[data-resolution="inferred"] { background: transparent; box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary)); border-bottom: 1px dotted var(--dsw-alias-label-secondary); }
+.dab-role-inferred { font-size: 10px; line-height: 12px; color: var(--dsw-alias-label-secondary); text-transform: lowercase; }
 /* Family chip: identity context only, never a status colour. */
 .dab-family-chip { display: inline-flex; align-items: center; max-width: 100%; min-width: 0; padding: 0 6px; border-radius: 999px; corner-shape: round;
   background: transparent; box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary));
