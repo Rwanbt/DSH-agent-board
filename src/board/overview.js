@@ -278,7 +278,11 @@ export function buildOverview(projection, options = {}) {
   const sections = []
   const entries = []
   for (const id of OVERVIEW_SECTIONS) {
-    const sectionEntries = included.filter(entry => sectionOf(entry.node) === id).sort(sortAttention)
+    // `sortAttention` reads status/updatedAt/title/id, so it must receive the
+    // NODES, not the Entry wrappers (comparing wrappers is a silent no-op).
+    const sectionEntries = included
+      .filter(entry => sectionOf(entry.node) === id)
+      .sort((a, b) => sortAttention(a.node, b.node))
     sections.push({ id, entries: sectionEntries })
     entries.push(...sectionEntries)
   }

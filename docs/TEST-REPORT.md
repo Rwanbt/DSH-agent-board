@@ -5,7 +5,7 @@ GUI `http://127.0.0.1:62337`. Everything below was executed on this machine; no
 result is inferred from a mock unless it says so.
 
 > **GOAL 5 update (2026-11-11, branch `feat/agent-board-responsive-cockpit`).**
-> The suite is now **446 tests / 446 pass / 0 fail / 0 skipped** (~2.6 s,
+> The suite is now **448 tests / 448 pass / 0 fail / 0 skipped** (~2.6 s,
 > `node --test tests/`), including the artifact check that rebuilds
 > `src/client.js` in memory and compares it byte-for-byte (the reviewed module
 > list is now 23 modules). New coverage:

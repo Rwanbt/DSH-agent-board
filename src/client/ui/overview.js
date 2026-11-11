@@ -61,7 +61,12 @@ function DabOverviewStats({ counts, focus, onFocus, reviewAvailable, reviewReaso
         h('span', { key: 'label', className: 'dab-stat-label' }, dabT(labelKey)),
       ]
       if (disabled) {
-        return h('div', { key: bucket, className: 'dab-stat', 'data-bucket': bucket, 'data-disabled': 'true', title }, inner)
+        // A disabled control still carries its real reason in its accessible
+        // name: the reason must not live in a hover-only `title`.
+        return h('button', {
+          key: bucket, type: 'button', className: 'dab-stat', 'data-bucket': bucket,
+          'data-disabled': 'true', disabled: true, 'aria-disabled': 'true', 'aria-label': `${dabT(labelKey)} : ${title}`, title,
+        }, inner)
       }
       return h('button', {
         key: bucket,
@@ -122,12 +127,16 @@ function DabGlobalCardImpl({ entry, ctx, compact, selected }) {
   })
 
   const stop = event => { event.stopPropagation() }
-  return h('div', {
+  // The card is a button-like GROUP and the explicit "open session" action is a
+  // SIBLING button (a button may not contain another button). `aria-expanded` is
+  // the accurate state: the card opens the inspector dialog, it is not a toggle.
+  const card = h('div', {
     className: 'dab-gcard',
     role: 'button',
     tabIndex: 0,
     'aria-label': label,
-    'aria-pressed': selected ? 'true' : 'false',
+    'aria-haspopup': 'dialog',
+    'aria-expanded': selected ? 'true' : 'false',
     'data-node-id': node.id,
     'data-status': node.status,
     'data-seen': node.seen === true ? 'true' : 'false',
@@ -167,16 +176,19 @@ function DabGlobalCardImpl({ entry, ctx, compact, selected }) {
     taskLine.real ? h('span', { className: 'dab-gcard-task', title: taskLine.text }, taskLine.text) : null),
   descendants > 0
     ? h('span', { className: 'dab-gcard-badge', title: dabT('subagentsCount', { n: descendants }), 'aria-hidden': 'true' }, `↳ ${descendants}`)
-    : null,
-  h('button', {
-    type: 'button',
-    className: 'dab-icon-btn dab-gcard-open',
-    title: `${dabT('openSession')} : ${node.title}`,
-    'aria-label': `${dabT('openSession')} : ${node.title}`,
-    onClick: event => { stop(event); ctx.arbiter.open(node.id) },
-    onDoubleClick: stop,
-    onKeyDown: stop,
-  }, '↗'))
+    : null)
+
+  return h('div', { className: 'dab-gcard-wrap' },
+    card,
+    h('button', {
+      type: 'button',
+      className: 'dab-icon-btn dab-gcard-open',
+      title: `${dabT('openSession')} : ${node.title}`,
+      'aria-label': `${dabT('openSession')} : ${node.title}`,
+      onClick: event => { stop(event); ctx.arbiter.open(node.id) },
+      onDoubleClick: stop,
+      onKeyDown: stop,
+    }, '↗'))
 }
 
 const DabGlobalCard = React.memo(DabGlobalCardImpl, (a, b) => {
@@ -190,11 +202,14 @@ const DabGlobalCard = React.memo(DabGlobalCardImpl, (a, b) => {
     && a.ctx.nowBucket === b.ctx.nowBucket
     && n.id === m.id && n.status === m.status && n.seen === m.seen && n.title === m.title
     && n.updatedAt === m.updatedAt && n.taskId === m.taskId && n.goal === m.goal
+    && n.error === m.error && n.waitingDetail === m.waitingDetail && n.archived === m.archived
     && n.role === m.role && n.projectTitle === m.projectTitle
     && n.routeHistory === m.routeHistory
     && x.taskState === y.taskState && x.taskTitle === y.taskTitle
+    && x.projectTitle === y.projectTitle && x.parentTitle === y.parentTitle
     && x.descendants === y.descendants && x.depth === y.depth
     && x.role?.roleId === y.role?.roleId && x.role?.source === y.role?.source
+    && x.role?.roleLabel === y.role?.roleLabel
 })
 
 /**

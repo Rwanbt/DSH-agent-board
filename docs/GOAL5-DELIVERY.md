@@ -26,8 +26,8 @@ plugin, and every deliberate deviation.
   recommendations, blocks, cross-project dependencies, Task Board availability).
 - **Four real indicators** (`Actifs`, `À traiter`, `En revue`, `Autres`) computed
   from the projection, each one a filter for the grid; `En revue` is the linked
-  Task Board `in_review` state and shows `—` with the real reason when the ledger
-  is unreadable.
+  Task Board `in_review` state; when the ledger is unreadable it is a disabled
+  control showing `—`, with the real reason in its accessible name.
 - **Attention-first sections** (`Besoin d'attention`, `Agents en cours`,
   `Autres activités`) over an adaptive grid of supervision cards.
 - **AgentCard v2 (global presentation)**: mascot + separate status dot, name,
@@ -110,13 +110,12 @@ running plugin in an isolated DSH host.
 | Viewport | Panel | Columns | Card | Band | Toolbar | Overflow-x |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1920×1080 | 1640 px | 6 | 261×103 | 62 | 95 | no |
-| 1366×900 | 1086 px | 4 | 257×103 | 62 | 95 | no |
-| 1024×768 | 744 px | 3 | 230×103 | 62 | 95 | no |
-| 768×900 | 712 px | 2 | 340×122 | 57 | 125 | no |
-| 768×900 | 712 px | 2 | 340×122 | 57 | 125 | no |
-| 390×844 | 390 px | 2 | 179×122 | 57 | 125 | no |
-| 360×780 | 360 px | 2 | 164×122 | 57 | 125 | no |
-| 320×720 | 320 px | 1 | — | 57 | 163 | no |
+| 1366×900 | 1086 px | 4 | 257×92 | 62 | 95 | no |
+| 1024×768 | 744 px | 3 | 231×92 | 62 | 95 | no |
+| 768×900 | 712 px | 2 | 342×104 | 57 | 125 | no |
+| 390×844 | 390 px | 2 | 181×104 | 57 | 125 | no |
+| 360×780 | 360 px | 2 | 166×104 | 57 | 125 | no |
+| 320×720 | 320 px | 1 | 295×84 | 57 | 163 | no |
 
 The 240–290 px desktop card target holds from 1024 px up (230 px at the 744 px
 panel, where a third 248 px column would not fit). The mobile card is 122 px,
@@ -168,16 +167,25 @@ from the declared session text, real Task Board `in_review` tasks.
 | History | drawer with search, 11 rows, load-more |
 | Filters popover | 4 selects (project, role, status, Task Board state) |
 | Console | 0 error, 0 page error over the whole interaction run |
+| Card semantics | no nested button, `role=button` + `aria-haspopup=dialog` + `aria-expanded`, keyboard focus ring (2 px brand) |
+| Header count | equals the indicator sum (18 agents, not 21 session rows) |
+| Narrow menu stop | labelled control with `aria-label` (stop / resume / nothing to stop) |
+| Explicit open button | opens the session and never the inspector |
+| Band marker | visible "Supervision" layer chip at 1366 and 390 (state word hidden on narrow) |
+| Touch targets | 40 px controls / 36 px card action under a coarse pointer |
 | Session open | explicit button; `uiWorkspace.openSession` path unchanged |
 
 ## 6. Tests
 
-- Full suite: **446/446** (`node --test tests/`), including
+- Full suite: **448/448** (`node --test tests/`), including
   `tests/cockpit-render.test.js` (20 render/contract tests that concatenate the
   authored modules exactly like the build and hydrate them with a React stub),
-  `tests/overview.test.js` (11 pure model tests, including the 150-node bucket
-  partition and the 15/50/150 perf guard) and the extended
+  `tests/overview.test.js` (12 pure model tests, including the within-section
+  ordering on shuffled input, the 150-node bucket partition and the 15/50/150
+  perf guard) and the extended
   `tests/board-view.test.js`.
+- An independent read-only QA pass reviewed the branch and its findings were all
+  addressed (`docs/REVIEW-GOAL5.md`).
 - The bundle (`src/client.js`) is byte-identical to a rebuild
   (`tests/review-supervision-artifact.test.js`).
 - Component cost: rendering the 150-card cockpit tree with the React stub takes
