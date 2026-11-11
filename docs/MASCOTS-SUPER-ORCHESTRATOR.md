@@ -263,3 +263,22 @@ read is retried on the next window, never silently hidden.
 - Existing UI preferences are preserved; unknown/older values are dropped on
   read. Existing views, statuses, API routes and tests are unchanged.
 - The bundle is generated: `src/client.js` is never hand-edited.
+
+## Where the mascots are rendered (GOAL 5 cockpit)
+
+- **Global cockpit cards** (`ui/overview.js`): the mascot is the primary identity
+  of every agent, 46 px (full variant) on desktop and 36 px in compact density;
+  the status dot stays a separate element, bottom-left, clear of the role
+  pictogram.
+- **Super Orchestrator band** (`ui/superbar.js`): the crowned emblem by default,
+  or the bolt alternative when the host publishes `emblem:'bolt'`; 42 px on
+  desktop, 34 px on a narrow panel.
+- **Project orchestrator mini avatars**: 26 px (22 px on a narrow panel) for the
+  real orchestrators the hierarchy found, never a fabricated one.
+- **Inspector** (`ui/preview.js` unchanged): the same resolved role and family,
+  with the `déduit` provenance when the role was deduced from declared text.
+- **Projects / hierarchy views**: 20–30 px mascots on the existing cards, so the
+  role reads the same in every view.
+
+The cockpit never recolours a mascot to express a status, and a role that could
+not be declared or deduced keeps the neutral grey identity mark.

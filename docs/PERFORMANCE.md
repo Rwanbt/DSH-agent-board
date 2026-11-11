@@ -109,6 +109,14 @@ shared Windows CI machine does not flake:
 | 1,000 vs 125 historical sessions | ratio < 8× (0.5 ms timer floor) | ~4–7× raw, below the floor-adjusted 8× |
 | `aggregateSubtrees`, 150 agents, median | < 250 ms | 0.04 ms |
 | Client rebuilds, 50 notifications / 1 s | ≤ 8 | 5 |
+| `buildOverview` + `buildBoardView`, 15 agents, mean (50 rounds) | < 250 ms | 0.36 ms |
+| `buildOverview` + `buildBoardView`, 50 agents, mean | < 250 ms | 0.90 ms |
+| `buildOverview` + `buildBoardView`, 150 agents, mean | < 250 ms | 2.68 ms |
+
+The cockpit model is rebuilt only when its real inputs change (`projection`,
+filter, query, project, indicator focus, selection, minute tick); card rendering
+is memoized on the facts a card displays, and the toolbar never rebuilds the
+hierarchy on a compact-mode toggle or a selection.
 
 The 125-session build is sub-millisecond; the 0.5 ms floor prevents timer noise
 from producing a false super-linear verdict. It does not hide a quadratic
@@ -121,6 +129,7 @@ margin.
 node scripts/bench/projection-bench.mjs              # timings + client store
 node --expose-gc scripts/bench/projection-bench.mjs  # adds the heap column
 node --test tests/perf-projection.test.js
+node --test tests/overview.test.js                   # cockpit model + 15/50/150 guard
 ```
 
 Both benchmark invocations write `docs/bench/projection-bench.json` and
