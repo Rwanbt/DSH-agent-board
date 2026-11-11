@@ -112,6 +112,7 @@ shared Windows CI machine does not flake:
 | `buildOverview` + `buildBoardView`, 15 agents, mean (50 rounds) | < 250 ms | 0.36 ms |
 | `buildOverview` + `buildBoardView`, 50 agents, mean | < 250 ms | 0.90 ms |
 | `buildOverview` + `buildBoardView`, 150 agents, mean | < 250 ms | 2.68 ms |
+| Cockpit component render, 150 cards (VDOM only, React stub) | < 1,000 ms | ~16 ms |
 
 The cockpit model is rebuilt only when its real inputs change (`projection`,
 filter, query, project, indicator focus, selection, minute tick); card rendering

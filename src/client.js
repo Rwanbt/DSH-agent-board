@@ -4672,6 +4672,7 @@ const DAB_STRINGS = {
     filterAction: 'À traiter',
     viewGlobal: 'Vue globale',
     statActive: 'Actifs',
+    indicators: 'Indicateurs',
     statAttention: 'À traiter',
     statReview: 'En revue',
     statOther: 'Autres',
@@ -4938,6 +4939,7 @@ const DAB_STRINGS = {
     filterAction: 'Needs action',
     viewGlobal: 'Overview',
     statActive: 'Active',
+    indicators: 'Indicators',
     statAttention: 'Needs action',
     statReview: 'In review',
     statOther: 'Other',
@@ -6670,7 +6672,7 @@ function dabOverviewStatusWord(node) {
 function DabOverviewStats({ counts, focus, onFocus, reviewAvailable, reviewReason, compact }) {
   const h = React.createElement
   const value = bucket => Number(counts?.[bucket]) || 0
-  return h('div', { className: 'dab-stats', role: 'group', 'aria-label': dabT('statActive') },
+  return h('div', { className: 'dab-stats', role: 'group', 'aria-label': dabT('indicators') },
     DAB_OVERVIEW_BUCKETS.map(([bucket, labelKey, tone]) => {
       const review = bucket === 'review'
       const disabled = review && reviewAvailable !== true
