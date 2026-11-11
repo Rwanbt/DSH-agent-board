@@ -22,7 +22,10 @@ import { promisify } from 'node:util'
 
 import { DEFAULT_POLICY, INTERRUPTED_TURN_KINDS, MODES, STATUS, allowedPermissionOf, isMode, newId, normalizePolicy, textOfContent, truncate } from '../contracts/model.js'
 import { buildProjection, normalizeSessions } from '../supervisor/projection.js'
+import { MAX_SUPERVISION_EVENTS, buildSupervision, mergeSupervisionEvents, supervisionEvents } from '../supervisor/super-orchestrator.js'
 import { selectDispatchable, stopPlan, readinessOf, mandateCheck, countRunning } from '../orchestrator/dag.js'
+import { delegationDepthOf, delegationUsageOf, evaluateDelegation, supervisionConfigOf } from '../orchestrator/delegation.js'
+import { readCoordinationModel } from '../connectors/taskboard-coordination.js'
 import {
   LEASE_STATUS, acquireLease, assignmentKey, checkFencing, createLease, ensureAssignment, nextFencingToken, reconcileAfterRestart,
 } from '../orchestrator/lease.js'
@@ -167,6 +170,24 @@ export function apply(ctx, config = {}) {
   const reconcileNotes = []
   let connectors = null
   let liveProjection = null
+  // Super Orchestrator supervision. The payload is a cheap derived view of the
+  // REAL host facts plus the ONE live projection this host already builds; it is
+  // cached and only rebuilt when a durable/observed fact changed, never per
+  // `/state` request. The events list is bounded and deduplicated by stable id.
+  let coordinationModel = null
+  let supervisionCache = null
+  let supervisionDirty = true
+  let lastSupervision = null
+  let publishedSupervisionEvents = []
+  // The coordination read is cheap but not free: at most one read per minute, and
+  // never two in flight. Without this, the default `off` mode (which never ticks)
+  // would never see the Task Board at all.
+  let coordinationReadAt = 0
+  let coordinationReading = false
+  // Signature of the last derived supervision payload actually broadcast: the
+  // panel must be pushed a REAL change, and a quiet board must send nothing.
+  let lastSupervisionSignature = null
+  const COORDINATION_TTL_MS = 60_000
 
   const logger = ctx.logger ?? console
   const warn = message => { try { logger.warn?.(`[dsh-agent-board] ${message}`) } catch { /* logging never breaks the board */ } }
@@ -195,7 +216,7 @@ export function apply(ctx, config = {}) {
 
   function sendBroadcast() {
     if (streamClients.size === 0) return
-    const payload = `event: state\ndata: ${JSON.stringify(publicStateOf(state, connectors?.describe() ?? [], { projectionSummary: liveProjection?.counts ?? null, reconcileNotes, instance: { primary: isPrimary, holder: lockHolder } }))}\n\n`
+    const payload = `event: state\ndata: ${JSON.stringify(publicStateOf(state, connectors?.describe() ?? [], publicExtra()))}\n\n`
     for (const res of streamClients) {
       try {
         res.write(payload)
@@ -215,6 +236,188 @@ export function apply(ctx, config = {}) {
     broadcastTimer.unref?.()
   }
 
+  // ---------------------------------------------------- supervision payload
+  // The super-orchestrator module is PURE: everything it needs is passed in.
+  // Only the facts the host really owns are forwarded (no inferred status).
+  function supervisionInputState() {
+    return {
+      mode: state.mode,
+      stoppedAt: state.stoppedAt,
+      policy: state.policy,
+      assignments: state.assignments,
+      proposals: state.proposals,
+      usage: state.usage,
+      health: state.health,
+      lastTick: state.lastTick,
+      instance: { primary: isPrimary, holder: lockHolder },
+    }
+  }
+
+  function refreshSupervision(now = Date.now()) {
+    if (supervisionCache !== null && !supervisionDirty) return supervisionCache
+    let next
+    try {
+      next = buildSupervision({
+        projection: liveProjection,
+        hostState: supervisionInputState(),
+        taskboard: coordinationModel,
+        now,
+      })
+    } catch (error) {
+      // A derived view must never break the board API: serve the last payload
+      // (or null) and report the failure instead of crashing the route.
+      warn(`supervision build failed: ${String(error)}`)
+      return supervisionCache
+    }
+    if (lastSupervision !== null) {
+      const incoming = supervisionEvents(lastSupervision, next, now)
+      if (incoming.length > 0) publishedSupervisionEvents = mergeSupervisionEvents(publishedSupervisionEvents, incoming)
+    }
+    lastSupervision = next
+    supervisionCache = next
+    supervisionDirty = false
+    return supervisionCache
+  }
+
+  /**
+   * Build the live projection the supervision payload is derived from.
+   *
+   * The 15 s timer is NOT the only producer: the startup sequence and the first
+   * `/state` must not publish an empty supervision just because no timer fired
+   * yet. Cheap enough to run on demand (one projection over the session list).
+   */
+  function refreshLiveProjection() {
+    try {
+      const sessions = ctx.get?.('sessions')
+      if (sessions?.list === undefined) return false
+      liveProjection = buildProjection({ list: sessions.list(), statusMap: new Map(), hostState: state, workspaces: {}, now: Date.now() })
+      supervisionDirty = true
+      return true
+    } catch (error) {
+      warn(`live projection refresh failed: ${String(error)}`)
+      return false
+    }
+  }
+
+  /**
+   * Bounded signature of the derived payload. The event-array LENGTH is not a
+   * change signal (merge keeps it at the 50-event cap), so a timer tick compares
+   * this signature instead and only broadcasts when something really moved.
+   */
+  function supervisionSignatureOf(supervision) {
+    if (supervision === null || supervision === undefined) return 'null'
+    const ids = value => (Array.isArray(value) ? value.map(entry => String(entry?.id ?? '')).join(',') : '')
+    return JSON.stringify({
+      status: supervision.workspace?.status ?? null,
+      mode: supervision.workspace?.mode ?? null,
+      counts: supervision.workspace?.counts ?? null,
+      agents: (supervision.projects ?? []).reduce((sum, project) => sum + (Array.isArray(project.agents) ? project.agents.length : 0), 0),
+      blocks: ids(supervision.blocks),
+      recommendations: ids(supervision.recommendations),
+      dependencies: ids(supervision.crossProjectDependencies),
+      taskboard: supervision.taskboard === null || supervision.taskboard === undefined
+        ? null
+        : {
+          available: supervision.taskboard.available === true,
+          reason: supervision.taskboard.reason ?? null,
+          count: Array.isArray(supervision.taskboard.tasks) ? supervision.taskboard.tasks.length : 0,
+        },
+      event: publishedSupervisionEvents.length > 0 ? publishedSupervisionEvents[publishedSupervisionEvents.length - 1].id ?? null : null,
+    })
+  }
+
+  /**
+   * The Task Board coordination read model (contract D). It is read once per
+   * tick / dispatch / approval and passed into the supervision payload; the
+   * adapter's normalized task records carry the same ledger fields the
+   * coordination mapping needs. A failed read is reported as unavailable, never
+   * as an empty-but-available ledger.
+   */
+  function coordinationModelOf(listed) {
+    if (listed === null || listed === undefined) return null
+    try {
+      const model = readCoordinationModel({
+        revision: listed?.meta?.ledgerRevision ?? null,
+        tasks: Array.isArray(listed?.items) ? listed.items : [],
+        meta: listed?.meta ?? null,
+      }, { source: 'live' })
+      return model !== null && typeof model === 'object' ? model : null
+    } catch (error) {
+      warn(`task board coordination read failed: ${String(error)}`)
+      return null
+    }
+  }
+
+  function coordinationUnavailable(reason) {
+    try {
+      coordinationModel = readCoordinationModel(null, { source: 'absent', reason })
+    } catch {
+      coordinationModel = null
+    }
+    supervisionDirty = true
+  }
+
+  function refreshCoordination(listed) {
+    const model = coordinationModelOf(listed)
+    if (model === null) coordinationUnavailable('taskboard_read_failed')
+    else coordinationModel = model
+    coordinationReadAt = Date.now()
+    supervisionDirty = true
+  }
+
+  /**
+   * Keep the Task Board coordination model fresh WITHOUT relying on a tick: the
+   * default `off` mode never ticks, so a reachable ledger would otherwise stay
+   * invisible (and an unreachable one indistinguishable from an empty board).
+   * At most one bounded read per minute, never two in flight; failure is
+   * published as `available:false` with its reason.
+   */
+  function ensureCoordinationFresh(now = Date.now()) {
+    if (coordinationReading) return
+    if (coordinationModel !== null && now - coordinationReadAt < COORDINATION_TTL_MS) return
+    try {
+      const adapter = connectors?.get?.('dsh-taskboard')
+      if (adapter === undefined || adapter === null || typeof adapter.list !== 'function') {
+        coordinationUnavailable('taskboard_absent')
+        coordinationReadAt = now
+        return
+      }
+      coordinationReading = true
+      Promise.resolve()
+        .then(() => adapter.list())
+        .then(listed => {
+          refreshCoordination(listed)
+          try { broadcast() } catch { /* a read failure must not break the caller */ }
+        })
+        .catch(error => {
+          coordinationUnavailable(`taskboard_read_failed:${truncate(String(error?.message ?? error), 120)}`)
+          try { broadcast() } catch { /* ignore */ }
+        })
+        .finally(() => { coordinationReading = false })
+    } catch (error) {
+      coordinationReading = false
+      coordinationUnavailable('taskboard_read_failed')
+    }
+  }
+
+  /** Public `/state` additions: supervision + bounded events (both /state and SSE). */
+  function publicExtra() {
+    // Build the projection if the startup sequence could not (services not ready
+    // yet): a first `/state` must describe the real agents, never an empty board.
+    if (liveProjection === null) refreshLiveProjection()
+    // Refresh the ledger within its TTL before deriving the payload: the first
+    // `/state` after startup must report a real availability, not "not read yet".
+    ensureCoordinationFresh()
+    const supervision = refreshSupervision()
+    return {
+      projectionSummary: liveProjection?.counts ?? null,
+      reconcileNotes,
+      instance: { primary: isPrimary, holder: lockHolder },
+      supervision,
+      events: publishedSupervisionEvents.slice(-MAX_SUPERVISION_EVENTS),
+    }
+  }
+
   function audit(event) {
     state.audit.push({ at: Date.now(), ...event })
     if (state.audit.length > MAX_AUDIT) state.audit = state.audit.slice(-MAX_AUDIT)
@@ -228,6 +431,7 @@ export function apply(ctx, config = {}) {
 
   function touch() {
     compactState(state)
+    supervisionDirty = true
     saveSoon()
     broadcast()
   }
@@ -330,10 +534,15 @@ export function apply(ctx, config = {}) {
       if (isPrimary) void store.write(state).catch(error => warn(`reconcile save failed: ${String(error)}`))
     }
     ready = true
-    // Flush the removal facts observed during startup, then publish once.
+    // Flush the removal facts observed during startup, then publish once. The
+    // projection and the derived supervision are built HERE, not after the 15 s
+    // timer: the first frame must already describe the real agents.
     for (const id of pendingGone.splice(0)) {
       try { onSessionGone(id) } catch { /* observation must not break startup */ }
     }
+    refreshLiveProjection()
+    refreshSupervision()
+    lastSupervisionSignature = supervisionSignatureOf(supervisionCache)
     broadcast()
     // Close what the previous process could not close (settle/release retries).
     if (isPrimary) {
@@ -596,6 +805,7 @@ export function apply(ctx, config = {}) {
       releaseContractLease(assignment, 'session_disposed')
     }
     audit({ type: 'session_gone', sessionId: id })
+    supervisionDirty = true
     saveSoon(800)
     broadcast()
   }
@@ -903,11 +1113,62 @@ export function apply(ctx, config = {}) {
     return { sessionId, handle }
   }
 
+  /**
+   * The REAL delegation record of a launch, journaled on the assignment.
+   *
+   * A subtask launched while its parent task has a LIVE board assignment is a
+   * nested delegation: the depth comes from the parent's recorded delegation
+   * (`delegationDepthOf`), never from a timer or a guess. Any other launch is a
+   * root delegation (depth 0). A handoff CONTINUES this record instead of
+   * creating a deeper one.
+   */
+  function delegationForTask(task, source) {
+    const parentTaskId = typeof task?.parentId === 'string' && task.parentId !== '' ? task.parentId : null
+    const parent = parentTaskId === null
+      ? undefined
+      : state.assignments
+        .filter(assignment => String(assignment.taskId) === parentTaskId && ACTIVE_STATUSES.includes(assignment.status))
+        .slice(-1)[0]
+    const depth = parent === undefined ? 0 : delegationDepthOf(parent) + 1
+    return {
+      depth,
+      rootTaskId: parent === undefined ? String(task.id) : (parent.delegation?.rootTaskId ?? String(parent.taskId)),
+      parentAssignmentId: parent?.id ?? null,
+      projectId: String(task.workspaceId ?? ''),
+      requestedBy: `board:${source}`,
+      // Evaluation-only fact (the parent's project), never persisted.
+      parentProjectId: typeof parent?.workspaceId === 'string' ? parent.workspaceId : null,
+    }
+  }
+
   async function launchTask({ task, proposalId = null, source = 'tick' }) {
     const auth = authorizeLaunch(task, { source })
     if (!auth.ok) {
       audit({ type: 'launch_refused', taskId: task.id, source, reason: auth.reason })
       return { ok: false, reason: auth.reason }
+    }
+    // The super-orchestrator gate is ADDITIVE: the existing authorization gates
+    // above stay the single authority, and this one can only narrow them. A
+    // refusal happens before any lease/draft/session, so it cannot consume one.
+    const delegation = delegationForTask(task, source)
+    if (supervisionConfigOf(state.policy).enabled === true) {
+      const verdict = evaluateDelegation({
+        policy: state.policy,
+        task,
+        taskboard: coordinationModel,
+        assignments: state.assignments,
+        usage: {
+          ...delegationUsageOf(state.assignments),
+          depth: delegation.depth,
+          parentProjectId: delegation.parentProjectId,
+        },
+        now: Date.now(),
+      })
+      if (!verdict.allow) {
+        audit({ type: 'delegation_refused', taskId: task.id, source, reason: verdict.reason, depth: delegation.depth })
+        return { ok: false, reason: verdict.reason }
+      }
+      audit({ type: 'delegation_allowed', taskId: task.id, source, depth: delegation.depth, rootTaskId: delegation.rootTaskId })
     }
     const revision = task.revision ?? null
     // One LIVE assignment per task: a duplicate tick, a double webhook or a
@@ -960,6 +1221,15 @@ export function apply(ctx, config = {}) {
     const { created, assignment } = ensureAssignment(state.assignments, draft)
     if (!created) {
       return { ok: false, reason: 'duplicate_assignment', assignmentId: assignment.id }
+    }
+    // Journal the delegation facts with the assignment: depth/root/parent/
+    // project/requester are then read from the record, never inferred later.
+    assignment.delegation = {
+      depth: delegation.depth,
+      rootTaskId: delegation.rootTaskId,
+      parentAssignmentId: delegation.parentAssignmentId,
+      projectId: delegation.projectId,
+      requestedBy: delegation.requestedBy,
     }
     state.assignments.push(assignment)
     // Count the launch against the operator's budget in the SAME step that makes
@@ -1390,6 +1660,7 @@ export function apply(ctx, config = {}) {
     // another executor during the run must not be continued from a stale copy.
     try {
       const listed = await connectors.get('dsh-taskboard').list()
+      refreshCoordination(listed)
       const task = listed.items.find(item => String(item.id) === String(assignment.taskId))
       if (task === undefined) return { ok: false, reason: 'task_missing' }
       if (task.trashedAt !== null && task.trashedAt !== undefined) return { ok: false, reason: 'task_trashed' }
@@ -1745,7 +2016,19 @@ export function apply(ctx, config = {}) {
         recoveringAt: Date.now(),
         startedAt: Date.now(),
       })
-      if (next.created) state.assignments.push(next.assignment)
+      if (next.created) {
+        // A handoff CONTINUES the delegation it was created for: same depth,
+        // same root and parent, only the requester fact changes. It is not a
+        // second delegation and never consumes another depth slot.
+        const continued = assignment.delegation ?? {
+          depth: 0,
+          rootTaskId: String(assignment.taskId),
+          parentAssignmentId: null,
+          projectId: String(assignment.workspaceId ?? ''),
+        }
+        next.assignment.delegation = { ...continued, requestedBy: 'board:handoff' }
+        state.assignments.push(next.assignment)
+      }
       const epochAtHandoff = state.stopEpoch
       try {
         const prompt = handoffPrompt(checkpoint, { task, fromRoute: assignment.model, toRoute: nextRoute, reason: plan.reason })
@@ -1856,6 +2139,8 @@ export function apply(ctx, config = {}) {
     }
     try {
       const listed = await connectors.get('dsh-taskboard').list()
+      // One coordination read per tick, shared by supervision and the gate.
+      refreshCoordination(listed)
       const tasks = listed.items
       // expire stale proposals
       for (const proposal of state.proposals) {
@@ -1906,6 +2191,8 @@ export function apply(ctx, config = {}) {
       const message = truncate(String(error?.message ?? error), 300)
       state.sync = { ok: false, at: Date.now(), error: message }
       state.lastTick = { at: Date.now(), reason, mode: state.mode, actions: [], error: message }
+      // An unreadable ledger is not an empty-but-available Task Board: report it.
+      coordinationUnavailable(`taskboard_read_failed:${message}`)
       audit({ type: 'tick_failed', error: message })
       touch()
       return { ok: false, reason: 'sync_failed', error: message }
@@ -2032,16 +2319,13 @@ export function apply(ctx, config = {}) {
         const method = req.method ?? 'GET'
 
         if (method === 'GET' && route === '/state') {
-          void readyPromise.then(() => sendJson(res, 200, { ok: true, value: publicStateOf(state, connectors.describe(), {
-            reconcileNotes,
-            instance: { primary: isPrimary, holder: lockHolder },
-          }) }))
+          void readyPromise.then(() => sendJson(res, 200, { ok: true, value: publicStateOf(state, connectors.describe(), publicExtra()) }))
           return
         }
         if (method === 'GET' && route === '/events') {
           void readyPromise.then(() => {
             res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
-            res.write(`event: state\ndata: ${JSON.stringify(publicStateOf(state, connectors.describe(), { reconcileNotes, instance: { primary: isPrimary, holder: lockHolder } }))}\n\n`)
+            res.write(`event: state\ndata: ${JSON.stringify(publicStateOf(state, connectors.describe(), publicExtra()))}\n\n`)
             streamClients.add(res)
             const remove = () => streamClients.delete(res)
             req.on('close', remove)
@@ -2152,6 +2436,7 @@ export function apply(ctx, config = {}) {
                 return sendJson(res, 409, { ok: false, error: 'proposal_expired' })
               }
               const listed = await connectors.get('dsh-taskboard').list()
+              refreshCoordination(listed)
               const task = listed.items.find(item => item.id === proposal.taskId)
               if (task === undefined) return sendJson(res, 409, { ok: false, error: 'task_gone' })
               // The human approved a specific revision; a rewritten card is a
@@ -2174,6 +2459,7 @@ export function apply(ctx, config = {}) {
               const taskId = typeof body.taskId === 'string' ? body.taskId : ''
               if (taskId === '') return sendJson(res, 400, { ok: false, error: 'taskId_required' })
               const listed = await connectors.get('dsh-taskboard').list()
+              refreshCoordination(listed)
               const task = listed.items.find(item => item.id === taskId)
               if (task === undefined) return sendJson(res, 404, { ok: false, error: 'task_not_found' })
               const readiness = readinessOf(task, new Map(listed.items.map(item => [item.id, item])))
@@ -2209,12 +2495,20 @@ export function apply(ctx, config = {}) {
   }
 
   // Keep a cheap, live projection available for diagnostics (session events are
-  // the only inputs; this is not used to infer running/finished from time).
+  // the only inputs; this is not used to infer running/finished from time). The
+  // supervision payload is derived from THIS projection: one build, cached, and
+  // refreshed here when the observation itself changed.
   const projectionTimer = setInterval(() => {
     try {
-      const sessions = ctx.get?.('sessions')
-      if (sessions?.list === undefined) return
-      liveProjection = buildProjection({ list: sessions.list(), statusMap: new Map(), hostState: state, workspaces: {}, now: Date.now() })
+      refreshLiveProjection()
+      refreshSupervision()
+      // Only push when a real change happened: a quiet board sends nothing. The
+      // comparison is on the derived payload, not on the event-array length.
+      const signature = supervisionSignatureOf(supervisionCache)
+      if (signature !== lastSupervisionSignature) {
+        lastSupervisionSignature = signature
+        broadcast()
+      }
     } catch { /* diagnostics only */ }
   }, 15_000)
   projectionTimer.unref?.()
