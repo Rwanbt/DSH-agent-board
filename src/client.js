@@ -7656,9 +7656,6 @@ function DabToolbar(props) {
   const modeSelect = select(dabT('orchestratorLabel'), mode,
     ['off', 'supervised', 'autonomous'].map(value => [value, `${dabT('orchestratorLabel')} : ${dabT(value)}`]), onMode,
     { disabled: busy || hostDown || secondary, title: hostDown ? dabT('orchestratorDown') : notice })
-  const stopOrResume = stopped && mode !== 'off' && !secondary
-    ? iconBtn('play', dabT('resume'), onResume, { disabled: busy || hostDown, 'data-tone': 'resume' })
-    : iconBtn('stop', canStop ? dabT('stop') : dabT('stopNone'), onStop, { disabled: busy || hostDown || !canStop || secondary, 'data-danger': 'true' })
   const stopText = stopped && mode !== 'off' && !secondary ? dabT('resume') : dabT('stopShort')
   const stopButton = h('button', {
     type: 'button', className: 'dab-btn dab-stop', 'data-danger': 'true', title: notice,
@@ -7744,7 +7741,7 @@ function DabToolbar(props) {
           h('div', { className: 'dab-menu-label' }, dabT('orchestratorLabel')),
           modeSeg,
           h('div', { className: 'dab-menu-row' }, modeSelect),
-          h('div', { className: 'dab-menu-row dab-menu-row-actions' }, stopOrResume, h('span', { className: 'dab-grow' }),
+          h('div', { className: 'dab-menu-row dab-menu-row-actions' }, stopButton, h('span', { className: 'dab-grow' }),
             h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy }, dabT('refresh'))),
           h('div', { className: 'dab-menu-label' }, dabT('filtersLabel')),
           filterPanel))
