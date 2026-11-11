@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
 import { buildProjection, resolveProject, indexWorkspaces, lastUsefulLine, normalizePath } from '../src/supervisor/projection.js'
-import { buildBoardView, boardCounts, historyPage, aggregateSubtrees, sortAttention, isAttention, projectOptions, ancestorChain } from '../src/board/view.js'
+import { buildBoardView, boardCounts, historyPage, aggregateSubtrees, sortAttention, isAttention, projectOptions, ancestorChain, includedByFilter, isActionRequired, VIEW_FILTERS } from '../src/board/view.js'
 import { STATUS } from '../src/contracts/model.js'
-import { NOW, photoScenario, largeScenario } from './fixtures/sessions.js'
+import { NOW, photoScenario, largeScenario, row } from './fixtures/sessions.js'
 
 const project = input => buildProjection({ ...input, now: NOW })
 
@@ -240,4 +240,59 @@ test('interrupted and provider_unavailable cards are attention and sort determin
   assert.ok(shown.includes('stopped'))
   assert.ok(shown.includes('outage'))
   assert.ok(!shown.includes('calm'), 'a read result stays history')
+})
+
+test('VIEW_FILTERS exposes the action filter; isActionRequired lists interventions only', () => {
+  assert.ok(VIEW_FILTERS.includes('action'), 'the persisted UI validates against VIEW_FILTERS')
+  assert.equal(isActionRequired({ status: STATUS.WAITING_USER }), true)
+  assert.equal(isActionRequired({ status: STATUS.PROVIDER_UNAVAILABLE }), true)
+  assert.equal(isActionRequired({ status: STATUS.FAILED, seen: false }), true)
+  assert.equal(isActionRequired({ status: STATUS.INTERRUPTED, seen: false }), true)
+  assert.equal(isActionRequired({ status: STATUS.FAILED, seen: true }), false)
+  assert.equal(isActionRequired({ status: STATUS.INTERRUPTED, seen: true }), false)
+  assert.equal(isActionRequired({ status: STATUS.RUNNING }), false)
+  assert.equal(isActionRequired({ status: STATUS.FINISHED_UNREAD }), false)
+  assert.equal(isActionRequired({ status: STATUS.WAITING_USER, archived: true }), false)
+  assert.equal(isActionRequired(null), false)
+  // includedByFilter keeps exactly the same policy for the view layer.
+  assert.equal(includedByFilter({ status: STATUS.WAITING_USER, blank: false }, 'action', NOW), true)
+  assert.equal(includedByFilter({ status: STATUS.RUNNING, blank: false }, 'action', NOW), false)
+})
+
+test('action view keeps only waiting/failed-unseen/interrupted-unseen roots', () => {
+  const projection = project(photoScenario())
+  const defaultIds = flatten(buildBoardView(projection, { now: NOW })).map(entry => entry.node.id)
+  const actionIds = flatten(buildBoardView(projection, { now: NOW, filter: 'action' })).map(entry => entry.node.id)
+  assert.ok(actionIds.includes('asking'), 'a waiting session is an intervention')
+  assert.ok(actionIds.includes('failed-new'), 'an unseen failure is an intervention')
+  assert.ok(!actionIds.includes('dw-live'), 'a running session is not an intervention')
+  assert.ok(!actionIds.includes('unread-0'), 'an unread result is not an intervention')
+  for (const id of actionIds) assert.ok(defaultIds.includes(id), 'action is a subset of the default view')
+})
+
+test('buildBoardView query matches the linked Task Board task title when taskTitles is supplied', () => {
+  const session = row('task-session', { displayTitle: 'Deploy run', updatedAt: NOW - 1000 })
+  const projection = buildProjection({
+    list: { ids: ['task-session'], byId: { 'task-session': session }, projectionsBySession: {} },
+    statusMap: new Map(),
+    hostState: {
+      assignments: [{ id: 'a-1', sessionId: 'task-session', taskId: 't-42', status: 'running', startedAt: NOW - 5000 }],
+      turnEnd: { 'task-session': { at: NOW - 2000, kind: 'completed' } },
+      acks: {},
+      previews: {},
+    },
+    now: NOW,
+  })
+  assert.equal(projection.byId.get('task-session').taskId, 't-42')
+  // Backward compatible: without the new option the query cannot match the title.
+  const plain = buildBoardView(projection, { now: NOW, query: 'flux capacitor' })
+  assert.equal(plain.visibleCount, 0)
+  const titled = buildBoardView(projection, { now: NOW, query: 'flux capacitor', taskTitles: new Map([['t-42', 'Fix the flux capacitor']]) })
+  assert.deepEqual(flatten(titled).map(entry => entry.node.id), ['task-session'])
+  // The existing search fields keep working with the option present.
+  const byTaskId = buildBoardView(projection, { now: NOW, query: 't-42', taskTitles: new Map([['t-42', 'Fix the flux capacitor']]) })
+  assert.deepEqual(flatten(byTaskId).map(entry => entry.node.id), ['task-session'])
+  // A title indexed for another task never matches this one.
+  const unrelated = buildBoardView(projection, { now: NOW, query: 'flux', taskTitles: new Map([['other-task', 'flux capacitor']]) })
+  assert.equal(unrelated.visibleCount, 0)
 })

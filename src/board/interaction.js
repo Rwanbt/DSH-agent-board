@@ -57,6 +57,15 @@ export function createClickArbiter({
     doubleClick(id) {
       return open(id)
     },
+    /**
+     * Immediate selection (inspection), without the single-click delay. Used by
+     * the cockpit cards, whose keyboard contract is: Enter/Space = inspect, and
+     * opening a session requires the explicit "open" button.
+     */
+    select(id) {
+      cancel()
+      onSelect?.(id)
+    },
     key(id, key) {
       if (key === 'Enter') { open(id); return true }
       if (key === ' ' || key === 'Spacebar') { cancel(); onSelect?.(id); return true }
