@@ -131,6 +131,13 @@ simulated Task Board). Five real workspaces (Ravum, Ravum Flow, Unifia,
 Tonium, e2e-project), 21 real sessions, 3 real project orchestrators deduced
 from the declared session text, real Task Board `in_review` tasks.
 
+Limits of this evidence: the isolated host contains no sub-agent session (the
+scripted provider never calls the sub-agent tool), so the descendant badge and
+the sub-agent hierarchy are covered by the pure/render tests and the earlier
+GOAL 4 evidence, not by these cockpit screenshots. One real failed session is
+shown in `cockpit-1920-attention.png`; it was acknowledged later by normal use,
+which is why the other captures show 0 in "À traiter".
+
 | Screenshot | What it shows |
 | --- | --- |
 | [`cockpit-1920-light.png`](e2e/screenshots/cockpit-1920-light.png) | 1920 px, light, 5 projects, 3 real orchestrators, 6 columns |
