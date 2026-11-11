@@ -6,6 +6,17 @@
  * @module dsh-agent-board/client/ui/tree
  */
 
+function dabEntryRole(ctx, node) {
+  if (ctx.roles instanceof Map) return ctx.roles.get(node.id) ?? null
+  return null
+}
+
+function dabEntryTaskState(ctx, node) {
+  if (node.taskId === null || node.taskId === undefined) return null
+  if (ctx.taskStates instanceof Map) return ctx.taskStates.get(String(node.taskId)) ?? null
+  return null
+}
+
 function DabTreeBranch({ entry, ctx }) {
   const h = React.createElement
   const node = entry.node
@@ -25,6 +36,9 @@ function DabTreeBranch({ entry, ctx }) {
       onToggleBranch: ctx.onToggleBranch,
       onRevealHidden: ctx.onRevealHidden,
       nowBucket: ctx.nowBucket,
+      role: dabEntryRole(ctx, node),
+      taskState: dabEntryTaskState(ctx, node),
+      groupedProject: true,
     }),
     entry.children.length > 0
       ? h('ul', { className: 'dab-kids', role: 'group' }, entry.children.map(child => h(DabTreeBranch, { key: child.node.id, entry: child, ctx })))
@@ -149,6 +163,9 @@ function DabCompactProject({ project, ctx, trees }) {
         onToggleBranch: ctx.onToggleBranch,
         onRevealHidden: ctx.onRevealHidden,
         nowBucket: ctx.nowBucket,
+        role: dabEntryRole(ctx, entry.node),
+        taskState: dabEntryTaskState(ctx, entry.node),
+        groupedProject: true,
       }))))
   }))
 }
@@ -162,11 +179,24 @@ function DabProjectGroup({ project, ctx, folded, onFold, treeLimit, onMoreTrees,
   if (project.summary.running > 0) summary.push(h('span', { key: 'r', className: 'dab-counter' }, h('span', { className: 'dab-dot', 'data-tone': 'running' }), project.summary.running))
   if (project.summary.waiting > 0) summary.push(h('span', { key: 'w', className: 'dab-counter' }, h('span', { className: 'dab-dot', 'data-tone': 'waiting' }), project.summary.waiting))
   if (project.summary.unread > 0) summary.push(h('span', { key: 'u', className: 'dab-counter' }, h('span', { className: 'dab-dot', 'data-tone': 'unread' }), project.summary.unread))
+  // The declared project orchestrator, when the hierarchy projection found one.
+  // A missing orchestrator is NOT rendered here as a fake node or a warning;
+  // the hierarchy view owns the explicit gap.
+  const orchestrator = project.orchestrator
+  const orchestratorChip = orchestrator === null || orchestrator === undefined
+    ? null
+    : h('span', {
+      className: 'dab-project-orch',
+      title: `${dabT('orchestratorLabel')} : ${orchestrator.name}${orchestrator.role ? ` (${orchestrator.role})` : ''}`,
+    },
+    dabMascot(h, { role: orchestrator.role, name: orchestrator.name, status: orchestrator.status, size: 18, variant: 'compact', decorative: true }),
+    h('span', { className: 'dab-project-orch-name' }, orchestrator.name))
   return h('section', { className: 'dab-project', 'data-project-id': project.id, 'aria-label': title },
     h('button', { type: 'button', className: 'dab-project-head', 'aria-expanded': !folded, onClick: () => onFold(project.id) },
       h('span', { className: 'dab-caret', 'aria-hidden': 'true' }, folded ? '▸' : '▾'),
       h('span', null, title),
       h('span', { className: 'dab-project-count' }, `${project.visibleAgents} agent${project.visibleAgents > 1 ? 's' : ''}`),
+      orchestratorChip,
       summary),
     folded
       ? null

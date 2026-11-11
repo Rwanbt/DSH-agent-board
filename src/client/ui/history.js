@@ -8,7 +8,7 @@
 
 const DAB_HISTORY_PAGE = 30
 
-function DabHistoryDrawer({ projection, project, selectedId, arbiter, onClose }) {
+function DabHistoryDrawer({ projection, project, selectedId, arbiter, onClose, roles, taskStates }) {
   const h = React.createElement
   const [query, setQuery] = React.useState('')
   const [limit, setLimit] = React.useState(DAB_HISTORY_PAGE)
@@ -17,6 +17,15 @@ function DabHistoryDrawer({ projection, project, selectedId, arbiter, onClose })
   React.useEffect(() => { setLimit(DAB_HISTORY_PAGE) }, [query, project])
   const page = React.useMemo(() => historyPage(projection, { query, project, offset: 0, limit }), [projection, query, project, limit])
   const onKey = event => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }
+  const roleOf = node => {
+    const resolved = roles instanceof Map ? roles.get(node.id) : null
+    const text = resolved?.roleLabel ?? (typeof node.role === 'string' && node.role !== '' ? node.role : null)
+    return text
+  }
+  const taskStateOf = node => {
+    if (node.taskId === null || node.taskId === undefined || !(taskStates instanceof Map)) return null
+    return typeof dabTaskStateLabel === 'function' ? dabTaskStateLabel(taskStates.get(String(node.taskId))) : null
+  }
   return h('div', { className: 'dab-drawer', role: 'dialog', 'aria-modal': 'false', 'aria-label': dabT('historyTitle'), onKeyDown: onKey },
     h('div', { className: 'dab-drawer-head' },
       h('div', { className: 'dab-bar' },
@@ -30,7 +39,7 @@ function DabHistoryDrawer({ projection, project, selectedId, arbiter, onClose })
       page.items.map(node => h('li', {
         key: node.id, className: 'dab-hist', tabIndex: 0, role: 'button', 'data-node-id': node.id,
         'data-selected': selectedId === node.id ? 'true' : 'false',
-        'aria-label': `${node.title} — ${dabStatusLabel(node.status)}`,
+        'aria-label': [node.title, dabStatusLabel(node.status), roleOf(node)].filter(Boolean).join(' — '),
         onClick: event => arbiter.click(node.id, event.detail),
         onDoubleClick: () => arbiter.doubleClick(node.id),
         onKeyDown: event => { if (event.target === event.currentTarget && arbiter.key(node.id, event.key)) event.preventDefault() },
@@ -40,6 +49,8 @@ function DabHistoryDrawer({ projection, project, selectedId, arbiter, onClose })
         h('span', { className: 'dab-hist-title', title: node.title }, node.title),
         h('span', { className: 'dab-muted' }, [
           node.projectId === 'unassigned' ? dabT('unassigned') : node.projectTitle,
+          roleOf(node),
+          taskStateOf(node),
           node.children.length > 0 ? `${node.children.length} ${dabT('children')}` : null,
           node.archived ? dabT('archived') : null,
           dabFormatAge(node.updatedAt),

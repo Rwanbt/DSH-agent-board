@@ -120,8 +120,11 @@ const DAB_CSS = `
 .dab-card[data-calm="true"] .dab-name { color: var(--dsw-alias-label-secondary); }
 .dab-card-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .dab-name { flex: 1; min-width: 0; font-weight: 500; font-size: 13px; line-height: 18px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
-.dab-meta { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; line-height: 16px; color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; padding-left: 22px; }
-.dab-meta > span { overflow: hidden; text-overflow: ellipsis; }
+.dab-meta { display: flex; align-items: center; flex-wrap: wrap; align-content: flex-start; gap: 6px; min-width: 0; font-size: 12px; line-height: 16px; color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; padding-left: 22px; }
+/* The work row (task id, Task Board state, age) wraps freely: no max-height, so a
+   wrapped line is never clipped mid-glyph; each item ellipsizes on its own. */
+.dab-meta-work { row-gap: 2px; }
+.dab-meta > span { overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 100%; }
 .dab-meta .dab-sep::before { content: "·"; }
 .dab-wait { font-size: 12px; color: var(--dsw-alias-state-warn-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 22px; }
 .dab-err { font-size: 12px; color: var(--dsw-alias-state-error-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 22px; }
@@ -229,6 +232,141 @@ const DAB_CSS = `
   .dab-inspector { position: absolute; left: 8px; right: 8px; bottom: 8px; width: auto; max-width: none; max-height: 64%; margin: 0; z-index: 5; box-shadow: var(--dsw-elevation-prominent); }
   .dab-pill, .dab-btn { min-height: 32px; }
   .dab-icon-btn { width: 32px; height: 32px; }
+}
+
+/* ---------- identity (GOAL 4): mascot, resolved role, project, task chip */
+.dab-card-main { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.dab-card-mascot { flex: none; display: inline-flex; align-items: center; justify-content: center; }
+.dab-card-mascot .dab-avatar, .dab-band-mascot .dab-avatar, .dab-hier-orch .dab-avatar, .dab-project-orch .dab-avatar { flex: none; }
+.dab-card-ident { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* Inside the identity column the rows align with the title, not with the mascot. */
+.dab-card-ident > .dab-meta, .dab-card-ident > .dab-wait, .dab-card-ident > .dab-err, .dab-card-ident > .dab-card-foot { padding-left: 0; }
+.dab-role-chip { display: inline-flex; align-items: center; max-width: 100%; min-width: 0; padding: 0 6px; border-radius: 999px; corner-shape: round;
+  background: var(--dab-chip-fill); color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 16px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-role-chip[data-resolution="generic"] { background: transparent; box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary)); }
+/* Family chip: identity context only, never a status colour. */
+.dab-family-chip { display: inline-flex; align-items: center; max-width: 100%; min-width: 0; padding: 0 6px; border-radius: 999px; corner-shape: round;
+  background: transparent; box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary));
+  color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-project-line { color: var(--dsw-alias-label-secondary); }
+.dab-task-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 0 6px; border-radius: 999px; corner-shape: round;
+  background: var(--dab-chip-fill); color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 16px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.dab-task-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--dsw-alias-label-secondary); }
+.dab-task-chip[data-tone="active"] .dab-task-dot { background: var(--dsw-alias-state-info-primary, var(--dsw-alias-brand-primary)); }
+.dab-task-chip[data-tone="waiting"] .dab-task-dot, .dab-task-chip[data-tone="reviewing"] .dab-task-dot,
+.dab-task-chip[data-tone="interrupted"] .dab-task-dot { background: var(--dsw-alias-state-warn-primary); }
+.dab-task-chip[data-tone="blocked"] .dab-task-dot { background: var(--dsw-alias-state-error-primary); }
+.dab-task-chip[data-tone="unread"] .dab-task-dot { background: var(--dsw-alias-state-success-primary); }
+.dab-task-chip[data-tone="done"] .dab-task-dot { background: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
+.dab-task-chip[data-tone="idle"] .dab-task-dot, .dab-task-chip[data-tone="gone"] .dab-task-dot { background: var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary)); }
+.dab-activity { margin-left: auto; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* ---------- mascot (ui/avatar.js owns the markup, this file owns the paint) */
+.dab-avatar { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: var(--dab-avatar-size, 40px); height: var(--dab-avatar-size, 40px); border-radius: 50%; }
+.dab-avatar[data-selected="true"] { box-shadow: 0 0 0 2px var(--dsw-alias-brand-primary); }
+.dab-avatar-img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.dab-avatar-fallback { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; border-radius: 50%; background: var(--dab-chip-fill); }
+/* Status dot: SEPARATE from the mascot; colour comes from the status tone, the
+   role colour never expresses a status. */
+.dab-avatar-dot { position: absolute; right: 0; bottom: 0; box-sizing: content-box; border-radius: 50%;
+  width: max(7px, calc(var(--dab-avatar-size, 40px) * 0.23)); height: max(7px, calc(var(--dab-avatar-size, 40px) * 0.23));
+  border: 2px solid var(--dab-card-fill); background: var(--dsw-alias-label-secondary); }
+.dab-avatar-dot[data-tone="active"] { background: var(--dsw-alias-state-success-primary); }
+.dab-avatar-dot[data-tone="planning"] { background: var(--dsw-alias-state-info-primary, var(--dsw-alias-brand-primary)); }
+.dab-avatar-dot[data-tone="waiting"], .dab-avatar-dot[data-tone="reviewing"],
+.dab-avatar-dot[data-tone="interrupted"] { background: var(--dsw-alias-state-warn-primary); }
+.dab-avatar-dot[data-tone="blocked"] { background: var(--dsw-alias-state-error-primary); }
+.dab-avatar-dot[data-tone="unread"] { background: var(--dsw-alias-state-success-primary); }
+.dab-avatar-dot[data-tone="done"] { background: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
+.dab-avatar-dot[data-tone="idle"] { background: var(--dsw-alias-label-secondary); }
+.dab-avatar-dot[data-tone="gone"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--dsw-alias-label-secondary); }
+.dab-avatar-task { position: absolute; left: 50%; bottom: -7px; transform: translateX(-50%); padding: 0 4px; border-radius: 999px;
+  font-size: 9px; line-height: 12px; white-space: nowrap; background: var(--dab-chip-fill); color: var(--dsw-alias-label-secondary); }
+.dab-project-orch { display: inline-flex; align-items: center; gap: 4px; min-width: 0; font-size: 12px; font-weight: 400; color: var(--dsw-alias-label-secondary); }
+.dab-project-orch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+.dab-dot[data-tone="idle"] { background: var(--dsw-alias-label-secondary); }
+
+/* ---------- supervision band (host supervision LAYER, not an agent) */
+.dab-band { flex: none; margin: 0 0 10px; border-radius: var(--dsw-radius-lg); background: var(--dab-card-fill); overflow: hidden; }
+.dab-band-head { position: relative; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 54px; padding: 8px 30px 8px 12px; border: 0; background: none;
+  color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: var(--dsw-radius-lg); }
+.dab-band-head > .dab-caret { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 12px; flex: none; color: var(--dsw-alias-label-secondary); }
+.dab-band-head:focus-visible, .dab-hier-project-head:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+.dab-band-mascot { flex: none; display: inline-flex; align-items: center; }
+.dab-band-ident { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dab-band-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; font-weight: 500; }
+.dab-band-sub { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dab-band-counters { flex: 0 1 auto; display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.dab-band-body { display: flex; flex-direction: column; gap: 8px; padding: 2px 12px 12px; min-width: 0; }
+/* The body is always in the DOM (aria-controls must resolve); collapsed = hidden. */
+.dab-band-body[hidden] { display: none; }
+.dab-band-notice { padding: 6px 8px; border-radius: var(--dsw-radius-sm); font-size: 12px;
+  color: var(--dsw-alias-state-warn-primary); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 9%, transparent); }
+.dab-band-agent { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.dab-band-section { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dab-band-list { max-height: 180px; overflow: auto; }
+.dab-band-list li { align-items: flex-start; }
+.dab-sup-status { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dab-sup-status[data-status="active"] .dab-dot { background: var(--dsw-alias-brand-primary); }
+.dab-sup-status[data-status="blocked"] .dab-dot { background: var(--dsw-alias-state-error-primary); }
+.dab-sup-status[data-status="unknown"] .dab-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--dsw-alias-label-secondary); }
+.dab-tag[data-tone="proposal"] { color: var(--dsw-alias-state-warn-primary); }
+.dab-cap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 14px; }
+.dab-cap-row { display: grid; grid-template-columns: minmax(96px, auto) auto; gap: 0 8px; align-items: baseline; padding: 3px 0;
+  border-top: 1px solid var(--dsw-alias-border-l3, transparent); font-size: 12px; }
+.dab-cap-label { color: var(--dsw-alias-label-primary); }
+.dab-cap-value { font-weight: 500; }
+.dab-cap-value[data-available="true"] { color: var(--dsw-alias-label-secondary); }
+.dab-cap-value[data-available="false"] { color: var(--dsw-alias-state-warn-primary); }
+.dab-cap-reason { grid-column: 1 / -1; font-size: 11px; line-height: 15px; color: var(--dsw-alias-label-secondary); }
+.dab-cap-reason-label { opacity: .75; }
+
+/* ---------- hierarchy view: workspace -> projects -> teams of cards */
+.dab-hier { display: flex; flex-direction: column; gap: 10px; }
+.dab-hier-ws { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--dsw-radius-lg); background: var(--dab-card-fill); }
+.dab-hier-ws-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.dab-hier-ws-mascot { flex: none; display: inline-flex; align-items: center; }
+.dab-hier-ws-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dab-hier-ws-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; font-weight: 500; }
+.dab-hier-ws-sub { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dab-hier-projects { display: flex; flex-direction: column; gap: 10px; }
+.dab-hier-project { border-radius: var(--dsw-radius-lg); background: var(--dab-card-fill); padding: 4px 6px 8px; }
+.dab-hier-project-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; padding: 6px; border: 0; border-radius: var(--dsw-radius-md);
+  background: none; color: inherit; font: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: pointer; }
+.dab-hier-project-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42%; }
+.dab-hier-orch { display: inline-flex; align-items: center; gap: 4px; min-width: 0; font-size: 12px; font-weight: 400; color: var(--dsw-alias-label-secondary); }
+.dab-hier-orch[data-gap="true"] { color: var(--dsw-alias-state-warn-primary); }
+.dab-gap-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1.5px currentColor; }
+.dab-hier-counts { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dab-hier-project-head > .dab-hier-counts { margin-left: auto; }
+.dab-hier-body { display: flex; flex-direction: column; gap: 8px; padding: 2px 4px; }
+.dab-hier-team { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dab-hier-team-title { font-size: 12px; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-hier-team-note { font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.dab-hier-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px; }
+.dab-hier-cards .dab-card { width: auto; }
+.dab-hier-notes { padding: 6px 8px; border-radius: var(--dsw-radius-md); background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent); }
+
+/* ---------- narrow: stacked band, single-column hierarchy (no connector lines) */
+@container dab (max-width: 720px) {
+  .dab-band-head { flex-wrap: wrap; align-items: flex-start; min-height: 0; }
+  /* The chevron stays on the FIRST line (absolute), never under the counters. */
+  .dab-band-head > .dab-caret { top: 10px; transform: none; }
+  .dab-band-counters { width: 100%; justify-content: flex-start; }
+  .dab-band-body { padding: 2px 10px 10px; }
+  .dab-cap-grid { grid-template-columns: 1fr; }
+  .dab-hier-project-head { align-items: flex-start; }
+  .dab-hier-project-title { max-width: 100%; white-space: normal; }
+  .dab-hier-project-head > .dab-hier-counts { margin-left: 0; }
+  .dab-hier-cards { grid-template-columns: 1fr; }
+  .dab-project-orch-name { max-width: 110px; }
+}
+@container dab (max-width: 420px) {
+  .dab-hier-ws-head { align-items: flex-start; }
+  .dab-band-counters { gap: 8px; }
+  .dab-hier-ws-sub { gap: 6px; }
 }
 `
 

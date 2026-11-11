@@ -15,6 +15,32 @@ const DAB_ICONS = {
   play: ['M8 5l11 7-11 7z'],
 }
 
+/** Existing agent statuses offered by the additive status filter. */
+const DAB_FILTER_STATUSES = Object.freeze([
+  'running', 'waiting_user', 'recovering', 'interrupted', 'provider_unavailable',
+  'finished_unread', 'finished_read', 'failed', 'idle', 'unknown', 'unavailable',
+])
+
+/** Task Board workflow states (a SEPARATE vocabulary from agent statuses). */
+const DAB_FILTER_TASK_STATES = Object.freeze(['todo', 'in_progress', 'in_review', 'blocked', 'done', 'canceled', 'archived'])
+
+const DAB_GENERIC_ROLE_FILTER = typeof GENERIC_ROLE_FILTER === 'string' ? GENERIC_ROLE_FILTER : 'generic'
+
+function dabRoleFilterOptions() {
+  const options = [['', dabT('roleAll')]]
+  if (typeof AGENT_ROLES === 'object' && AGENT_ROLES !== null && typeof AGENT_ROLE_IDS !== 'undefined') {
+    for (const roleId of AGENT_ROLE_IDS) options.push([roleId, AGENT_ROLES[roleId]?.label ?? roleId])
+  }
+  options.push([DAB_GENERIC_ROLE_FILTER, dabT('roleGeneric')])
+  return options
+}
+
+function dabHierarchyFiltersActive(ui) {
+  return (typeof ui.roleFilter === 'string' && ui.roleFilter !== '')
+    || (typeof ui.statusFilter === 'string' && ui.statusFilter !== '')
+    || (typeof ui.taskStateFilter === 'string' && ui.taskStateFilter !== '')
+}
+
 function dabIcon(name) {
   const h = React.createElement
   return h('svg', { className: 'dab-ico', viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
@@ -63,7 +89,7 @@ function DabSelect({ label, value, options, onChange, title, disabled, style }) 
 
 function DabToolbar(props) {
   const h = React.createElement
-  const { counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh, ui, setUi, projects, onHistory, narrow } = props
+  const { counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh, ui, setUi, projects, onHistory, narrow, taskStateAvailable, taskStateUnavailableReason } = props
   const counter = (tone, value, label) => value > 0
     ? h('span', { className: 'dab-counter', key: tone, title: `${value} ${label}`, 'aria-label': `${value} ${label}` }, h('span', { className: 'dab-dot', 'data-tone': tone }), h('b', null, value))
     : null
@@ -78,7 +104,7 @@ function DabToolbar(props) {
   const counters = h('span', { className: 'dab-counters' },
     counter('running', counts.running, dabT('running')),
     counter('waiting', counts.waiting, dabT('waiting')),
-    counter('unread', counts.unread, dabT('unread')),
+    counter('unread', counts.unread, dabCountNoun(counts.unread, 'unreadSingular', 'unreadPlural')),
     counter('failed', counts.failed, dabT('failed')),
     narrow ? null : h('span', { className: 'dab-muted', title: `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}` }, `${visibleCount}/${counts.total}`))
 
@@ -89,6 +115,31 @@ function DabToolbar(props) {
     [['attention', dabT('filterAttention')], ['recent', dabT('filterRecent')], ['all', dabT('filterAll')]], value => setUi({ filter: value }))
   const viewSelect = select(dabT('viewLabel'), ui.compact ? 'compact' : 'tree',
     [['tree', dabT('treeView')], ['compact', dabT('compact')]], value => setUi({ compact: value === 'compact' }))
+  // Additive filters (GOAL 4): role, agent status, view mode and — only when the
+  // Task Board integration reports it available — the linked Task Board state.
+  const viewModeSelect = select(dabT('viewModeLabel'), ui.viewMode === 'hierarchy' ? 'hierarchy' : 'projects',
+    [['projects', dabT('viewProjects')], ['hierarchy', dabT('viewHierarchy')]], value => setUi({ viewMode: value }))
+  const roleSelect = select(dabT('role'), typeof ui.roleFilter === 'string' ? ui.roleFilter : '',
+    dabRoleFilterOptions(), value => setUi({ roleFilter: value === '' ? null : value }))
+  const statusSelect = select(dabT('statusFilterLabel'), typeof ui.statusFilter === 'string' ? ui.statusFilter : '',
+    [['', dabT('statusAll')], ...DAB_FILTER_STATUSES.map(status => [status, dabStatusLabel(status)])],
+    value => setUi({ statusFilter: value === '' ? null : value }))
+  // The Task Board state filter is shown only when the integration reports it
+  // available. When it is not, the control stays visible but DISABLED with the
+  // real reason: a reachable ledger that has not been read yet must not look
+  // like an absent feature.
+  const taskStateSelect = taskStateAvailable === true
+    ? select(dabT('taskStateFilterLabel'), typeof ui.taskStateFilter === 'string' ? ui.taskStateFilter : '',
+      [['', dabT('taskStateAll')], ...DAB_FILTER_TASK_STATES.map(state => [state, dabTaskStateLabel(state) ?? state])],
+      value => setUi({ taskStateFilter: value === '' ? null : value }))
+    : select(dabT('taskStateFilterLabel'), '', [['', dabT('taskStateUnavailable')]], () => {},
+      { disabled: true, title: taskStateUnavailableReason ?? dabT('taskStateUnavailable') })
+  const clearFilters = dabHierarchyFiltersActive(ui)
+    ? h('button', {
+      type: 'button', className: 'dab-btn', 'data-variant': 'ghost',
+      onClick: () => setUi({ roleFilter: null, statusFilter: null, taskStateFilter: null }),
+    }, dabT('clearFilters'))
+    : null
   const modeSelect = select(dabT('orchestratorLabel'), mode,
     ['off', 'supervised', 'autonomous'].map(value => [value, `${dabT('orchestratorLabel')} : ${dabT(value)}`]), onMode,
     { disabled: busy || hostDown || secondary, title: hostDown ? dabT('orchestratorDown') : notice })
@@ -113,7 +164,9 @@ function DabToolbar(props) {
       h('div', { className: 'dab-bar', style: { flexWrap: 'nowrap' } }, search),
       menuOpen
         ? h('div', { className: 'dab-mobile-menu' },
-          h('div', { className: 'dab-bar' }, filterSelect, viewSelect),
+          h('div', { className: 'dab-bar' }, viewModeSelect, filterSelect),
+          h('div', { className: 'dab-bar' }, roleSelect, statusSelect),
+          h('div', { className: 'dab-bar' }, viewSelect, taskStateSelect, clearFilters),
           h('div', { className: 'dab-bar' }, modeSelect, stopOrResume, h('span', { className: 'dab-grow' }), state),
           h('div', { className: alert ? 'dab-alert' : 'dab-notice' }, hostDown ? dabT('orchestratorDown') : notice))
         : null,
@@ -124,9 +177,11 @@ function DabToolbar(props) {
     h('div', { className: 'dab-bar', style: { flexWrap: 'nowrap' } },
       counters,
       h('div', { className: 'dab-search-wrap' }, search),
-      projectSelect, filterSelect, viewSelect,
+      projectSelect, filterSelect,
       h('span', { className: 'dab-grow' }),
       alertDot, modeSelect, stopOrResume, state, history, refresh),
+    h('div', { className: 'dab-bar' },
+      viewModeSelect, roleSelect, statusSelect, taskStateSelect, viewSelect, clearFilters),
   )
 }
 function DabExecutionList({ host, onApprove, onReject }) {
