@@ -92,6 +92,31 @@ const MODES = Object.freeze({
 
 const MODE_VALUES = Object.freeze(Object.values(MODES))
 
+/**
+ * Super Orchestrator supervision limits (additive policy slice).
+ *
+ * The supervision layer is the host policy engine, NOT a second agent runtime:
+ * it observes real facts, proposes local actions and gates board-owned
+ * delegations. `enabled:false` disables the whole layer (no delegation gate, no
+ * recommendations, capabilities unavailable) while the existing authorization
+ * gates keep working exactly as before.
+ *
+ * `emblem` is a visual variant of the SAME `super_orchestrator` role (crown or
+ * bolt), never a new role.
+ */
+const SUPERVISION_DEFAULT = Object.freeze({
+  enabled: true,
+  emblem: 'crown',
+  // Board-launched assignments in flight (starting/running/recovering).
+  maxConcurrentDelegations: 2,
+  // Real delegation starts inside the sliding hour.
+  maxDelegationsPerHour: 6,
+  // A delegated launch may not delegate again (depth 0 = a root delegation).
+  maxDelegationDepth: 1,
+  // A subtask in another project/workspace is a cross-project delegation.
+  allowCrossProjectDelegation: false,
+})
+
 /** Default limits. Every one is configurable through the board API. */
 const DEFAULT_POLICY = Object.freeze({
   mode: MODES.OFF,
@@ -138,6 +163,8 @@ const DEFAULT_POLICY = Object.freeze({
   // that read fails (network), the default is to suppress the recovery; an
   // operator may opt into the optimistic path explicitly.
   allowUnverifiedHandoff: false,
+  // Super Orchestrator supervision layer (pure policy; see SUPERVISION_DEFAULT).
+  supervision: SUPERVISION_DEFAULT,
 })
 
 const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
@@ -179,6 +206,36 @@ function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     allowUnverifiedHandoff: input.allowUnverifiedHandoff === undefined
       ? fallback.allowUnverifiedHandoff === true
       : input.allowUnverifiedHandoff === true,
+    // Backward compatible: a persisted state.json written before the
+    // supervision layer has no `supervision` key and receives the defaults.
+    supervision: normalizeSupervision(input.supervision, fallback.supervision ?? SUPERVISION_DEFAULT),
+  }
+}
+
+const EMBLEMS = Object.freeze(['crown', 'bolt'])
+
+/**
+ * Normalize the additive supervision policy slice.
+ *
+ * Unknown keys are dropped (never copied into the journal), every numeric limit
+ * is clamped to a documented bound, and a missing value falls back to the
+ * supplied layer (so a partial `POST /policy` keeps the operator's other
+ * choices). A board built before this field reads as the defaults.
+ */
+function normalizeSupervision(input, fallback = SUPERVISION_DEFAULT) {
+  const source = input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}
+  const previous = fallback !== null && typeof fallback === 'object' && !Array.isArray(fallback)
+    ? fallback
+    : SUPERVISION_DEFAULT
+  return {
+    enabled: source.enabled === undefined ? previous.enabled !== false : source.enabled === true,
+    emblem: EMBLEMS.includes(source.emblem) ? source.emblem : (EMBLEMS.includes(previous.emblem) ? previous.emblem : SUPERVISION_DEFAULT.emblem),
+    maxConcurrentDelegations: clampInt(source.maxConcurrentDelegations, 0, 16, previous.maxConcurrentDelegations ?? SUPERVISION_DEFAULT.maxConcurrentDelegations),
+    maxDelegationsPerHour: clampInt(source.maxDelegationsPerHour, 0, 200, previous.maxDelegationsPerHour ?? SUPERVISION_DEFAULT.maxDelegationsPerHour),
+    maxDelegationDepth: clampInt(source.maxDelegationDepth, 0, 8, previous.maxDelegationDepth ?? SUPERVISION_DEFAULT.maxDelegationDepth),
+    allowCrossProjectDelegation: source.allowCrossProjectDelegation === undefined
+      ? previous.allowCrossProjectDelegation === true
+      : source.allowCrossProjectDelegation === true,
   }
 }
 
@@ -332,6 +389,377 @@ function clampInt(value, min, max, fallback) {
   const number = Number(value)
   if (!Number.isFinite(number)) return fallback
   return Math.min(max, Math.max(min, Math.trunc(number)))
+}
+
+
+// ---- src/contracts/agent-roles.js ----
+/**
+ * Agent identity: the 15 approved mascot roles, their exact palette, the
+ * declared-name aliases and the mapping from the board's EXISTING runtime
+ * statuses to a status tone that is displayed separately from the role colour.
+ *
+ * Pure data + pure functions: imported by the host (supervision) and included in
+ * the browser bundle. It never touches the DOM, never reads an asset and never
+ * draws a mascot; `src/client/ui/avatar.js` owns the rendering.
+ *
+ * Invariants:
+ *   - a role colour is identity, never status; a blocked Worker stays green;
+ *   - a model/provider never implies a role (two agents may share one model and
+ *     have different roles); the role comes from a DECLARED role/name only;
+ *   - an unknown role resolves to `roleId:null` (generic identity) and never to a
+ *     guessed mascot; the original string is preserved verbatim in `raw`.
+ *
+ * @module dsh-agent-board/contracts/agent-roles
+ */
+
+/** The 15 approved roles, exactly as published in the kit's `roles.json`. */
+const AGENT_ROLES = Object.freeze({
+  super_orchestrator: Object.freeze({
+    id: 'super_orchestrator',
+    label: 'Super Orchestrator',
+    family: 'governance',
+    shape: 'triangle',
+    color: '#7043DB',
+    gradient: Object.freeze(['#A77CF7', '#7043DB', '#5324B4']),
+    scope: 'workspace',
+    emblem: 'crown',
+    description: 'Coordonne plusieurs projets et leurs orchestrateurs',
+  }),
+  orchestrator: Object.freeze({
+    id: 'orchestrator', label: 'Orchestrator', family: 'governance', shape: 'triangle',
+    color: '#8D55EA', gradient: Object.freeze(['#B47CFA', '#8D55EA', '#7643D7']), scope: 'project',
+    description: 'Coordonne et pilote',
+  }),
+  architect: Object.freeze({
+    id: 'architect', label: 'Architect', family: 'governance', shape: 'triangle',
+    color: '#895AED', gradient: Object.freeze(['#A575F9', '#895AED', '#7346D7']), scope: 'project',
+    description: 'Conçoit et structure',
+  }),
+  knowledge_manager: Object.freeze({
+    id: 'knowledge_manager', label: 'Knowledge Manager', family: 'governance', shape: 'triangle',
+    color: '#A572F3', gradient: Object.freeze(['#C698FB', '#A572F3', '#8F5DE5']), scope: 'project',
+    description: 'Conserve et diffuse',
+  }),
+  planner: Object.freeze({
+    id: 'planner', label: 'Planner', family: 'coordination', shape: 'square',
+    color: '#228FFD', gradient: Object.freeze(['#3CB2FD', '#228FFD', '#0F79F3']), scope: 'project',
+    description: 'Planifie et organise',
+  }),
+  dispatcher: Object.freeze({
+    id: 'dispatcher', label: 'Dispatcher', family: 'coordination', shape: 'square',
+    color: '#03B4E2', gradient: Object.freeze(['#1DD5F2', '#03B4E2', '#0099D0']), scope: 'project',
+    description: 'Distribue les tâches',
+  }),
+  observer: Object.freeze({
+    id: 'observer', label: 'Observer', family: 'coordination', shape: 'square',
+    color: '#5F92C7', gradient: Object.freeze(['#7EB0DF', '#5F92C7', '#4F7EB0']), scope: 'project',
+    description: 'Surveille et alerte',
+  }),
+  worker: Object.freeze({
+    id: 'worker', label: 'Worker', family: 'execution', shape: 'cloud',
+    color: '#36CB5E', gradient: Object.freeze(['#56E079', '#36CB5E', '#22B94B']), scope: 'project',
+    description: 'Exécute et produit',
+  }),
+  researcher: Object.freeze({
+    id: 'researcher', label: 'Researcher', family: 'execution', shape: 'cloud',
+    color: '#25C5A6', gradient: Object.freeze(['#4EE0C1', '#25C5A6', '#0EAF8E']), scope: 'project',
+    description: 'Explore et recherche',
+  }),
+  integrator: Object.freeze({
+    id: 'integrator', label: 'Integrator', family: 'execution', shape: 'cloud',
+    color: '#12AD86', gradient: Object.freeze(['#36D0A5', '#12AD86', '#049271']), scope: 'project',
+    description: 'Assemble et consolide',
+  }),
+  optimizer: Object.freeze({
+    id: 'optimizer', label: 'Optimizer', family: 'execution', shape: 'cloud',
+    color: '#8ECF10', gradient: Object.freeze(['#A7E039', '#8ECF10', '#7DC000']), scope: 'project',
+    description: 'Améliore et optimise',
+  }),
+  reviewer: Object.freeze({
+    id: 'reviewer', label: 'Reviewer', family: 'quality', shape: 'circle',
+    color: '#FB8819', gradient: Object.freeze(['#FEA838', '#FB8819', '#EC7003']), scope: 'project',
+    description: 'Relit et évalue',
+  }),
+  auditor: Object.freeze({
+    id: 'auditor', label: 'Auditor', family: 'quality', shape: 'circle',
+    color: '#EB7E25', gradient: Object.freeze(['#FDA249', '#EB7E25', '#DD6917']), scope: 'project',
+    description: 'Audite et contrôle',
+  }),
+  verifier: Object.freeze({
+    id: 'verifier', label: 'Verifier', family: 'validation', shape: 'diamond',
+    color: '#FEBF0D', gradient: Object.freeze(['#FEDB3B', '#FEBF0D', '#FEAE02']), scope: 'project',
+    description: 'Teste et valide',
+  }),
+  guardian: Object.freeze({
+    id: 'guardian', label: 'Guardian', family: 'protection', shape: 'hexagon',
+    color: '#FE6560', gradient: Object.freeze(['#FD8782', '#FE6560', '#F14B49']), scope: 'project',
+    description: 'Sécurise et applique les règles',
+  }),
+})
+
+const AGENT_ROLE_IDS = Object.freeze(Object.keys(AGENT_ROLES))
+
+/** Families keep the six approved silhouettes recognisable as camaïeux. */
+const AGENT_FAMILIES = Object.freeze({
+  governance: Object.freeze({ label: 'Gouvernance / connaissances', shape: 'triangle' }),
+  coordination: Object.freeze({ label: 'Coordination / monitoring', shape: 'square' }),
+  execution: Object.freeze({ label: 'Production / optimisation', shape: 'cloud' }),
+  quality: Object.freeze({ label: 'Revue / audit', shape: 'circle' }),
+  validation: Object.freeze({ label: 'Validation / tests', shape: 'diamond' }),
+  protection: Object.freeze({ label: 'Protection / règles', shape: 'hexagon' }),
+})
+
+/**
+ * Declared-name aliases only: a role/name an agent or the runtime ALREADY
+ * declares. Keys are normalized (lower case, `_`/space/hyphen collapsed to
+ * `-`); a value is the role id it names. Never add a behavioural alias (e.g.
+ * "spawned a child", "used model X"): that would invent a role.
+ */
+const AGENT_ROLE_ALIASES = Object.freeze({
+  'super-orchestrator': 'super_orchestrator',
+  'workspace-orchestrator': 'super_orchestrator',
+  supervisor: 'orchestrator',
+  orchestrator: 'orchestrator',
+  lead: 'orchestrator',
+  'team-lead': 'orchestrator',
+  coordinator: 'orchestrator',
+  architect: 'architect',
+  architecture: 'architect',
+  arch: 'architect',
+  'knowledge-manager': 'knowledge_manager',
+  knowledge: 'knowledge_manager',
+  memory: 'knowledge_manager',
+  librarian: 'knowledge_manager',
+  planner: 'planner',
+  planning: 'planner',
+  planificateur: 'planner',
+  dispatcher: 'dispatcher',
+  dispatch: 'dispatcher',
+  observer: 'observer',
+  monitor: 'observer',
+  watcher: 'observer',
+  worker: 'worker',
+  dev: 'worker',
+  developer: 'worker',
+  implementer: 'worker',
+  builder: 'worker',
+  researcher: 'researcher',
+  research: 'researcher',
+  scout: 'researcher',
+  explorer: 'researcher',
+  integrator: 'integrator',
+  integration: 'integrator',
+  optimizer: 'optimizer',
+  optimisation: 'optimizer',
+  optimization: 'optimizer',
+  perf: 'optimizer',
+  reviewer: 'reviewer',
+  review: 'reviewer',
+  'code-review': 'reviewer',
+  auditor: 'auditor',
+  audit: 'auditor',
+  verifier: 'verifier',
+  verification: 'verifier',
+  qa: 'verifier',
+  tester: 'verifier',
+  test: 'verifier',
+  guardian: 'guardian',
+  security: 'guardian',
+  sentry: 'guardian',
+  // Declared French display form; accent/case are removed by normalization.
+  verificateur: 'verifier',
+})
+
+/**
+ * Status tones: the kit's six (`active`, `planning`, `waiting`, `reviewing`,
+ * `blocked`, `idle`) plus four documented extensions that name an EXISTING
+ * plugin status the six cannot distinguish. They colour the status dot only.
+ */
+const AGENT_TONES = Object.freeze({
+  active: Object.freeze({ color: '#1DC766', labelKey: 'statusRunning' }),
+  planning: Object.freeze({ color: '#258FF5', labelKey: 'statusRecovering' }),
+  waiting: Object.freeze({ color: '#F3BE13', labelKey: 'statusWaiting' }),
+  reviewing: Object.freeze({ color: '#F48C1A', labelKey: 'taskInReview' }),
+  blocked: Object.freeze({ color: '#F04453', labelKey: 'statusFailed' }),
+  idle: Object.freeze({ color: '#7E8B9C', labelKey: 'statusIdle' }),
+  // Extensions (documented; NOT roles): an unread result, a read result, an
+  // agent the runtime no longer exposes, and a launch that was interrupted.
+  unread: Object.freeze({ color: '#2EA043', labelKey: 'statusUnread' }),
+  done: Object.freeze({ color: '#5F92C7', labelKey: 'statusRead' }),
+  gone: Object.freeze({ color: '#8993A3', labelKey: 'statusUnknown' }),
+  interrupted: Object.freeze({ color: '#B7791F', labelKey: 'statusInterrupted' }),
+})
+
+/**
+ * The board's EXISTING statuses (contracts/model.js STATUS) -> tone. No new
+ * status is introduced; only a display tone that never recolours the mascot:
+ *
+ *   running              -> active
+ *   waiting_user         -> waiting
+ *   recovering           -> planning
+ *   interrupted          -> interrupted   (extension)
+ *   provider_unavailable -> blocked
+ *   failed               -> blocked
+ *   finished_unread      -> unread        (extension)
+ *   finished_read        -> done          (extension)
+ *   idle                 -> idle
+ *   unknown              -> gone          (extension)
+ *   unavailable          -> gone          (extension)
+ *
+ * The four extensions exist because the kit's six tones cannot distinguish an
+ * unread result from a read one, or a live agent from one the runtime no longer
+ * exposes. They are statuses, never roles.
+ */
+const AGENT_STATUS_TONE = Object.freeze({
+  running: 'active',
+  waiting_user: 'waiting',
+  recovering: 'planning',
+  interrupted: 'interrupted',
+  provider_unavailable: 'blocked',
+  failed: 'blocked',
+  finished_unread: 'unread',
+  finished_read: 'done',
+  idle: 'idle',
+  unknown: 'gone',
+  unavailable: 'gone',
+})
+
+/**
+ * Task Board workflow states are a SEPARATE vocabulary from agent statuses:
+ * "in review" belongs to a linked task, never to an agent and never to the
+ * permanent Reviewer role. Only the five workflow states the board consumes are
+ * mapped; a task state that is not in this table yields `taskTone:null` (no
+ * chip), never a guessed tone.
+ */
+const AGENT_TASK_STATE_TONE = Object.freeze({
+  todo: 'idle',
+  in_progress: 'active',
+  in_review: 'reviewing',
+  blocked: 'blocked',
+  done: 'done',
+})
+
+const TASK_STATE_TONES = Object.freeze(Object.keys(AGENT_TASK_STATE_TONE))
+
+/** Normalize a declared role/name for alias lookup (never mutates the input data). */
+function normalizeAgentRoleKey(value) {
+  if (typeof value !== 'string') return ''
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+}
+
+/**
+ * Resolve a DECLARED role/name to an approved role.
+ *
+ * @param {string|{role?:string,name?:string,id?:string}|null|undefined} value
+ * @returns {{ roleId: string|null, source: 'explicit'|'alias'|'generic', raw: string|null, role: object|null }}
+ */
+function dabResolveAgentRole(value) {
+  const candidates = []
+  if (typeof value === 'string') candidates.push(value)
+  else if (value !== null && typeof value === 'object') {
+    if (typeof value.role === 'string') candidates.push(value.role)
+    if (typeof value.name === 'string') candidates.push(value.name)
+  }
+  const raw = candidates.find(candidate => typeof candidate === 'string' && candidate.trim() !== '') ?? null
+  if (raw === null) return { roleId: null, source: 'generic', raw: null, role: null }
+  // Exact role id first (case-insensitive): role ids use snake_case, while the
+  // alias key normalizes `_` to `-`, so this must run before the alias lookup.
+  const direct = raw.trim().toLowerCase()
+  if (Object.prototype.hasOwnProperty.call(AGENT_ROLES, direct)) {
+    return { roleId: direct, source: 'explicit', raw, role: AGENT_ROLES[direct] }
+  }
+  const key = normalizeAgentRoleKey(raw)
+  const alias = AGENT_ROLE_ALIASES[key]
+  if (alias !== undefined && AGENT_ROLES[alias] !== undefined) {
+    return { roleId: alias, source: 'alias', raw, role: AGENT_ROLES[alias] }
+  }
+  return { roleId: null, source: 'generic', raw, role: null }
+}
+
+/** Full mascot from 48px up; compact below. */
+function dabAvatarVariantForSize(size) {
+  const value = Number(size)
+  if (!Number.isFinite(value)) return 'full'
+  return value < 48 ? 'compact' : 'full'
+}
+
+/**
+ * Pure avatar view model. The data-URI source map is injected so this module
+ * stays asset-free and unit-testable; the component passes `AGENT_BOT_ASSETS`.
+ *
+ * `altParts` is the accessible-name composition: an array of
+ * `{ text }` (literal, already declared: the agent name and the role label) and
+ * `{ labelKey }` (a translation key: the status/task tone label). The avatar
+ * translates the keys through `dabT` and never introduces a label of its own.
+ *
+ * @param {object} input
+ * @param {string|object|null} [input.role] declared role/name
+ * @param {string|null} [input.name] display name (never used to infer a role)
+ * @param {string|null} [input.status] one of the board's EXISTING statuses
+ * @param {string|null} [input.taskState] Task Board workflow state (separate)
+ * @param {number} [input.size]
+ * @param {'full'|'compact'|'auto'} [input.variant]
+ * @param {'crown'|'bolt'} [input.emblem]
+ * @param {object|null} [input.sources] { [roleId]: { full, compact } }
+ * @returns {object}
+ */
+function dabAgentAvatarModel(input = {}) {
+  const size = Number.isFinite(Number(input.size)) ? Math.max(8, Math.min(256, Math.trunc(Number(input.size)))) : 40
+  const variant = input.variant === 'full' || input.variant === 'compact' ? input.variant : dabAvatarVariantForSize(size)
+  const resolved = dabResolveAgentRole(input.role)
+  const role = resolved.role
+  const emblem = role?.id === 'super_orchestrator'
+    ? (input.emblem === 'bolt' ? 'bolt' : 'crown')
+    : null
+  // The bolt emblem is a separate graphic identity (`super_orchestrator_bolt`),
+  // never a recolour: look it up first and only fall back to the crown drawing
+  // when the kit has no bolt asset.
+  let src = null
+  const sources = input.sources
+  if (role !== null && sources !== null && typeof sources === 'object') {
+    const sourceKey = emblem === 'bolt' ? 'super_orchestrator_bolt' : role.id
+    src = sources[sourceKey]?.[variant] ?? null
+    if (src === null && sourceKey !== role.id) src = sources[role.id]?.[variant] ?? null
+  }
+  const status = typeof input.status === 'string' ? input.status : null
+  const statusKnown = status !== null && AGENT_STATUS_TONE[status] !== undefined
+  const tone = statusKnown ? AGENT_STATUS_TONE[status] : 'idle'
+  const taskState = typeof input.taskState === 'string' ? input.taskState : null
+  const taskTone = taskState !== null && AGENT_TASK_STATE_TONE[taskState] !== undefined ? AGENT_TASK_STATE_TONE[taskState] : null
+  const altParts = []
+  if (typeof input.name === 'string' && input.name.trim() !== '') altParts.push({ text: input.name.trim() })
+  if (role !== null) altParts.push({ text: role.label })
+  if (statusKnown) altParts.push({ labelKey: AGENT_TONES[tone].labelKey })
+  if (taskTone !== null) altParts.push({ labelKey: AGENT_TONES[taskTone].labelKey })
+  return {
+    roleId: resolved.roleId,
+    roleLabel: role?.label ?? null,
+    family: role?.family ?? null,
+    shape: role?.shape ?? null,
+    color: role?.color ?? null,
+    gradient: role?.gradient ?? null,
+    resolution: resolved.source,
+    rawRole: resolved.raw,
+    variant,
+    size,
+    src,
+    emblem,
+    status,
+    tone,
+    toneColor: AGENT_TONES[tone]?.color ?? AGENT_TONES.idle.color,
+    toneLabelKey: AGENT_TONES[tone]?.labelKey ?? 'statusIdle',
+    taskState,
+    taskTone,
+    taskToneColor: taskTone === null ? null : (AGENT_TONES[taskTone]?.color ?? null),
+    taskToneLabelKey: taskTone === null ? null : (AGENT_TONES[taskTone]?.labelKey ?? null),
+    altParts,
+  }
 }
 
 
@@ -1352,6 +1780,916 @@ function compactRows(projection) {
 }
 
 
+// ---- src/supervisor/super-orchestrator.js ----
+/**
+ * Super Orchestrator supervision projection (pure).
+ *
+ * This module turns the facts the host already owns into the supervision
+ * payload the panel renders. It is PURE: no `node:` API, no `ctx`, no I/O, no
+ * timer. It is also concatenated into the browser bundle, so it only depends on
+ * names defined by `contracts/model.js` and `contracts/agent-roles.js` (both
+ * earlier in the build order) — nothing from the host.
+ *
+ * Honesty rules (the reason this module exists):
+ *   - the workspace node is a synthetic supervision LAYER (policy engine), NOT
+ *     an AI agent: `synthetic:true`, `role:'super_orchestrator'`. A real agent
+ *     whose DECLARED role resolves to `super_orchestrator` may be exposed as
+ *     `workspace.agent`; otherwise it is `null` (never fabricated);
+ *   - a project orchestrator is only an agent whose declared role resolves to
+ *     `orchestrator`; otherwise `null` (a visible gap, not a fake node);
+ *   - the workspace status comes from real facts only: mode `off` => `idle`
+ *     (observing, never `active`), Stop or a secondary instance => `blocked`,
+ *     otherwise `active`. No invented runtime state;
+ *   - blocks come from real facts only (failed/interrupted agents, provider
+ *     cooldown, Task Board blocked tasks, unsatisfied cross-project
+ *     prerequisites) and every block carries its `source` and `at`;
+ *   - recommendations are LOCAL PROPOSALS: `status:'proposed'`, `applies:false`.
+ *     This module never writes the Task Board;
+ *   - a capability that does not exist is reported `unavailable` / `proposal_only`
+ *     with a reason, never simulated.
+ *
+ * @module dsh-agent-board/supervisor/super-orchestrator
+ */
+
+
+/** Shape version of the supervision payload. */
+const SUPERVISION_VERSION = 1
+/** Synthetic workspace id: the host supervision layer, not an agent. */
+const SUPERVISION_WORKSPACE_ID = 'workspace:supervision'
+/** Bounded published event history (newest kept). */
+const MAX_SUPERVISION_EVENTS = 50
+/** Bounds so one large ledger cannot inflate the SSE/HTTP frame. */
+const MAX_SUPERVISION_BLOCKS = 100
+const MAX_SUPERVISION_RECOMMENDATIONS = 50
+const MAX_SUPERVISION_TASKS = 200
+const MAX_SUPERVISION_DEPENDENCIES = 100
+
+const SUPERVISION_HOUR_MS = 3_600_000
+const SUPERVISION_ACTIVE_ASSIGNMENT_STATUSES = Object.freeze(['starting', 'running', 'recovering'])
+const SUPERVISION_BLOCKING_AGENT_STATUSES = Object.freeze([STATUS.FAILED, STATUS.INTERRUPTED, STATUS.PROVIDER_UNAVAILABLE])
+const SUPERVISION_RECOMMENDATION_KIND_ORDER = Object.freeze({ delegate: 0, unblock: 1, priority: 2, reassign: 3 })
+/** The Task Board workflow state that satisfies a prerequisite (human-confirmed). */
+const SUPERVISION_DONE_TASK_STATUS = 'done'
+
+/**
+ * Build the supervision payload for one host state.
+ *
+ * @param {object} input
+ * @param {object|null} input.projection  `buildProjection()` output (real agent nodes)
+ * @param {object|null} input.hostState   durable host facts (mode, policy, assignments, proposals…)
+ * @param {object|null} [input.taskboard] Task Board coordination read model (contract D) or null
+ * @param {number} [input.now]
+ * @returns {object} the supervision payload (plain JSON)
+ */
+function buildSupervision(input = {}) {
+  const source = supervisionIsPlainObject(input) ? input : {}
+  const now = Number.isFinite(Number(source.now)) ? Number(source.now) : Date.now()
+  const hostState = supervisionIsPlainObject(source.hostState) ? source.hostState : {}
+  const policy = supervisionIsPlainObject(hostState.policy) ? hostState.policy : {}
+  const config = normalizeSupervision(policy.supervision ?? {}, DEFAULT_POLICY.supervision)
+  const nodes = Array.isArray(source.projection?.nodes) ? source.projection.nodes.filter(node => supervisionIsPlainObject(node)) : []
+  const assignments = Array.isArray(hostState.assignments) ? hostState.assignments.filter(entry => supervisionIsPlainObject(entry)) : []
+  const proposals = Array.isArray(hostState.proposals) ? hostState.proposals.filter(entry => supervisionIsPlainObject(entry)) : []
+  const taskboard = supervisionNormalizeTaskboard(source.taskboard)
+  const mode = typeof hostState.mode === 'string' ? hostState.mode : null
+
+  const assignmentsById = new Map()
+  for (const assignment of assignments) {
+    if (typeof assignment.id === 'string' && assignment.id !== '') assignmentsById.set(assignment.id, assignment)
+  }
+
+  const roleCache = new Map()
+  const roleOf = node => {
+    const declared = typeof node.role === 'string' && node.role !== '' ? node.role : null
+    if (roleCache.has(declared)) return roleCache.get(declared)
+    const resolved = declared === null ? { roleId: null, source: 'generic', raw: null } : dabResolveAgentRole(declared)
+    const value = {
+      roleId: typeof resolved?.roleId === 'string' && resolved.roleId !== '' ? resolved.roleId : null,
+      source: resolved?.source === 'explicit' || resolved?.source === 'alias' ? resolved.source : 'generic',
+      raw: typeof resolved?.raw === 'string' ? resolved.raw : declared,
+      label: typeof resolved?.role?.label === 'string' ? resolved.role.label : null,
+    }
+    roleCache.set(declared, value)
+    return value
+  }
+
+  const agents = nodes.map(node => supervisionAgentOf(node, assignmentsById, roleOf))
+  const agentsById = new Map(agents.map(agent => [agent.id, agent]))
+
+  const crossProjectDependencies = supervisionBuildCrossProjectDependencies({
+    tasks: taskboard.tasks,
+    dependencies: taskboard.dependencies,
+    now,
+  })
+  const blocks = supervisionBuildBlocks({ agents, taskboard, crossProjectDependencies, now })
+
+  const delegation = {
+    depthLimit: config.maxDelegationDepth,
+    concurrentLimit: config.maxConcurrentDelegations,
+    hourlyLimit: config.maxDelegationsPerHour,
+    allowCrossProjectDelegation: config.allowCrossProjectDelegation,
+    usedThisHour: supervisionLaunchesWithinHour(assignments, now),
+    // Board-launched assignments in flight: the durable assignment facts, not a
+    // projection count (a launch that has no observable node yet still counts).
+    inFlight: assignments.filter(assignment => SUPERVISION_ACTIVE_ASSIGNMENT_STATUSES.includes(assignment?.status)).length,
+  }
+
+  const workspaceStatus = supervisionStatusOf({ mode, stoppedAt: hostState.stoppedAt, instance: hostState.instance, enabled: config.enabled })
+
+  const projects = supervisionBuildProjects({
+    nodes,
+    agents,
+    agentsById,
+    blocks,
+    crossProjectDependencies,
+    roleOf,
+  })
+
+  const capabilities = supervisionCapabilities({ config, taskboard })
+  const recommendations = config.enabled === true && taskboard.available === true
+    ? supervisionBuildRecommendations({
+      tasks: taskboard.tasks,
+      assignments,
+      proposals,
+      policy,
+      config,
+      inFlight: delegation.inFlight,
+      usedThisHour: delegation.usedThisHour,
+      now,
+    })
+    : []
+
+  const counts = {
+    projects: projects.length,
+    agents: agents.length,
+    running: agents.filter(agent => agent.status === STATUS.RUNNING).length,
+    waiting: agents.filter(agent => agent.status === STATUS.WAITING_USER).length,
+    unread: agents.filter(agent => agent.status === STATUS.FINISHED_UNREAD).length,
+    failed: agents.filter(agent => agent.status === STATUS.FAILED).length,
+    interrupted: agents.filter(agent => agent.status === STATUS.INTERRUPTED).length,
+    blocked: blocks.length,
+  }
+
+  return {
+    version: SUPERVISION_VERSION,
+    at: now,
+    workspace: {
+      id: SUPERVISION_WORKSPACE_ID,
+      // A supervision LAYER, explicitly labelled: not an AI agent.
+      synthetic: true,
+      role: 'super_orchestrator',
+      emblem: config.emblem,
+      mode,
+      status: workspaceStatus.status,
+      reason: workspaceStatus.reason,
+      // A real agent may carry that role; the layer never invents one.
+      agent: supervisionWorkspaceAgentOf(agents, roleOf, nodes),
+      counts,
+      delegation,
+    },
+    projects,
+    blocks,
+    crossProjectDependencies,
+    recommendations,
+    capabilities: capabilities.values,
+    capabilityReasons: capabilities.reasons,
+    limits: {
+      enabled: config.enabled,
+      depthLimit: config.maxDelegationDepth,
+      concurrentLimit: config.maxConcurrentDelegations,
+      hourlyLimit: config.maxDelegationsPerHour,
+      allowCrossProjectDelegation: config.allowCrossProjectDelegation,
+      bounded: {
+        events: MAX_SUPERVISION_EVENTS,
+        blocks: MAX_SUPERVISION_BLOCKS,
+        recommendations: MAX_SUPERVISION_RECOMMENDATIONS,
+        tasks: MAX_SUPERVISION_TASKS,
+        crossProjectDependencies: MAX_SUPERVISION_DEPENDENCIES,
+      },
+    },
+    taskboard,
+  }
+}
+
+/**
+ * Diff two supervision payloads into REAL transition events only.
+ *
+ * Rules:
+ *   - an entity absent from the previous payload establishes the baseline: no
+ *     event is emitted for merely being observed for the first time (that would
+ *     fabricate an `agent.started` after a projection gap);
+ *   - every event is a real diff of a durable/observed field;
+ *   - stable id `${type}|${entityId}|${at}`: the same fact always yields the same
+ *     id, so consumers may de-duplicate and tolerate order;
+ *   - bounded to the newest {@link MAX_SUPERVISION_EVENTS}.
+ *
+ * Types: `agent.status.changed`, `agent.started`, `agent.task.assigned`,
+ * `agent.blocked`, `agent.delegated`, `agent.task.completed`,
+ * `project.status.changed`, `task.status.changed`, `task.assignee.changed`.
+ *
+ * @param {object|null} previous previous buildSupervision() payload
+ * @param {object|null} next     new buildSupervision() payload
+ * @param {number} [at]          transition timestamp (epoch ms)
+ * @returns {object[]} bounded events
+ */
+function supervisionEvents(previous, next, at = Date.now()) {
+  if (!supervisionIsPlainObject(previous) || !supervisionIsPlainObject(next)) return []
+  const time = Number.isFinite(Number(at)) ? Number(at) : Date.now()
+  const out = []
+  const beforeAgents = supervisionAgentIndex(previous)
+  const afterAgents = supervisionAgentIndex(next)
+  for (const id of [...afterAgents.keys()].sort()) {
+    const before = beforeAgents.get(id)
+    const current = afterAgents.get(id)
+    if (before === undefined || current === undefined) continue
+    if (before.status !== current.status) {
+      out.push(supervisionEventOf('agent.status.changed', id, time, {
+        from: before.status ?? null,
+        to: current.status ?? null,
+        reason: current.statusReason ?? null,
+      }))
+      if (current.status === STATUS.RUNNING && before.status !== STATUS.RUNNING) {
+        out.push(supervisionEventOf('agent.started', id, time, { taskId: current.taskId ?? null, assignmentId: current.assignmentId ?? null }))
+      }
+      if (SUPERVISION_BLOCKING_AGENT_STATUSES.includes(current.status) && !SUPERVISION_BLOCKING_AGENT_STATUSES.includes(before.status)) {
+        out.push(supervisionEventOf('agent.blocked', id, time, { status: current.status, reason: current.statusReason ?? null }))
+      }
+    }
+    if ((before.taskId ?? null) !== (current.taskId ?? null) && (current.taskId ?? null) !== null) {
+      out.push(supervisionEventOf('agent.task.assigned', id, time, { from: before.taskId ?? null, to: current.taskId }))
+    }
+    if (before.assignmentStatus !== 'done' && current.assignmentStatus === 'done') {
+      out.push(supervisionEventOf('agent.task.completed', id, time, { taskId: current.taskId ?? null, assignmentId: current.assignmentId ?? null }))
+    }
+    if ((before.assignmentId ?? null) !== (current.assignmentId ?? null)
+      && (current.assignmentId ?? null) !== null
+      && current.delegation !== null && current.delegation !== undefined
+      // A handoff CONTINUES a delegation (same depth, `requestedBy` handoff): it
+      // is not a new delegation and must not be reported as one.
+      && current.delegation.requestedBy !== 'board:handoff'
+      && current.delegation.depth > (before.delegation?.depth ?? -1)) {
+      out.push(supervisionEventOf('agent.delegated', id, time, {
+        assignmentId: current.assignmentId,
+        taskId: current.taskId ?? null,
+        depth: current.delegation.depth,
+        rootTaskId: current.delegation.rootTaskId ?? null,
+      }))
+    }
+  }
+
+  const beforeProjects = supervisionProjectIndex(previous)
+  const afterProjects = supervisionProjectIndex(next)
+  for (const id of [...afterProjects.keys()].sort()) {
+    const before = beforeProjects.get(id)
+    const current = afterProjects.get(id)
+    if (before === undefined || current === undefined) continue
+    if (before.status !== current.status) {
+      out.push(supervisionEventOf('project.status.changed', id, time, {
+        from: before.status ?? null,
+        to: current.status ?? null,
+        reason: current.reason ?? null,
+      }))
+    }
+  }
+
+  const beforeTasks = supervisionTaskIndex(previous)
+  const afterTasks = supervisionTaskIndex(next)
+  for (const id of [...afterTasks.keys()].sort()) {
+    const before = beforeTasks.get(id)
+    const current = afterTasks.get(id)
+    if (before === undefined || current === undefined) continue
+    if (before.status !== current.status) {
+      out.push(supervisionEventOf('task.status.changed', id, time, { from: before.status ?? null, to: current.status ?? null }))
+    }
+    if ((before.assignee ?? null) !== (current.assignee ?? null)) {
+      out.push(supervisionEventOf('task.assignee.changed', id, time, { from: before.assignee ?? null, to: current.assignee ?? null }))
+    }
+  }
+
+  return out.slice(-MAX_SUPERVISION_EVENTS)
+}
+
+/**
+ * Merge a new event batch into the published history.
+ *
+ * De-duplicates by the stable id (the FIRST occurrence is kept, so the order in
+ * which facts were observed never changes an id's position) and keeps the
+ * newest `limit` events.
+ *
+ * @param {object[]} existing
+ * @param {object[]} incoming
+ * @param {number} [limit]
+ * @returns {object[]}
+ */
+function mergeSupervisionEvents(existing, incoming, limit = MAX_SUPERVISION_EVENTS) {
+  const bound = Math.max(1, Number.isFinite(Number(limit)) ? Math.trunc(Number(limit)) : MAX_SUPERVISION_EVENTS)
+  const out = []
+  const seen = new Set()
+  for (const event of [...(Array.isArray(existing) ? existing : []), ...(Array.isArray(incoming) ? incoming : [])]) {
+    if (!supervisionIsPlainObject(event) || typeof event.id !== 'string' || seen.has(event.id)) continue
+    seen.add(event.id)
+    out.push(event)
+  }
+  return out.length > bound ? out.slice(-bound) : out
+}
+
+// --------------------------------------------------------------- internals
+
+function supervisionIsPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function supervisionEventOf(type, entityId, at, detail = {}) {
+  return { id: `${type}|${entityId}|${at}`, type, entityId, at, ...detail }
+}
+
+/** Compact agent facts, derived only from the projection node (+ its assignment). */
+function supervisionAgentOf(node, assignmentsById, roleOf) {
+  const assignment = typeof node.assignmentId === 'string' ? assignmentsById.get(node.assignmentId) ?? null : null
+  const role = roleOf(node)
+  const delegation = supervisionDelegationOf(assignment)
+  return {
+    id: String(node.id),
+    name: typeof node.title === 'string' && node.title !== '' ? node.title : String(node.id),
+    role: role.roleId,
+    roleLabel: role.label,
+    declaredRole: role.raw,
+    roleSource: role.source,
+    status: typeof node.status === 'string' ? node.status : STATUS.UNKNOWN,
+    statusReason: typeof node.statusReason === 'string' ? node.statusReason : null,
+    statusSource: typeof node.statusSource === 'string' ? node.statusSource : null,
+    statusAt: Number.isFinite(Number(node.statusAt)) ? Number(node.statusAt) : null,
+    projectId: typeof node.projectId === 'string' ? node.projectId : 'unassigned',
+    projectTitle: typeof node.projectTitle === 'string' ? node.projectTitle : null,
+    parentId: typeof node.parentId === 'string' ? node.parentId : null,
+    taskId: typeof node.taskId === 'string' ? node.taskId : null,
+    assignmentId: typeof node.assignmentId === 'string' ? node.assignmentId : null,
+    assignmentStatus: typeof node.assignmentStatus === 'string'
+      ? node.assignmentStatus
+      : (typeof assignment?.status === 'string' ? assignment.status : null),
+    delegation,
+    healthUntil: Number.isFinite(Number(node.healthUntil)) ? Number(node.healthUntil) : null,
+    updatedAt: Number.isFinite(Number(node.updatedAt)) ? Number(node.updatedAt) : null,
+  }
+}
+
+/** The recorded delegation facts, or null. Never inferred. */
+function supervisionDelegationOf(assignment) {
+  const delegation = assignment?.delegation
+  if (!supervisionIsPlainObject(delegation)) return null
+  const depth = Number(delegation.depth)
+  if (!Number.isFinite(depth) || depth < 0) return null
+  return {
+    depth: Math.trunc(depth),
+    rootTaskId: typeof delegation.rootTaskId === 'string' ? delegation.rootTaskId : null,
+    parentAssignmentId: typeof delegation.parentAssignmentId === 'string' ? delegation.parentAssignmentId : null,
+    projectId: typeof delegation.projectId === 'string' ? delegation.projectId : null,
+    requestedBy: typeof delegation.requestedBy === 'string' ? delegation.requestedBy : null,
+  }
+}
+
+/** The declared super-orchestrator agent, or null (never a fabricated node). */
+function supervisionWorkspaceAgentOf(agents, roleOf, nodes) {
+  const nodeById = new Map(nodes.map(node => [String(node.id), node]))
+  const candidates = agents.filter(agent => agent.role === 'super_orchestrator')
+  if (candidates.length === 0) return null
+  const ranked = candidates.map(agent => {
+    const node = nodeById.get(agent.id)
+    const root = node !== undefined && (node.parentId === null || node.parentId === undefined || node.orphan === true || node.parentCycle === true)
+    return { agent, key: [root ? 0 : 1, -(Number(node?.updatedAt) || 0), agent.id] }
+  })
+  ranked.sort((left, right) => supervisionCompareKeys(left.key, right.key))
+  const best = ranked[0].agent
+  return {
+    id: best.id,
+    name: best.name,
+    role: 'super_orchestrator',
+    declaredRole: best.declaredRole,
+    status: best.status,
+    projectId: best.projectId,
+    statusReason: best.statusReason,
+  }
+}
+
+function supervisionCompareKeys(left, right) {
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] < right[index]) return -1
+    if (left[index] > right[index]) return 1
+  }
+  return 0
+}
+
+/** Workspace status from real facts only. */
+function supervisionStatusOf({ mode, stoppedAt, instance, enabled }) {
+  if (supervisionIsPlainObject(instance) && instance.primary === false) {
+    return { status: 'blocked', reason: 'secondary_instance' }
+  }
+  if (stoppedAt !== null && stoppedAt !== undefined) {
+    return { status: 'blocked', reason: 'stopped_by_operator' }
+  }
+  if (mode === 'off') {
+    // Mode off means OBSERVING: the layer is never reported active.
+    return { status: 'idle', reason: 'mode_off' }
+  }
+  if (enabled !== true) return { status: 'idle', reason: 'supervision_disabled' }
+  return { status: 'active', reason: 'supervision_active' }
+}
+
+function supervisionBuildProjects({ nodes, agents, agentsById, blocks, crossProjectDependencies, roleOf }) {
+  const byProject = new Map()
+  for (const node of nodes) {
+    const id = typeof node.projectId === 'string' ? node.projectId : 'unassigned'
+    if (!byProject.has(id)) {
+      byProject.set(id, {
+        id,
+        title: typeof node.projectTitle === 'string' && node.projectTitle !== '' ? node.projectTitle : id,
+        nodes: [],
+      })
+    }
+    byProject.get(id).nodes.push(node)
+  }
+  const projects = []
+  for (const group of [...byProject.values()].sort((left, right) => left.title.localeCompare(right.title) || left.id.localeCompare(right.id))) {
+    const projectAgents = group.nodes.map(node => agentsById.get(String(node.id))).filter(agent => agent !== undefined)
+    const projectBlocks = blocks.filter(block => block.projectId === group.id)
+    const counts = {
+      agents: projectAgents.length,
+      running: projectAgents.filter(agent => agent.status === STATUS.RUNNING).length,
+      waiting: projectAgents.filter(agent => agent.status === STATUS.WAITING_USER).length,
+      unread: projectAgents.filter(agent => agent.status === STATUS.FINISHED_UNREAD).length,
+      failed: projectAgents.filter(agent => agent.status === STATUS.FAILED).length,
+      interrupted: projectAgents.filter(agent => agent.status === STATUS.INTERRUPTED).length,
+      blocked: projectBlocks.length,
+    }
+    // Project status is a derived label over real counts/blocks, with a reason.
+    const status = projectBlocks.length > 0
+      ? 'blocked'
+      : (counts.running > 0 ? 'active' : 'idle')
+    const reason = projectBlocks.length > 0
+      ? `blocked:${projectBlocks[0].kind}`
+      : (counts.running > 0 ? 'agents_running' : 'no_active_agent')
+    projects.push({
+      id: group.id,
+      title: group.title,
+      status,
+      reason,
+      orchestrator: supervisionProjectOrchestratorOf(group.nodes, roleOf),
+      agents: projectAgents,
+      counts,
+      blocks: projectBlocks,
+      crossProjectDependencies: crossProjectDependencies.filter(dependency => (
+        dependency.fromProjectId === group.id || dependency.toProjectId === group.id
+      )),
+    })
+  }
+  return projects
+}
+
+/** The project orchestrator: only a DECLARED `orchestrator`, deterministic. */
+function supervisionProjectOrchestratorOf(nodes, roleOf) {
+  const candidates = nodes
+    .filter(node => roleOf(node).roleId === 'orchestrator')
+    .map(node => {
+      const root = node.parentId === null || node.parentId === undefined || node.orphan === true || node.parentCycle === true
+      return { node, key: [root ? 0 : 1, -(Number(node.updatedAt) || 0), String(node.id)] }
+    })
+    .sort((left, right) => supervisionCompareKeys(left.key, right.key))
+  if (candidates.length === 0) return null
+  const best = candidates[0].node
+  return {
+    id: String(best.id),
+    name: typeof best.title === 'string' && best.title !== '' ? best.title : String(best.id),
+    role: 'orchestrator',
+    declaredRole: typeof best.role === 'string' ? best.role : null,
+    status: typeof best.status === 'string' ? best.status : STATUS.UNKNOWN,
+    projectId: typeof best.projectId === 'string' ? best.projectId : 'unassigned',
+  }
+}
+
+/**
+ * Blocks from real facts only. Every entry names its source and timestamp:
+ *   `agent_failed`, `agent_interrupted`, `provider_cooldown`, `task_blocked`,
+ *   `cross_project_prerequisite`.
+ */
+function supervisionBuildBlocks({ agents, taskboard, crossProjectDependencies, now }) {
+  const blocks = []
+  for (const agent of agents) {
+    if (agent.status === STATUS.FAILED) {
+      blocks.push({
+        id: `agent_failed|${agent.projectId}|${agent.id}`,
+        kind: 'agent_failed',
+        projectId: agent.projectId,
+        agentId: agent.id,
+        reason: agent.statusReason ?? 'agent_failed',
+        at: agent.statusAt ?? now,
+        source: agent.statusSource ?? 'projection',
+      })
+    } else if (agent.status === STATUS.INTERRUPTED) {
+      blocks.push({
+        id: `agent_interrupted|${agent.projectId}|${agent.id}`,
+        kind: 'agent_interrupted',
+        projectId: agent.projectId,
+        agentId: agent.id,
+        reason: agent.statusReason ?? 'agent_interrupted',
+        at: agent.statusAt ?? now,
+        source: agent.statusSource ?? 'assignment',
+      })
+    } else if (agent.status === STATUS.PROVIDER_UNAVAILABLE) {
+      blocks.push({
+        id: `provider_cooldown|${agent.projectId}|${agent.id}`,
+        kind: 'provider_cooldown',
+        projectId: agent.projectId,
+        agentId: agent.id,
+        reason: agent.statusReason ?? 'provider_unavailable',
+        at: agent.statusAt ?? now,
+        source: 'host_health',
+        until: agent.healthUntil,
+      })
+    }
+  }
+  for (const task of taskboard.tasks) {
+    const projectId = supervisionProjectIdOf(task)
+    if (task.status === 'blocked' || task.blocked === true) {
+      blocks.push({
+        id: `task_blocked|${projectId}|${task.id}`,
+        kind: 'task_blocked',
+        projectId,
+        taskId: task.id,
+        reason: 'task_board_blocked',
+        at: task.updatedAt ?? now,
+        source: 'taskboard',
+      })
+    }
+  }
+  for (const dependency of crossProjectDependencies) {
+    if (dependency.satisfied === true) continue
+    const task = taskboard.tasks.find(entry => entry.id === dependency.fromTaskId)
+    if (task === undefined || supervisionTaskStatusOf(task) === SUPERVISION_DONE_TASK_STATUS) continue
+    blocks.push({
+      id: `cross_project_prerequisite|${dependency.fromTaskId}|${dependency.toTaskId}`,
+      kind: 'cross_project_prerequisite',
+      projectId: dependency.fromProjectId,
+      taskId: dependency.fromTaskId,
+      blockedByTaskId: dependency.toTaskId,
+      reason: `cross_project_prerequisite_pending:${dependency.toTaskId}`,
+      at: dependency.at,
+      source: 'taskboard',
+    })
+  }
+  const unique = new Map()
+  for (const block of blocks) unique.set(block.id, block)
+  return [...unique.values()]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .slice(0, MAX_SUPERVISION_BLOCKS)
+}
+
+/** Cross-project `dependsOn` edges: `from` depends on `to` (real Task Board data). */
+function supervisionBuildCrossProjectDependencies({ tasks, dependencies, now }) {
+  const byId = new Map(tasks.map(task => [task.id, task]))
+  const out = []
+  // The Task Board read model (contract D) already resolves the cross-project
+  // flag; when it supplies the edges, use ITS verdict instead of re-deriving it.
+  const declaredEdges = Array.isArray(dependencies)
+    ? dependencies.filter(edge => supervisionIsPlainObject(edge) && edge.crossProject === true)
+    : null
+  if (declaredEdges !== null) {
+    for (const edge of declaredEdges) {
+      const task = byId.get(edge.taskId)
+      const dependency = byId.get(edge.dependsOnTaskId)
+      if (task === undefined || dependency === undefined) continue
+      out.push(supervisionDependencyEdgeOf(task, dependency, now))
+    }
+  } else {
+    for (const task of tasks) {
+      for (const dependencyId of task.dependsOn) {
+        const dependency = byId.get(dependencyId)
+        if (dependency === undefined) continue
+        if (!supervisionProjectsDiffer(task, dependency)) continue
+        out.push(supervisionDependencyEdgeOf(task, dependency, now))
+      }
+    }
+  }
+  const unique = new Map()
+  for (const dependency of out) unique.set(dependency.id, dependency)
+  return [...unique.values()]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .slice(0, MAX_SUPERVISION_DEPENDENCIES)
+}
+
+function supervisionDependencyEdgeOf(task, dependency, now) {
+  return {
+    id: `taskboard|${task.id}|${dependency.id}`,
+    fromTaskId: task.id,
+    fromProjectId: supervisionProjectIdOf(task),
+    toTaskId: dependency.id,
+    toProjectId: supervisionProjectIdOf(dependency),
+    source: 'taskboard',
+    satisfied: supervisionTaskStatusOf(dependency) === SUPERVISION_DONE_TASK_STATUS,
+    at: Math.max(Number(task.updatedAt) || 0, Number(dependency.updatedAt) || 0) || now,
+  }
+}
+
+function supervisionProjectIdOf(task) {
+  if (typeof task?.projectId === 'string' && task.projectId !== '') return task.projectId
+  if (typeof task?.workspaceId === 'string' && task.workspaceId !== '') return task.workspaceId
+  return 'unknown'
+}
+
+function supervisionProjectsDiffer(left, right) {
+  const leftProject = typeof left?.projectId === 'string' && left.projectId !== '' ? left.projectId : null
+  const rightProject = typeof right?.projectId === 'string' && right.projectId !== '' ? right.projectId : null
+  if (leftProject !== null && rightProject !== null) return leftProject !== rightProject
+  const leftWorkspace = typeof left?.workspaceId === 'string' ? left.workspaceId : ''
+  const rightWorkspace = typeof right?.workspaceId === 'string' ? right.workspaceId : ''
+  if (leftWorkspace !== '' && rightWorkspace !== '') return leftWorkspace !== rightWorkspace
+  return false
+}
+
+function supervisionTaskStatusOf(task) {
+  if (task?.trashedAt !== undefined && task?.trashedAt !== null) return 'trashed'
+  return typeof task?.status === 'string' ? task.status : 'unknown'
+}
+
+function supervisionDependenciesOf(task) {
+  return Array.isArray(task?.dependsOn) ? task.dependsOn.map(String) : []
+}
+
+/**
+ * Readiness, mirroring `orchestrator/dag.js#readinessOf` (which is not part of
+ * the browser bundle). A test pins both implementations against the same
+ * fixtures; the rule is: status `todo` and every prerequisite `done` (never
+ * `in_review`).
+ */
+function supervisionReadinessOf(task, tasksById) {
+  const status = supervisionTaskStatusOf(task)
+  if (status === 'trashed') return { ready: false, reason: 'trashed' }
+  if (status !== 'todo') return { ready: false, reason: `status:${status}` }
+  const blockers = []
+  const missing = []
+  for (const dependencyId of supervisionDependenciesOf(task)) {
+    const dependency = tasksById.get(dependencyId)
+    if (dependency === undefined) {
+      missing.push(dependencyId)
+      continue
+    }
+    if (supervisionTaskStatusOf(dependency) !== SUPERVISION_DONE_TASK_STATUS) blockers.push(dependencyId)
+  }
+  if (missing.length > 0) return { ready: false, reason: `unknown_prerequisite:${missing.join(',')}` }
+  if (blockers.length > 0) return { ready: false, reason: `blocked_by:${blockers.join(',')}` }
+  return { ready: true, reason: 'ready' }
+}
+
+function supervisionLaunchesWithinHour(assignments, now) {
+  const cutoff = now - SUPERVISION_HOUR_MS
+  return assignments
+    .filter(assignment => assignment?.previousSessionId === null || assignment?.previousSessionId === undefined)
+    .map(assignment => Number(assignment?.startedAt))
+    .filter(at => Number.isFinite(at) && at > cutoff).length
+}
+
+/**
+ * Recommendation proposals. Pure and local: `applies:false`, `status:'proposed'`.
+ * Nothing here writes the Task Board.
+ */
+function supervisionBuildRecommendations({ tasks, assignments, proposals, policy, config, inFlight, usedThisHour }) {
+  const out = []
+  const tasksById = new Map(tasks.map(task => [task.id, task]))
+  const activeTaskIds = new Set(assignments
+    .filter(assignment => SUPERVISION_ACTIVE_ASSIGNMENT_STATUSES.includes(assignment?.status))
+    .map(assignment => String(assignment?.taskId)))
+  const pendingProposalTaskIds = new Set(proposals
+    .filter(proposal => proposal?.status === 'pending')
+    .map(proposal => String(proposal?.taskId)))
+  const withinLimits = inFlight < config.maxConcurrentDelegations && usedThisHour < config.maxDelegationsPerHour
+  const worktreeCapable = policy?.executionBackend === 'taskboard' || policy?.executionBackend === 'contract'
+
+  const push = (kind, task, reason, evidence) => {
+    if (out.length >= MAX_SUPERVISION_RECOMMENDATIONS) return
+    const projectId = supervisionProjectIdOf(task)
+    out.push({
+      id: `proposal|${kind}|${task.id}`,
+      kind,
+      taskId: task.id,
+      projectId,
+      reason,
+      evidence,
+      status: 'proposed',
+      // A proposal is NEVER applied by this module: there is no write path.
+      applies: false,
+    })
+  }
+
+  // delegate: a READY task with no assignment, only when the capability is
+  // gated (supervision enabled) and inside the delegation limits.
+  if (withinLimits) {
+    for (const task of tasks) {
+      if (supervisionTaskStatusOf(task) !== 'todo') continue
+      const readiness = supervisionReadinessOf(task, tasksById)
+      if (!readiness.ready) continue
+      if (activeTaskIds.has(String(task.id)) || pendingProposalTaskIds.has(String(task.id))) continue
+      if (typeof task.assignee === 'string' && task.assignee !== '') continue
+      if (task.activeExecution === true) continue
+      if (task.execution?.mode === 'scheduled') continue
+      if (task.isolation === 'worktree' && !worktreeCapable) continue
+      push('delegate', task, 'task_ready_and_unassigned', {
+        readiness: readiness.reason,
+        status: task.status,
+        inFlight,
+        usedThisHour,
+      })
+    }
+  }
+
+  // unblock: a blocked card whose prerequisites are all done.
+  for (const task of tasks) {
+    if (task.status !== 'blocked') continue
+    const dependencies = supervisionDependenciesOf(task)
+    if (dependencies.length === 0) continue
+    const known = dependencies.map(id => tasksById.get(id))
+    if (known.some(dependency => dependency === undefined)) continue
+    if (!known.every(dependency => supervisionTaskStatusOf(dependency) === SUPERVISION_DONE_TASK_STATUS)) continue
+    push('unblock', task, 'prerequisites_done_but_card_blocked', { prerequisites: dependencies })
+  }
+
+  // priority: only when the Task Board really exposes priorities, and only for a
+  // real project-level contention (two projects blocked on one another).
+  const hasPriorities = tasks.some(task => task.priority !== undefined && task.priority !== null && task.priority !== '')
+  if (hasPriorities) {
+    const edges = new Map()
+    for (const task of tasks) {
+      for (const dependencyId of task.dependsOn) {
+        const dependency = tasksById.get(dependencyId)
+        if (dependency === undefined) continue
+        if (!supervisionProjectsDiffer(task, dependency)) continue
+        if (supervisionTaskStatusOf(task) === SUPERVISION_DONE_TASK_STATUS) continue
+        const key = `${supervisionProjectIdOf(task)}>${supervisionProjectIdOf(dependency)}`
+        if (!edges.has(key)) edges.set(key, [])
+        edges.get(key).push({ task, dependency })
+      }
+    }
+    const emitted = new Set()
+    for (const [key, list] of [...edges.entries()].sort((left, right) => left[0].localeCompare(right[0]))) {
+      const [fromProjectId, toProjectId] = key.split('>')
+      if (fromProjectId === toProjectId || fromProjectId === 'unknown' || toProjectId === 'unknown') continue
+      const reverse = edges.get(`${toProjectId}>${fromProjectId}`)
+      if (reverse === undefined) continue
+      const pairKey = [fromProjectId, toProjectId].sort().join('<>')
+      if (emitted.has(pairKey)) continue
+      emitted.add(pairKey)
+      const candidates = [...list, ...reverse].sort((left, right) => left.task.id.localeCompare(right.task.id))
+      const chosen = candidates[0].task
+      push('priority', chosen, 'cross_project_contention', {
+        projects: [fromProjectId, toProjectId],
+        tasks: candidates.map(entry => entry.task.id).sort(),
+        priorities: candidates.map(entry => ({ taskId: entry.task.id, priority: entry.task.priority ?? null })),
+      })
+    }
+  }
+
+  // reassign: only ever a proposal — the Task Board exposes no board-facing
+  // write API. The real fact is a finished board delegation whose card is still
+  // in progress.
+  for (const assignment of assignments) {
+    if (!['failed', 'interrupted', 'stopped'].includes(assignment?.status)) continue
+    const task = tasksById.get(String(assignment?.taskId))
+    if (task === undefined || task.status !== 'in_progress') continue
+    push('reassign', task, `assignment_${assignment.status}_without_claim_release`, {
+      assignmentId: assignment.id ?? null,
+      assignmentStatus: assignment.status,
+      assignee: typeof task.assignee === 'string' ? task.assignee : null,
+      capability: 'proposal_only',
+      writeApi: 'unavailable',
+    })
+  }
+
+  return out
+    .sort((left, right) => (SUPERVISION_RECOMMENDATION_KIND_ORDER[left.kind] ?? 9) - (SUPERVISION_RECOMMENDATION_KIND_ORDER[right.kind] ?? 9)
+      || left.taskId.localeCompare(right.taskId))
+    .slice(0, MAX_SUPERVISION_RECOMMENDATIONS)
+}
+
+/** Explicit capability matrix: implemented / proposal-only / unavailable + why. */
+function supervisionCapabilities({ config, taskboard }) {
+  const enabled = config.enabled === true
+  const hasPriorities = taskboard.available === true
+    && taskboard.tasks.some(task => task.priority !== undefined && task.priority !== null && task.priority !== '')
+  const priority = hasPriorities ? 'proposal_only' : 'unavailable'
+  const priorityReason = hasPriorities
+    ? 'taskboard_write_api_unavailable'
+    : (taskboard.available === true ? 'taskboard_priorities_unavailable' : 'taskboard_unavailable')
+  const values = {
+    observe: true,
+    recommend: enabled,
+    delegate: enabled ? 'gated' : 'unavailable',
+    reassign: 'proposal_only',
+    priority,
+    receiveOrchestratorReports: 'unavailable',
+    kanbanWrite: 'unavailable',
+  }
+  const reasons = {}
+  if (!enabled) {
+    reasons.delegate = 'supervision_disabled'
+    reasons.recommend = 'supervision_disabled'
+  }
+  reasons.reassign = 'taskboard_write_api_unavailable'
+  reasons.priority = priorityReason
+  reasons.receiveOrchestratorReports = 'no_inbound_orchestrator_report_channel'
+  reasons.kanbanWrite = 'taskboard_write_api_unavailable'
+  return { values, reasons }
+}
+
+function supervisionNormalizeTaskboard(input) {
+  const source = supervisionIsPlainObject(input) ? input : null
+  const available = source?.available === true
+  const rawTasks = available && Array.isArray(source?.tasks) ? source.tasks : []
+  const tasks = []
+  for (const raw of rawTasks) {
+    if (!supervisionIsPlainObject(raw) || typeof raw.id !== 'string' || raw.id === '') continue
+    tasks.push({
+      id: raw.id,
+      title: typeof raw.title === 'string' ? raw.title : '',
+      status: typeof raw.status === 'string' ? raw.status : 'unknown',
+      priority: raw.priority ?? null,
+      workspaceId: typeof raw.workspaceId === 'string' ? raw.workspaceId : '',
+      projectId: typeof raw.projectId === 'string' ? raw.projectId : null,
+      dependsOn: Array.isArray(raw.dependsOn) ? raw.dependsOn.map(String) : [],
+      assignee: typeof raw.assignee === 'string'
+        ? raw.assignee
+        : (typeof raw.claimedBy === 'string' ? raw.claimedBy : null),
+      revision: raw.revision ?? raw.version ?? null,
+      updatedAt: Number.isFinite(Number(raw.updatedAt)) ? Number(raw.updatedAt) : null,
+      blocked: raw.blocked === true,
+      execution: supervisionIsPlainObject(raw.execution) ? { mode: raw.execution.mode ?? null } : null,
+      activeExecution: raw.activeExecution === true,
+      isolation: typeof raw.isolation === 'string' ? raw.isolation : null,
+    })
+    if (tasks.length >= MAX_SUPERVISION_TASKS) break
+  }
+  const total = available
+    ? (Number.isFinite(Number(source?.count)) ? Number(source.count) : rawTasks.length)
+    : 0
+  return {
+    available,
+    reason: available
+      ? (typeof source?.reason === 'string' ? source.reason : null)
+      : (typeof source?.reason === 'string' && source.reason !== '' ? source.reason : 'taskboard_unavailable'),
+    source: source?.source === 'live' || source?.source === 'simulated' ? source.source : (available ? 'live' : 'absent'),
+    count: total,
+    truncated: total > tasks.length,
+    tasks,
+    // The adapter's resolved edges (with its own cross-project verdict). Kept as
+    // `null` when the source does not supply them so the builder re-derives the
+    // edges from the tasks instead of silently reporting none.
+    dependencies: available && Array.isArray(source?.dependencies)
+      ? source.dependencies
+        .filter(edge => supervisionIsPlainObject(edge) && typeof edge.taskId === 'string' && typeof edge.dependsOnTaskId === 'string')
+        .slice(0, MAX_SUPERVISION_DEPENDENCIES)
+      : null,
+    capabilities: supervisionNormalizeTaskboardCapabilities(source?.capabilities),
+    notes: typeof source?.notes === 'string' ? source.notes : null,
+  }
+}
+
+function supervisionNormalizeTaskboardCapabilities(input) {
+  const source = supervisionIsPlainObject(input) ? input : {}
+  return {
+    read: source.read === true,
+    proposeReassignment: source.proposeReassignment === true,
+    proposePriority: source.proposePriority === true,
+    proposeBlocked: source.proposeBlocked === true,
+    writeKanban: source.writeKanban === true,
+    requestReview: source.requestReview === true,
+  }
+}
+
+function supervisionAgentIndex(supervision) {
+  const index = new Map()
+  for (const project of Array.isArray(supervision?.projects) ? supervision.projects : []) {
+    for (const agent of Array.isArray(project?.agents) ? project.agents : []) {
+      if (supervisionIsPlainObject(agent) && typeof agent.id === 'string') index.set(agent.id, agent)
+    }
+  }
+  return index
+}
+
+function supervisionProjectIndex(supervision) {
+  const index = new Map()
+  for (const project of Array.isArray(supervision?.projects) ? supervision.projects : []) {
+    if (supervisionIsPlainObject(project) && typeof project.id === 'string') index.set(project.id, project)
+  }
+  return index
+}
+
+function supervisionTaskIndex(supervision) {
+  const index = new Map()
+  const tasks = Array.isArray(supervision?.taskboard?.tasks) ? supervision.taskboard.tasks : []
+  for (const task of tasks) {
+    if (supervisionIsPlainObject(task) && typeof task.id === 'string') index.set(task.id, task)
+  }
+  return index
+}
+
+
 // ---- src/board/view.js ----
 /**
  * Board view model (pure): which agents the board shows, in which order, and
@@ -1663,6 +3001,416 @@ function ancestorChain(projection, id) {
     current = parent
   }
   return chain
+}
+
+
+// ---- src/board/hierarchy.js ----
+/**
+ * Supervision hierarchy view (pure): workspace -> project -> orchestrator ->
+ * teams of agents, built ON TOP of the existing board view.
+ *
+ * It never re-implements visibility, sorting or the attention policy: the
+ * `view` argument is `buildBoardView()` output and is consumed as-is. This
+ * module only adds what the board view does not know:
+ *
+ *   - the workspace (host supervision layer) level;
+ *   - the declared-role projection of every node (generic identity when the
+ *     declared role resolves to nothing: never a guessed mascot);
+ *   - the project orchestrator, only when a node's DECLARED role really is
+ *     `orchestrator` — otherwise `null`, an honest visible gap;
+ *   - real per-project counts, supervision blocks and cross-project
+ *     dependencies;
+ *   - the agent filters (role / status / Task Board state) applied to the
+ *     already-visible entries.
+ *
+ * Honesty rules:
+ *   - `supervision === null` still renders: structure and counts come from the
+ *     projection only, capabilities are unavailable (never faked) and the
+ *     workspace status is `unknown` with an explicit reason;
+ *   - no fake node is ever added (a missing orchestrator stays `null`);
+ *   - a Task Board state filter is only applied when the integration reports
+ *     it available; its absence is reported, never silently guessed.
+ *
+ * @module dsh-agent-board/board/hierarchy
+ */
+
+
+const WORKSPACE_ROLE_ID = 'super_orchestrator'
+const PROJECT_ORCHESTRATOR_ROLE_ID = 'orchestrator'
+/** Filter value matching every node whose declared role resolves to nothing. */
+const GENERIC_ROLE_FILTER = 'generic'
+
+/**
+ * Singular/plural key choice for one count. `1` (and `-1`) is singular; zero and
+ * every other value are plural. Pure so the UI and the tests share one rule.
+ */
+function pluralKeyFor(count, singularKey, pluralKey) {
+  const value = Number(count)
+  return Number.isFinite(value) && Math.abs(value) === 1 ? singularKey : pluralKey
+}
+
+/**
+ * Count text through an injected translator, e.g.
+ * `countLabelFor(1, 'projectSingular', 'projectPlural', dabT)` -> `1 projet`.
+ */
+function countLabelFor(count, singularKey, pluralKey, translate) {
+  const value = Number(count) || 0
+  const t = typeof translate === 'function' ? translate : key => key
+  return `${value} ${t(pluralKeyFor(value, singularKey, pluralKey))}`
+}
+
+/**
+ * Project-head count label: the REAL agent count, plus the displayed count when
+ * the view shows fewer (attention policy or filters). Both numbers are real, so
+ * the Projects view and the hierarchy never seem to disagree.
+ */
+function projectCountLabel(counts, shownAgents, translate) {
+  const total = Number(counts?.agents) || 0
+  const shown = Number(shownAgents) || 0
+  const t = typeof translate === 'function' ? translate : key => key
+  const label = countLabelFor(total, 'agentSingular', 'agentPlural', t)
+  if (shown === total) return label
+  return `${label} · ${countLabelFor(shown, 'shownSingular', 'shownPlural', t)}`
+}
+
+const TASK_STATE_KEYS = Object.freeze(Object.keys(AGENT_TASK_STATE_TONE))
+const STATUS_KEYS = Object.freeze(Object.keys(AGENT_STATUS_TONE))
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/**
+ * Normalize the agent filters. Unknown values are dropped (a stale persisted
+ * preference can never select an invisible pseudo-status).
+ *
+ * @param {object|null} filters
+ * @returns {{role: string|null, status: string|null, taskState: string|null}}
+ */
+function normalizeHierarchyFilters(filters) {
+  const value = isPlainObject(filters) ? filters : {}
+  // A persisted role id is accepted only when it is an approved role or the
+  // explicit "generic identity" filter: a stale/removed id must never silently
+  // hide every agent while the toolbar shows "all roles".
+  const role = typeof value.role === 'string' && value.role !== '' && value.role !== 'all'
+    ? (value.role === GENERIC_ROLE_FILTER || AGENT_ROLE_IDS.includes(value.role) ? value.role : null)
+    : null
+  const status = typeof value.status === 'string' && STATUS_KEYS.includes(value.status) ? value.status : null
+  const taskState = typeof value.taskState === 'string' && TASK_STATE_KEYS.includes(value.taskState) ? value.taskState : null
+  return { role, status, taskState }
+}
+
+/** Task Board states indexed by task id; null when the integration is absent. */
+function taskStateIndex(supervision) {
+  const taskboard = supervision?.taskboard
+  if (!isPlainObject(taskboard) || taskboard.available !== true || !Array.isArray(taskboard.tasks)) return null
+  const index = new Map()
+  for (const task of taskboard.tasks) {
+    if (!isPlainObject(task) || typeof task.id !== 'string') continue
+    if (typeof task.status === 'string') index.set(task.id, task.status)
+  }
+  return index
+}
+
+/**
+ * Resolve the declared role of every node once per build. The resolver is
+ * injected (default: the pure registry) so a test can stub it. Nodes sharing a
+ * declared role string share one resolution: O(distinct declared roles).
+ */
+function resolveNodeRoles(projection, resolver = dabResolveAgentRole) {
+  const resolve = typeof resolver === 'function' ? resolver : dabResolveAgentRole
+  const cache = new Map()
+  const out = new Map()
+  for (const node of projection.nodes) {
+    const declared = typeof node.role === 'string' && node.role !== '' ? node.role : null
+    const key = declared ?? ''
+    let resolved = cache.get(key)
+    if (resolved === undefined) {
+      resolved = declared === null ? { roleId: null, source: 'generic', raw: null, role: null } : resolve(declared)
+      if (!isPlainObject(resolved)) resolved = { roleId: null, source: 'generic', raw: declared, role: null }
+      cache.set(key, resolved)
+    }
+    out.set(node.id, {
+      roleId: typeof resolved.roleId === 'string' && resolved.roleId !== '' ? resolved.roleId : null,
+      roleLabel: typeof resolved.role?.label === 'string' ? resolved.role.label : null,
+      family: typeof resolved.role?.family === 'string' ? resolved.role.family : null,
+      source: resolved.source === 'explicit' || resolved.source === 'alias' ? resolved.source : 'generic',
+      raw: typeof resolved.raw === 'string' ? resolved.raw : declared,
+    })
+  }
+  return out
+}
+
+/**
+ * The project orchestrator: an agent whose DECLARED role resolves to
+ * `orchestrator`. A `super_orchestrator` is the workspace layer, not a project
+ * orchestrator. Deterministic choice when several are declared: a root first,
+ * then the most recently updated, then the id. Never fabricated.
+ */
+function findProjectOrchestrator(nodes, roles) {
+  let best = null
+  let bestKey = null
+  for (const node of nodes) {
+    if (roles.get(node.id)?.roleId !== PROJECT_ORCHESTRATOR_ROLE_ID) continue
+    const root = node.parentId === null || node.orphan === true || node.parentCycle === true
+    const key = [root ? 0 : 1, -(Number(node.updatedAt) || 0), String(node.id)]
+    if (bestKey === null || compareKeys(key, bestKey) < 0) {
+      best = node
+      bestKey = key
+    }
+  }
+  if (best === null) return null
+  return {
+    id: best.id,
+    name: best.title,
+    role: best.role,
+    roleId: PROJECT_ORCHESTRATOR_ROLE_ID,
+    roleLabel: roles.get(best.id)?.roleLabel ?? null,
+    status: best.status,
+    projectId: best.projectId,
+  }
+}
+
+function compareKeys(a, b) {
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] < b[index]) return -1
+    if (a[index] > b[index]) return 1
+  }
+  return 0
+}
+
+/** Real per-project agent counts (every node of the project, not only visible ones). */
+function countProjectNodes(nodes) {
+  const counts = { agents: 0, running: 0, waiting: 0, unread: 0, failed: 0, interrupted: 0 }
+  for (const node of nodes) {
+    counts.agents += 1
+    if (node.status === 'running') counts.running += 1
+    else if (node.status === 'waiting_user') counts.waiting += 1
+    else if (node.status === 'finished_unread') counts.unread += 1
+    else if (node.status === 'failed') counts.failed += 1
+    else if (node.status === 'interrupted') counts.interrupted += 1
+  }
+  return counts
+}
+
+function addCounts(target, source) {
+  for (const key of ['agents', 'running', 'waiting', 'unread', 'failed', 'interrupted']) target[key] += source[key]
+  return target
+}
+
+/** Does this node pass the explicit agent filters? */
+function matchesHierarchyFilters(node, roles, filters, taskStates, taskStateAvailable) {
+  if (filters.role !== null) {
+    const roleId = roles.get(node.id)?.roleId ?? null
+    if (filters.role === GENERIC_ROLE_FILTER ? roleId !== null : roleId !== filters.role) return false
+  }
+  if (filters.status !== null && node.status !== filters.status) return false
+  if (filters.taskState !== null && taskStateAvailable) {
+    const state = node.taskId === null || node.taskId === undefined ? null : taskStates?.get(String(node.taskId)) ?? null
+    if (state !== filters.taskState) return false
+  }
+  return true
+}
+
+function flattenShaped(entry, out = []) {
+  out.push(entry)
+  for (const child of entry.children) flattenShaped(child, out)
+  return out
+}
+
+/**
+ * Build the supervision hierarchy.
+ *
+ * @param {object} projection buildProjection() output
+ * @param {object|null} view buildBoardView() output (rebuilt with safe defaults when absent)
+ * @param {object|null} supervision host supervision payload (contract C), or null
+ * @param {object} [options]
+ * @param {Function} [options.resolveRole] role resolver (default dabResolveAgentRole)
+ * @param {object} [options.filters] agent filters (role / status / taskState)
+ * @param {Map|object|null} [options.taskStates] task id -> Task Board state (default: supervision)
+ * @param {Set<string>} [options.foldedProjects] project ids folded in the board
+ * @param {string|null} [options.mode] host orchestration mode (used when supervision is absent)
+ * @param {object} [options.viewOptions] options for buildBoardView when `view` is absent
+ * @returns {object}
+ */
+function buildHierarchyView(projection, view, supervision, options = {}) {
+  const source = projection ?? { nodes: [], byId: new Map(), roots: [], projects: [] }
+  const boardView = view ?? buildBoardView(source, options.viewOptions ?? {})
+  const filters = normalizeHierarchyFilters(options.filters)
+  const roles = resolveNodeRoles(source, options.resolveRole)
+  const taskStates = options.taskStates ?? taskStateIndex(supervision)
+  const taskStateAvailable = taskStates !== null
+  const folded = options.foldedProjects instanceof Set ? options.foldedProjects : new Set()
+  const effectiveFilters = { ...filters, taskState: taskStateAvailable ? filters.taskState : null }
+
+  // Real project index (every node), independent from what is displayed.
+  const nodesByProject = new Map()
+  for (const node of source.nodes) {
+    if (!nodesByProject.has(node.projectId)) nodesByProject.set(node.projectId, [])
+    nodesByProject.get(node.projectId).push(node)
+  }
+
+  const blocks = Array.isArray(supervision?.blocks) ? supervision.blocks.slice(0, 50) : []
+  const dependencies = Array.isArray(supervision?.crossProjectDependencies) ? supervision.crossProjectDependencies.slice(0, 100) : []
+
+  const projects = []
+  for (const group of boardView.projects) {
+    const allNodes = nodesByProject.get(group.id) ?? []
+    const counts = countProjectNodes(allNodes)
+    const teams = []
+    for (const tree of group.trees) {
+      const entries = flattenShaped(tree)
+      let kept = entries
+      let hidden = 0
+      const filtering = effectiveFilters.role !== null || effectiveFilters.status !== null || effectiveFilters.taskState !== null
+      if (filtering) {
+        kept = entries.filter(entry => matchesHierarchyFilters(entry.node, roles, effectiveFilters, taskStates, taskStateAvailable))
+        hidden = entries.length - kept.length
+        if (kept.length === 0) continue
+      }
+      teams.push({
+        root: tree.node,
+        agents: kept.map(entry => entry.node),
+        // Renderer input: the shaped entries (depth, hidden children, group
+        // state) so the hierarchy can reuse the existing card component.
+        entries: kept,
+        hidden,
+      })
+    }
+    const orchestrator = findProjectOrchestrator(allNodes, roles)
+    projects.push({
+      id: group.id,
+      title: group.title,
+      unassigned: group.id === 'unassigned',
+      folded: folded.has(group.id),
+      orchestrator,
+      teams,
+      counts,
+      blocks: blocks.filter(block => block.projectId === group.id),
+      crossProjectDependencies: dependencies.filter(dependency => (
+        dependency.fromProjectId === group.id || dependency.toProjectId === group.id
+      )),
+      visibleAgents: group.visibleAgents,
+    })
+  }
+
+  // Real totals: every project of the projection, even when the project filter
+  // narrows what is displayed.
+  const totals = { agents: 0, running: 0, waiting: 0, unread: 0, failed: 0, interrupted: 0 }
+  for (const nodes of nodesByProject.values()) addCounts(totals, countProjectNodes(nodes))
+  const realProjectCount = Array.isArray(source.projects)
+    ? source.projects.length
+    : nodesByProject.size
+
+  const workspaceSupervision = isPlainObject(supervision?.workspace) ? supervision.workspace : null
+  const available = isPlainObject(supervision)
+  const mode = typeof workspaceSupervision?.mode === 'string'
+    ? workspaceSupervision.mode
+    : (typeof options.mode === 'string' ? options.mode : null)
+  const workspaceStatus = workspaceSupervision?.status === 'active' || workspaceSupervision?.status === 'idle' || workspaceSupervision?.status === 'blocked'
+    ? workspaceSupervision.status
+    : 'unknown'
+
+  const workspace = {
+    id: typeof workspaceSupervision?.id === 'string' ? workspaceSupervision.id : 'workspace:supervision',
+    synthetic: true,
+    role: WORKSPACE_ROLE_ID,
+    emblem: workspaceSupervision?.emblem === 'bolt' ? 'bolt' : 'crown',
+    mode,
+    status: workspaceStatus,
+    statusReason: typeof workspaceSupervision?.reason === 'string'
+      ? workspaceSupervision.reason
+      : (available ? null : 'supervision_unavailable'),
+    // A real agent may be exposed as the workspace agent by the host; a null
+    // value means "no declared super-orchestrator agent", never a fake one.
+    agent: isPlainObject(workspaceSupervision?.agent) ? workspaceSupervision.agent : null,
+    counts: { ...totals, projects: realProjectCount, blocked: blocks.length, dependencies: dependencies.length },
+    blocks,
+    crossProjectDependencies: dependencies,
+    recommendations: Array.isArray(supervision?.recommendations) ? supervision.recommendations.slice(0, 50) : [],
+    capabilities: isPlainObject(supervision?.capabilities) ? supervision.capabilities : null,
+    // The host's own capability reasons (additive, optional): preferred over a
+    // generic translation because they name the REAL missing path.
+    capabilityReasons: isPlainObject(supervision?.capabilityReasons) ? supervision.capabilityReasons : null,
+    delegation: isPlainObject(workspaceSupervision?.delegation) ? workspaceSupervision.delegation : null,
+    taskboard: isPlainObject(supervision?.taskboard) ? supervision.taskboard : null,
+    available,
+  }
+
+  return {
+    workspace,
+    projects,
+    projectsById: new Map(projects.map(project => [project.id, project])),
+    // Per-node resolved role (declared role -> approved role, or generic).
+    // Additive to the contract shape so the renderer does not re-resolve it.
+    roles,
+    totals: {
+      ...totals,
+      projects: realProjectCount,
+      shownProjects: projects.length,
+      visibleAgents: projects.reduce((sum, project) => sum + project.teams.reduce((inner, team) => inner + team.agents.length, 0), 0),
+      blocked: blocks.length,
+      dependencies: dependencies.length,
+      supervisionAvailable: available,
+      taskStateAvailable,
+    },
+    filters: {
+      view: boardView.filter,
+      query: boardView.query,
+      role: filters.role,
+      status: filters.status,
+      taskState: effectiveFilters.taskState,
+      taskStateAvailable,
+    },
+  }
+}
+
+/**
+ * Narrow the already-shaped board view to entries matching the agent filters.
+ * Used by the existing "Projects" view so one toolbar filter is coherent in both
+ * views. It only REMOVES entries the user explicitly filtered out: visibility,
+ * attention and ordering were already decided by buildBoardView.
+ *
+ * @param {object} view buildBoardView() output
+ * @param {object} filters role/status/taskState filters
+ * @param {object} [options] same role/task-state inputs as buildHierarchyView
+ * @returns {object} a pruned view (the same object when no filter is active)
+ */
+function filterBoardViewByAgent(view, filters, options = {}) {
+  const normalized = normalizeHierarchyFilters(filters)
+  const taskStates = options.taskStates ?? taskStateIndex(options.supervision ?? null)
+  const taskStateAvailable = taskStates !== null
+  const effective = { ...normalized, taskState: taskStateAvailable ? normalized.taskState : null }
+  if (effective.role === null && effective.status === null && effective.taskState === null) return view
+  const roles = options.roles ?? resolveNodeRoles(options.projection ?? { nodes: [] }, options.resolveRole)
+
+  const matches = entry => matchesHierarchyFilters(entry.node, roles, effective, taskStates, taskStateAvailable)
+  const prune = entry => {
+    const children = entry.children.map(prune).filter(child => child !== null)
+    if (!matches(entry) && children.length === 0) return null
+    return {
+      ...entry,
+      children,
+      // Direct children hidden from BOTH the original cut and the filter.
+      hiddenChildren: Math.max(0, entry.totalChildren - children.length),
+      overflow: 0,
+    }
+  }
+
+  let visibleCount = 0
+  const projects = []
+  for (const project of view.projects) {
+    const trees = project.trees.map(prune).filter(tree => tree !== null)
+    if (trees.length === 0) continue
+    let projectVisible = 0
+    for (const tree of trees) {
+      const count = flattenShaped(tree).length
+      projectVisible += count
+      visibleCount += count
+    }
+    projects.push({ ...project, trees, visibleAgents: projectVisible })
+  }
+  return { ...view, projects, visibleCount }
 }
 
 
@@ -2182,6 +3930,7 @@ const DAB_STRINGS = {
     undismiss: 'Remettre dans le tableau',
     dismissHint: 'Masque cette session des vues « À traiter » et « Récents » (la session n’est pas supprimée ; visible via « Tout » ou la recherche)',
     viewLabel: 'Vue',
+    viewModeLabel: 'Mode de vue',
     filterLabel: 'Filtre',
     orchestratorLabel: 'Orchestrateur',
     syncOk: 'Task Board synchronisé',
@@ -2191,6 +3940,115 @@ const DAB_STRINGS = {
     keyboardHint: 'Entrée : ouvrir · Espace : aperçu · double-clic : ouvrir',
     projects: 'Projets',
     ago: 'il y a',
+    // ---- supervision / hiérarchie / identités (GOAL 4)
+    role: 'Rôle',
+    roleAll: 'Tous les rôles',
+    roleGeneric: 'Générique',
+    roleFamilyLabel: 'Famille de rôle',
+    roleDeclared: 'Rôle déclaré',
+    roleDeclaredAlias: 'rôle déclaré (alias)',
+    noDeclaredRole: 'Rôle non déclaré',
+    genericIdentity: 'Identité générique',
+    familyGovernance: 'Gouvernance / connaissances',
+    familyCoordination: 'Coordination / supervision',
+    familyExecution: 'Production / optimisation',
+    familyQuality: 'Revue / audit',
+    familyValidation: 'Validation / tests',
+    familyProtection: 'Protection / règles',
+    statusFilterLabel: 'Statut',
+    statusAll: 'Tous les statuts',
+    viewProjects: 'Projets',
+    viewHierarchy: 'Hiérarchie',
+    taskStateFilterLabel: 'État Task Board',
+    taskStateAll: 'Tous les états',
+    taskStateUnavailable: 'Task Board non lu',
+    taskStateUnavailable: 'Task Board indisponible',
+    taskStateTitle: 'État de la tâche liée (Task Board)',
+    taskTodo: 'À faire',
+    taskInProgress: 'En cours',
+    taskInReview: 'En revue',
+    taskBlocked: 'Bloquée',
+    taskDone: 'Terminée',
+    taskCanceled: 'Annulée',
+    taskArchived: 'Archivée',
+    agent: 'Agent',
+    agents: 'agents',
+    // Count forms (fr): the UI never prints "1 projets".
+    projectSingular: 'projet',
+    projectPlural: 'projets',
+    agentSingular: 'agent',
+    agentPlural: 'agents',
+    unreadSingular: 'non lu',
+    unreadPlural: 'non lus',
+    interruptedSingular: 'interrompu',
+    interruptedPlural: 'interrompus',
+    blockedSingular: 'bloqué',
+    blockedPlural: 'bloqués',
+    turnSingular: 'tour',
+    turnPlural: 'tours',
+    stepSingular: 'étape',
+    stepPlural: 'étapes',
+    shownSingular: 'affiché',
+    shownPlural: 'affichés',
+    supervision: 'Supervision',
+    supervisionLayer: 'Couche de supervision (non un agent)',
+    superOrchestrator: 'Super-orchestrateur',
+    supervisionExpand: 'Afficher la supervision',
+    supervisionCollapse: 'Masquer la supervision',
+    supervisionUnavailable: 'Supervision non publiée par l’hôte : structure et comptages réels, capacités indisponibles.',
+    taskboardUnavailable: 'Task Board indisponible pour la lecture',
+    supervisionWorkspace: 'Espace de travail',
+    supervisionMode: 'Mode',
+    supervisionBlocked: 'bloqués',
+    supervisionDependencies: 'Dépendances inter-projets',
+    supervisionNoDependencies: 'Aucune dépendance inter-projets connue.',
+    supervisionBlocks: 'Blocages',
+    supervisionNoBlocks: 'Aucun blocage connu.',
+    supervisionRecommendations: 'Recommandations',
+    supervisionNoRecommendations: 'Aucune recommandation.',
+    recommendationNotApplied: 'proposition — non appliquée',
+    recommendationDelegate: 'Délégation',
+    recommendationUnblock: 'Déblocage',
+    recommendationPriority: 'Priorité',
+    recommendationReassign: 'Réaffectation',
+    supervisionCapabilities: 'Capacités',
+    supervisionCapabilityReason: 'Raison',
+    supervisionStatusActive: 'Actif',
+    supervisionStatusIdle: 'Inactif (observation)',
+    supervisionStatusBlocked: 'Bloqué',
+    supervisionStatusUnknown: 'Inconnu',
+    supervisionSynthetic: 'Couche de supervision de l’hôte : aucune session ne lui correspond.',
+    supervisionDelegation: 'Délégation : {inFlight} en cours · profondeur {depth} · {concurrent} simultanées · {hourly}/h',
+    capObserve: 'Observer',
+    capRecommend: 'Recommander',
+    capDelegate: 'Déléguer',
+    capReassign: 'Réaffecter',
+    capPriority: 'Prioriser',
+    capReceiveReports: 'Rapports d’orchestrateur',
+    capKanbanWrite: 'Écriture Task Board',
+    capabilityAvailable: 'Disponible',
+    capabilityGated: 'Sous conditions',
+    capabilityProposalOnly: 'Proposition seulement',
+    capabilityUnavailable: 'Non disponible',
+    capReasonSupervisionUnavailable: 'hôte : supervision non publiée',
+    capReasonGated: 'soumise aux limites et à l’accord de l’opérateur',
+    capReasonProposalOnly: 'aucune écriture : proposition uniquement',
+    capReasonReadOnly: 'Task Board en lecture seule depuis le board',
+    capReasonNoChannel: 'aucun canal de rapport d’orchestrateur dans cette version',
+    capReasonDisabled: 'désactivée par la politique',
+    capReasonUnknown: 'raison non fournie par l’hôte',
+    hierarchy: 'Hiérarchie',
+    hierarchyOrchestratorMissing: 'Aucun orchestrateur déclaré',
+    hierarchyOrchestratorMissingHint: 'Aucun agent de ce projet ne déclare le rôle orchestrator : le board n’en crée jamais.',
+    hierarchyAgentsCount: '{n} agents',
+    hierarchyHiddenByFilter: '{n} masqués par le filtre',
+    hierarchyNoAgents: 'Aucun agent visible dans ce projet.',
+    hierarchyEmpty: 'Aucun agent ne correspond aux filtres.',
+    hierarchyTeamOf: 'Équipe de {name}',
+    activityReal: 'Activité réelle : {activity}',
+    emptyFiltered: 'Aucun agent ne correspond aux filtres actifs.',
+    clearFilters: 'Effacer les filtres',
+    noActivity: 'Activité inconnue',
   },
   en: {
     title: 'Agent Board',
@@ -2297,6 +4155,7 @@ const DAB_STRINGS = {
     undismiss: 'Put back on board',
     dismissHint: 'Hides this session from the Attention and Recent views (the session is not deleted; still visible in All or search)',
     viewLabel: 'View',
+    viewModeLabel: 'View mode',
     filterLabel: 'Filter',
     orchestratorLabel: 'Orchestrator',
     syncOk: 'Task Board synced',
@@ -2306,6 +4165,115 @@ const DAB_STRINGS = {
     keyboardHint: 'Enter: open · Space: preview · double-click: open',
     projects: 'Projects',
     ago: 'ago',
+    // ---- supervision / hierarchy / identities (GOAL 4)
+    role: 'Role',
+    roleAll: 'All roles',
+    roleGeneric: 'Generic',
+    roleFamilyLabel: 'Role family',
+    roleDeclared: 'Declared role',
+    roleDeclaredAlias: 'declared role (alias)',
+    noDeclaredRole: 'No declared role',
+    genericIdentity: 'Generic identity',
+    familyGovernance: 'Governance / knowledge',
+    familyCoordination: 'Coordination / monitoring',
+    familyExecution: 'Production / optimization',
+    familyQuality: 'Review / audit',
+    familyValidation: 'Validation / testing',
+    familyProtection: 'Protection / rules',
+    statusFilterLabel: 'Status',
+    statusAll: 'All statuses',
+    viewProjects: 'Projects',
+    viewHierarchy: 'Hierarchy',
+    taskStateFilterLabel: 'Task Board state',
+    taskStateAll: 'All states',
+    taskStateUnavailable: 'Task Board not read',
+    taskStateUnavailable: 'Task Board unavailable',
+    taskStateTitle: 'Linked Task Board state',
+    taskTodo: 'Todo',
+    taskInProgress: 'In progress',
+    taskInReview: 'In review',
+    taskBlocked: 'Blocked',
+    taskDone: 'Done',
+    taskCanceled: 'Canceled',
+    taskArchived: 'Archived',
+    agent: 'Agent',
+    agents: 'agents',
+    // Count forms (en): 1 project / 2 projects.
+    projectSingular: 'project',
+    projectPlural: 'projects',
+    agentSingular: 'agent',
+    agentPlural: 'agents',
+    unreadSingular: 'unread',
+    unreadPlural: 'unread',
+    interruptedSingular: 'interrupted',
+    interruptedPlural: 'interrupted',
+    blockedSingular: 'blocked',
+    blockedPlural: 'blocked',
+    turnSingular: 'turn',
+    turnPlural: 'turns',
+    stepSingular: 'step',
+    stepPlural: 'steps',
+    shownSingular: 'shown',
+    shownPlural: 'shown',
+    supervision: 'Supervision',
+    supervisionLayer: 'Supervision layer (not an agent)',
+    superOrchestrator: 'Super orchestrator',
+    supervisionExpand: 'Show supervision',
+    supervisionCollapse: 'Hide supervision',
+    supervisionUnavailable: 'Supervision not published by the host: real structure and counts, capabilities unavailable.',
+    taskboardUnavailable: 'Task Board unavailable for reading',
+    supervisionWorkspace: 'Workspace',
+    supervisionMode: 'Mode',
+    supervisionBlocked: 'blocked',
+    supervisionDependencies: 'Cross-project dependencies',
+    supervisionNoDependencies: 'No known cross-project dependency.',
+    supervisionBlocks: 'Blocking items',
+    supervisionNoBlocks: 'No known blocking item.',
+    supervisionRecommendations: 'Recommendations',
+    supervisionNoRecommendations: 'No recommendation.',
+    recommendationNotApplied: 'proposal — not applied',
+    recommendationDelegate: 'Delegation',
+    recommendationUnblock: 'Unblock',
+    recommendationPriority: 'Priority',
+    recommendationReassign: 'Reassignment',
+    supervisionCapabilities: 'Capabilities',
+    supervisionCapabilityReason: 'Reason',
+    supervisionStatusActive: 'Active',
+    supervisionStatusIdle: 'Idle (observing)',
+    supervisionStatusBlocked: 'Blocked',
+    supervisionStatusUnknown: 'Unknown',
+    supervisionSynthetic: 'Host supervision layer: no session backs it.',
+    supervisionDelegation: 'Delegation: {inFlight} in flight · depth {depth} · {concurrent} concurrent · {hourly}/h',
+    capObserve: 'Observe',
+    capRecommend: 'Recommend',
+    capDelegate: 'Delegate',
+    capReassign: 'Reassign',
+    capPriority: 'Set priority',
+    capReceiveReports: 'Orchestrator reports',
+    capKanbanWrite: 'Task Board writes',
+    capabilityAvailable: 'Available',
+    capabilityGated: 'Gated',
+    capabilityProposalOnly: 'Proposal only',
+    capabilityUnavailable: 'Unavailable',
+    capReasonSupervisionUnavailable: 'host: supervision not published',
+    capReasonGated: 'subject to limits and operator approval',
+    capReasonProposalOnly: 'no write path: proposal only',
+    capReasonReadOnly: 'Task Board is read-only from the board',
+    capReasonNoChannel: 'no orchestrator report channel in this build',
+    capReasonDisabled: 'disabled by policy',
+    capReasonUnknown: 'no reason provided by the host',
+    hierarchy: 'Hierarchy',
+    hierarchyOrchestratorMissing: 'No declared orchestrator',
+    hierarchyOrchestratorMissingHint: 'No agent in this project declares the orchestrator role: the board never creates one.',
+    hierarchyAgentsCount: '{n} agents',
+    hierarchyHiddenByFilter: '{n} hidden by the filter',
+    hierarchyNoAgents: 'No visible agent in this project.',
+    hierarchyEmpty: 'No agent matches the filters.',
+    hierarchyTeamOf: 'Team of {name}',
+    activityReal: 'Real activity: {activity}',
+    emptyFiltered: 'No agent matches the active filters.',
+    clearFilters: 'Clear filters',
+    noActivity: 'Activity unknown',
   },
 }
 
@@ -2350,6 +4318,84 @@ const DAB_STATUS_TEXT = {
 function dabStatusLabel(status) {
   return dabT(DAB_STATUS_TEXT[status] ?? 'statusUnknown')
 }
+
+/** Task Board workflow state: a SEPARATE vocabulary from the agent statuses. */
+const DAB_TASK_STATE_TEXT = {
+  todo: 'taskTodo',
+  in_progress: 'taskInProgress',
+  in_review: 'taskInReview',
+  blocked: 'taskBlocked',
+  done: 'taskDone',
+  canceled: 'taskCanceled',
+  archived: 'taskArchived',
+}
+
+function dabTaskStateLabel(state) {
+  const key = DAB_TASK_STATE_TEXT[state]
+  return key === undefined ? null : dabT(key)
+}
+
+/**
+ * Translated count noun with a real singular form ("projet"/"projets"). Used
+ * where the number is rendered separately (counters, chips).
+ */
+function dabCountNoun(count, singularKey, pluralKey) {
+  const value = Number(count) || 0
+  const key = typeof pluralKeyFor === 'function'
+    ? pluralKeyFor(value, singularKey, pluralKey)
+    : (Math.abs(value) === 1 ? singularKey : pluralKey)
+  return dabT(key)
+}
+
+/** Translated count with a real singular form (the UI must never print
+ * "1 projets"). The pure key choice lives in board/hierarchy.js. */
+function dabCountLabel(count, singularKey, pluralKey) {
+  const value = Number(count) || 0
+  return `${value} ${dabCountNoun(value, singularKey, pluralKey)}`
+}
+
+/** "3 tours · 9 étapes" / "1 turn · 2 steps" — real counters only. */
+function dabTurnStepLabel(turns, steps) {
+  return `${dabCountLabel(turns, 'turnSingular', 'turnPlural')} · ${dabCountLabel(steps, 'stepSingular', 'stepPlural')}`
+}
+
+const DAB_FAMILY_TEXT = {
+  governance: 'familyGovernance',
+  coordination: 'familyCoordination',
+  execution: 'familyExecution',
+  quality: 'familyQuality',
+  validation: 'familyValidation',
+  protection: 'familyProtection',
+}
+
+function dabFamilyLabel(family) {
+  const key = DAB_FAMILY_TEXT[family]
+  return key === undefined ? null : dabT(key)
+}
+
+const DAB_SUPERVISION_STATUS_TEXT = {
+  active: 'supervisionStatusActive',
+  idle: 'supervisionStatusIdle',
+  blocked: 'supervisionStatusBlocked',
+}
+
+function dabSupervisionStatusLabel(status) {
+  const key = DAB_SUPERVISION_STATUS_TEXT[status]
+  return key === undefined ? dabT('supervisionStatusUnknown') : dabT(key)
+}
+
+const DAB_RECOMMENDATION_TEXT = {
+  delegate: 'recommendationDelegate',
+  unblock: 'recommendationUnblock',
+  priority: 'recommendationPriority',
+  reassign: 'recommendationReassign',
+}
+
+function dabRecommendationLabel(kind) {
+  const key = DAB_RECOMMENDATION_TEXT[kind]
+  return key === undefined ? String(kind ?? '') : dabT(key)
+}
+
 
 function dabWaitingLabel(action) {
   if (action === 'approval') return dabT('waitingApproval')
@@ -2523,8 +4569,11 @@ const DAB_CSS = `
 .dab-card[data-calm="true"] .dab-name { color: var(--dsw-alias-label-secondary); }
 .dab-card-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .dab-name { flex: 1; min-width: 0; font-weight: 500; font-size: 13px; line-height: 18px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
-.dab-meta { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; line-height: 16px; color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; padding-left: 22px; }
-.dab-meta > span { overflow: hidden; text-overflow: ellipsis; }
+.dab-meta { display: flex; align-items: center; flex-wrap: wrap; align-content: flex-start; gap: 6px; min-width: 0; font-size: 12px; line-height: 16px; color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; padding-left: 22px; }
+/* The work row (task id, Task Board state, age) wraps freely: no max-height, so a
+   wrapped line is never clipped mid-glyph; each item ellipsizes on its own. */
+.dab-meta-work { row-gap: 2px; }
+.dab-meta > span { overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 100%; }
 .dab-meta .dab-sep::before { content: "·"; }
 .dab-wait { font-size: 12px; color: var(--dsw-alias-state-warn-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 22px; }
 .dab-err { font-size: 12px; color: var(--dsw-alias-state-error-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 22px; }
@@ -2633,6 +4682,141 @@ const DAB_CSS = `
   .dab-pill, .dab-btn { min-height: 32px; }
   .dab-icon-btn { width: 32px; height: 32px; }
 }
+
+/* ---------- identity (GOAL 4): mascot, resolved role, project, task chip */
+.dab-card-main { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.dab-card-mascot { flex: none; display: inline-flex; align-items: center; justify-content: center; }
+.dab-card-mascot .dab-avatar, .dab-band-mascot .dab-avatar, .dab-hier-orch .dab-avatar, .dab-project-orch .dab-avatar { flex: none; }
+.dab-card-ident { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* Inside the identity column the rows align with the title, not with the mascot. */
+.dab-card-ident > .dab-meta, .dab-card-ident > .dab-wait, .dab-card-ident > .dab-err, .dab-card-ident > .dab-card-foot { padding-left: 0; }
+.dab-role-chip { display: inline-flex; align-items: center; max-width: 100%; min-width: 0; padding: 0 6px; border-radius: 999px; corner-shape: round;
+  background: var(--dab-chip-fill); color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 16px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-role-chip[data-resolution="generic"] { background: transparent; box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary)); }
+/* Family chip: identity context only, never a status colour. */
+.dab-family-chip { display: inline-flex; align-items: center; max-width: 100%; min-width: 0; padding: 0 6px; border-radius: 999px; corner-shape: round;
+  background: transparent; box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary));
+  color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-project-line { color: var(--dsw-alias-label-secondary); }
+.dab-task-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 0 6px; border-radius: 999px; corner-shape: round;
+  background: var(--dab-chip-fill); color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 16px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.dab-task-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--dsw-alias-label-secondary); }
+.dab-task-chip[data-tone="active"] .dab-task-dot { background: var(--dsw-alias-state-info-primary, var(--dsw-alias-brand-primary)); }
+.dab-task-chip[data-tone="waiting"] .dab-task-dot, .dab-task-chip[data-tone="reviewing"] .dab-task-dot,
+.dab-task-chip[data-tone="interrupted"] .dab-task-dot { background: var(--dsw-alias-state-warn-primary); }
+.dab-task-chip[data-tone="blocked"] .dab-task-dot { background: var(--dsw-alias-state-error-primary); }
+.dab-task-chip[data-tone="unread"] .dab-task-dot { background: var(--dsw-alias-state-success-primary); }
+.dab-task-chip[data-tone="done"] .dab-task-dot { background: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
+.dab-task-chip[data-tone="idle"] .dab-task-dot, .dab-task-chip[data-tone="gone"] .dab-task-dot { background: var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary)); }
+.dab-activity { margin-left: auto; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* ---------- mascot (ui/avatar.js owns the markup, this file owns the paint) */
+.dab-avatar { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: var(--dab-avatar-size, 40px); height: var(--dab-avatar-size, 40px); border-radius: 50%; }
+.dab-avatar[data-selected="true"] { box-shadow: 0 0 0 2px var(--dsw-alias-brand-primary); }
+.dab-avatar-img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.dab-avatar-fallback { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; border-radius: 50%; background: var(--dab-chip-fill); }
+/* Status dot: SEPARATE from the mascot; colour comes from the status tone, the
+   role colour never expresses a status. */
+.dab-avatar-dot { position: absolute; right: 0; bottom: 0; box-sizing: content-box; border-radius: 50%;
+  width: max(7px, calc(var(--dab-avatar-size, 40px) * 0.23)); height: max(7px, calc(var(--dab-avatar-size, 40px) * 0.23));
+  border: 2px solid var(--dab-card-fill); background: var(--dsw-alias-label-secondary); }
+.dab-avatar-dot[data-tone="active"] { background: var(--dsw-alias-state-success-primary); }
+.dab-avatar-dot[data-tone="planning"] { background: var(--dsw-alias-state-info-primary, var(--dsw-alias-brand-primary)); }
+.dab-avatar-dot[data-tone="waiting"], .dab-avatar-dot[data-tone="reviewing"],
+.dab-avatar-dot[data-tone="interrupted"] { background: var(--dsw-alias-state-warn-primary); }
+.dab-avatar-dot[data-tone="blocked"] { background: var(--dsw-alias-state-error-primary); }
+.dab-avatar-dot[data-tone="unread"] { background: var(--dsw-alias-state-success-primary); }
+.dab-avatar-dot[data-tone="done"] { background: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
+.dab-avatar-dot[data-tone="idle"] { background: var(--dsw-alias-label-secondary); }
+.dab-avatar-dot[data-tone="gone"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--dsw-alias-label-secondary); }
+.dab-avatar-task { position: absolute; left: 50%; bottom: -7px; transform: translateX(-50%); padding: 0 4px; border-radius: 999px;
+  font-size: 9px; line-height: 12px; white-space: nowrap; background: var(--dab-chip-fill); color: var(--dsw-alias-label-secondary); }
+.dab-project-orch { display: inline-flex; align-items: center; gap: 4px; min-width: 0; font-size: 12px; font-weight: 400; color: var(--dsw-alias-label-secondary); }
+.dab-project-orch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+.dab-dot[data-tone="idle"] { background: var(--dsw-alias-label-secondary); }
+
+/* ---------- supervision band (host supervision LAYER, not an agent) */
+.dab-band { flex: none; margin: 0 0 10px; border-radius: var(--dsw-radius-lg); background: var(--dab-card-fill); overflow: hidden; }
+.dab-band-head { position: relative; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 54px; padding: 8px 30px 8px 12px; border: 0; background: none;
+  color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: var(--dsw-radius-lg); }
+.dab-band-head > .dab-caret { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 12px; flex: none; color: var(--dsw-alias-label-secondary); }
+.dab-band-head:focus-visible, .dab-hier-project-head:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+.dab-band-mascot { flex: none; display: inline-flex; align-items: center; }
+.dab-band-ident { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dab-band-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; font-weight: 500; }
+.dab-band-sub { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dab-band-counters { flex: 0 1 auto; display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.dab-band-body { display: flex; flex-direction: column; gap: 8px; padding: 2px 12px 12px; min-width: 0; }
+/* The body is always in the DOM (aria-controls must resolve); collapsed = hidden. */
+.dab-band-body[hidden] { display: none; }
+.dab-band-notice { padding: 6px 8px; border-radius: var(--dsw-radius-sm); font-size: 12px;
+  color: var(--dsw-alias-state-warn-primary); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 9%, transparent); }
+.dab-band-agent { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.dab-band-section { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dab-band-list { max-height: 180px; overflow: auto; }
+.dab-band-list li { align-items: flex-start; }
+.dab-sup-status { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dab-sup-status[data-status="active"] .dab-dot { background: var(--dsw-alias-brand-primary); }
+.dab-sup-status[data-status="blocked"] .dab-dot { background: var(--dsw-alias-state-error-primary); }
+.dab-sup-status[data-status="unknown"] .dab-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--dsw-alias-label-secondary); }
+.dab-tag[data-tone="proposal"] { color: var(--dsw-alias-state-warn-primary); }
+.dab-cap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 14px; }
+.dab-cap-row { display: grid; grid-template-columns: minmax(96px, auto) auto; gap: 0 8px; align-items: baseline; padding: 3px 0;
+  border-top: 1px solid var(--dsw-alias-border-l3, transparent); font-size: 12px; }
+.dab-cap-label { color: var(--dsw-alias-label-primary); }
+.dab-cap-value { font-weight: 500; }
+.dab-cap-value[data-available="true"] { color: var(--dsw-alias-label-secondary); }
+.dab-cap-value[data-available="false"] { color: var(--dsw-alias-state-warn-primary); }
+.dab-cap-reason { grid-column: 1 / -1; font-size: 11px; line-height: 15px; color: var(--dsw-alias-label-secondary); }
+.dab-cap-reason-label { opacity: .75; }
+
+/* ---------- hierarchy view: workspace -> projects -> teams of cards */
+.dab-hier { display: flex; flex-direction: column; gap: 10px; }
+.dab-hier-ws { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--dsw-radius-lg); background: var(--dab-card-fill); }
+.dab-hier-ws-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.dab-hier-ws-mascot { flex: none; display: inline-flex; align-items: center; }
+.dab-hier-ws-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dab-hier-ws-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; font-weight: 500; }
+.dab-hier-ws-sub { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dab-hier-projects { display: flex; flex-direction: column; gap: 10px; }
+.dab-hier-project { border-radius: var(--dsw-radius-lg); background: var(--dab-card-fill); padding: 4px 6px 8px; }
+.dab-hier-project-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; padding: 6px; border: 0; border-radius: var(--dsw-radius-md);
+  background: none; color: inherit; font: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: pointer; }
+.dab-hier-project-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42%; }
+.dab-hier-orch { display: inline-flex; align-items: center; gap: 4px; min-width: 0; font-size: 12px; font-weight: 400; color: var(--dsw-alias-label-secondary); }
+.dab-hier-orch[data-gap="true"] { color: var(--dsw-alias-state-warn-primary); }
+.dab-gap-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1.5px currentColor; }
+.dab-hier-counts { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dab-hier-project-head > .dab-hier-counts { margin-left: auto; }
+.dab-hier-body { display: flex; flex-direction: column; gap: 8px; padding: 2px 4px; }
+.dab-hier-team { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dab-hier-team-title { font-size: 12px; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-hier-team-note { font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.dab-hier-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px; }
+.dab-hier-cards .dab-card { width: auto; }
+.dab-hier-notes { padding: 6px 8px; border-radius: var(--dsw-radius-md); background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent); }
+
+/* ---------- narrow: stacked band, single-column hierarchy (no connector lines) */
+@container dab (max-width: 720px) {
+  .dab-band-head { flex-wrap: wrap; align-items: flex-start; min-height: 0; }
+  /* The chevron stays on the FIRST line (absolute), never under the counters. */
+  .dab-band-head > .dab-caret { top: 10px; transform: none; }
+  .dab-band-counters { width: 100%; justify-content: flex-start; }
+  .dab-band-body { padding: 2px 10px 10px; }
+  .dab-cap-grid { grid-template-columns: 1fr; }
+  .dab-hier-project-head { align-items: flex-start; }
+  .dab-hier-project-title { max-width: 100%; white-space: normal; }
+  .dab-hier-project-head > .dab-hier-counts { margin-left: 0; }
+  .dab-hier-cards { grid-template-columns: 1fr; }
+  .dab-project-orch-name { max-width: 110px; }
+}
+@container dab (max-width: 420px) {
+  .dab-hier-ws-head { align-items: flex-start; }
+  .dab-band-counters { gap: 8px; }
+  .dab-hier-ws-sub { gap: 6px; }
+}
 `
 
 function dabInjectStyles(ctxStyles) {
@@ -2655,6 +4839,176 @@ function dabInjectStyles(ctxStyles) {
 }
 
 
+// ---- src/client/ui/agent-bots-assets.js ----
+/* GENERATED FILE — run node scripts/build-assets.mjs */
+const AGENT_BOT_ASSETS = Object.freeze({
+  architect: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLWFyY2hpdGVjdCI+Cjx0aXRsZSBpZD0idGl0bGUtYXJjaGl0ZWN0Ij5BcmNoaXRlY3Qg4oCUIENvbsOnb2l0IGV0IHN0cnVjdHVyZTwvdGl0bGU+CjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZGllbnQtYXJjaGl0ZWN0IiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjQTU3NUY5Ii8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiM4OTVBRUQiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM3MzQ2RDciLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPGVsbGlwc2UgY3g9IjEyOCIgY3k9IjIzMCIgcng9IjgxIiByeT0iOSIgZmlsbD0iIzg5NUFFRCIgb3BhY2l0eT0iMC4xNiIvPgo8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM4OTVBRUQiIHN0cm9rZS13aWR0aD0iOS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxwYXRoIGQ9Ik0gNTMgNDMgTCA0MSAzNCIvPgo8cGF0aCBkPSJNIDY1IDMwIEwgNTcgMTciLz4KPHBhdGggZD0iTSA4MyAyNSBMIDgwIDExIi8+PC9nPgo8cGF0aCBkPSJNIDEwNy4xMyA0Ni45NyBDIDEwMS4zOCA1MS4zNCA4Ni4wMiA2NS40NiA3OS4wOCA3My41MyBDIDcyLjE1IDgxLjYxIDU4LjI5IDEwMC4yOSA1Mi4zNyAxMTAuNzMgQyA0Ni40NSAxMjEuMTYgMzUuMDQgMTQ4LjY1IDMyLjM0IDE1NS44OSBDIDI5LjYzIDE2My4xMiAzMC40OSAxNjQuMTQgMzEuMDAgMTY3Ljg0IEMgMzEuNTEgMTcxLjU0IDM0LjgyIDE4MS45MSAzNi4zNCAxODUuMTEgQyAzNy44NyAxODguMzAgNDAuMTQgMTkwLjg5IDQzLjAyIDE5My4wOCBDIDQ1LjkwIDE5NS4yNiA1MS45NCAyMDAuMTkgNTkuMDUgMjAyLjM3IEMgNjYuMTUgMjA0LjU2IDg0Ljc0IDIwOS4zMyA5OS4xMiAyMTAuMzQgQyAxMTMuNTAgMjExLjM1IDE2MS4wNyAyMTAuNjggMTcyLjU4IDIxMC4zNCBDIDE4NC4wOCAyMTAuMDEgMTg1LjU0IDIwOC44NiAxODkuOTQgMjA3LjY5IEMgMTk0LjM0IDIwNi41MSAyMDMuOTIgMjAyLjkwIDIwNy4zMCAyMDEuMDUgQyAyMTAuNjggMTk5LjIwIDIxNC42MiAxOTUuNjAgMjE2LjY1IDE5My4wOCBDIDIxOC42OCAxOTAuNTUgMjIyLjMxIDE4NS44MyAyMjMuMzMgMTgxLjEyIEMgMjI0LjM0IDE3Ni40MSAyMjUuODUgMTYyLjk1IDIyNC42NiAxNTUuODkgQyAyMjMuNDggMTQ4LjgyIDIxOC4wNCAxMzQuNDIgMjEzLjk4IDEyNS4zNCBDIDIwOS45MiAxMTYuMjUgMTk3LjAxIDkxLjczIDE5Mi42MSA4NC4xNiBDIDE4OC4yMSA3Ni41OSAxODIuODEgNjkuNzcgMTc5LjI1IDY1LjU2IEMgMTc1LjcwIDYxLjM2IDE2OC43OSA1NC4xNSAxNjQuNTYgNTAuOTUgQyAxNjAuMzMgNDcuNzYgMTUwLjk0IDQxLjg0IDE0NS44NiA0MC4zMyBDIDE0MC43OSAzOC44MSAxMjkuNDAgMzguMTYgMTI0LjQ5IDM5LjAwIEMgMTE5LjU5IDM5Ljg0IDExMi44OCA0Mi42MCAxMDcuMTMgNDYuOTcgWiIgZmlsbD0idXJsKCNncmFkaWVudC1hcmNoaXRlY3QpIi8+CjxnIGZpbGw9IndoaXRlIj48ZWxsaXBzZSBjeD0iMTAwIiBjeT0iMTA4IiByeD0iOCIgcnk9IjEzLjAiLz48ZWxsaXBzZSBjeD0iMTM0IiBjeT0iMTA4IiByeD0iOCIgcnk9IjEzLjAiLz48L2c+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDE1MSAxNDcpIHNjYWxlKDEuMSkiPjxnIHN0cm9rZT0iI2ZmZiIgZmlsbD0ibm9uZSIgc3Ryb2tlLXdpZHRoPSI1LjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTI1IDUgNDUgMTUgMjUgMjYgNSAxNSBaIiBmaWxsPSIjZmZmIiBzdHJva2U9Im5vbmUiLz48cGF0aCBkPSJNNSAyNiAyNSAzNyA0NSAyNiBNNSAzNiAyNSA0NyA0NSAzNiIvPjwvZz48L2c+Cjwvc3ZnPgo=', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLWFyY2hpdGVjdCI+Cjx0aXRsZSBpZD0idGl0bGUtYXJjaGl0ZWN0Ij5BcmNoaXRlY3Qg4oCUIENvbsOnb2l0IGV0IHN0cnVjdHVyZTwvdGl0bGU+CjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZGllbnQtYXJjaGl0ZWN0IiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjQTU3NUY5Ii8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiM4OTVBRUQiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM3MzQ2RDciLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPHBhdGggZD0iTSAxMDcuMTMgNDYuOTcgQyAxMDEuMzggNTEuMzQgODYuMDIgNjUuNDYgNzkuMDggNzMuNTMgQyA3Mi4xNSA4MS42MSA1OC4yOSAxMDAuMjkgNTIuMzcgMTEwLjczIEMgNDYuNDUgMTIxLjE2IDM1LjA0IDE0OC42NSAzMi4zNCAxNTUuODkgQyAyOS42MyAxNjMuMTIgMzAuNDkgMTY0LjE0IDMxLjAwIDE2Ny44NCBDIDMxLjUxIDE3MS41NCAzNC44MiAxODEuOTEgMzYuMzQgMTg1LjExIEMgMzcuODcgMTg4LjMwIDQwLjE0IDE5MC44OSA0My4wMiAxOTMuMDggQyA0NS45MCAxOTUuMjYgNTEuOTQgMjAwLjE5IDU5LjA1IDIwMi4zNyBDIDY2LjE1IDIwNC41NiA4NC43NCAyMDkuMzMgOTkuMTIgMjEwLjM0IEMgMTEzLjUwIDIxMS4zNSAxNjEuMDcgMjEwLjY4IDE3Mi41OCAyMTAuMzQgQyAxODQuMDggMjEwLjAxIDE4NS41NCAyMDguODYgMTg5Ljk0IDIwNy42OSBDIDE5NC4zNCAyMDYuNTEgMjAzLjkyIDIwMi45MCAyMDcuMzAgMjAxLjA1IEMgMjEwLjY4IDE5OS4yMCAyMTQuNjIgMTk1LjYwIDIxNi42NSAxOTMuMDggQyAyMTguNjggMTkwLjU1IDIyMi4zMSAxODUuODMgMjIzLjMzIDE4MS4xMiBDIDIyNC4zNCAxNzYuNDEgMjI1Ljg1IDE2Mi45NSAyMjQuNjYgMTU1Ljg5IEMgMjIzLjQ4IDE0OC44MiAyMTguMDQgMTM0LjQyIDIxMy45OCAxMjUuMzQgQyAyMDkuOTIgMTE2LjI1IDE5Ny4wMSA5MS43MyAxOTIuNjEgODQuMTYgQyAxODguMjEgNzYuNTkgMTgyLjgxIDY5Ljc3IDE3OS4yNSA2NS41NiBDIDE3NS43MCA2MS4zNiAxNjguNzkgNTQuMTUgMTY0LjU2IDUwLjk1IEMgMTYwLjMzIDQ3Ljc2IDE1MC45NCA0MS44NCAxNDUuODYgNDAuMzMgQyAxNDAuNzkgMzguODEgMTI5LjQwIDM4LjE2IDEyNC40OSAzOS4wMCBDIDExOS41OSAzOS44NCAxMTIuODggNDIuNjAgMTA3LjEzIDQ2Ljk3IFoiIGZpbGw9InVybCgjZ3JhZGllbnQtYXJjaGl0ZWN0KSIvPgo8ZyBmaWxsPSJ3aGl0ZSI+PGVsbGlwc2UgY3g9IjEwMCIgY3k9IjEwOCIgcng9IjgiIHJ5PSIxMy4wIi8+PGVsbGlwc2UgY3g9IjEzNCIgY3k9IjEwOCIgcng9IjgiIHJ5PSIxMy4wIi8+PC9nPgo8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxNTEgMTQ3KSBzY2FsZSgxLjEpIj48ZyBzdHJva2U9IiNmZmYiIGZpbGw9Im5vbmUiIHN0cm9rZS13aWR0aD0iNS40IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Ik0yNSA1IDQ1IDE1IDI1IDI2IDUgMTUgWiIgZmlsbD0iI2ZmZiIgc3Ryb2tlPSJub25lIi8+PHBhdGggZD0iTTUgMjYgMjUgMzcgNDUgMjYgTTUgMzYgMjUgNDcgNDUgMzYiLz48L2c+PC9nPgo8L3N2Zz4K' }),
+  auditor: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLWF1ZGl0b3IiPgo8dGl0bGUgaWQ9InRpdGxlLWF1ZGl0b3IiPkF1ZGl0b3Ig4oCUIEF1ZGl0ZSBldCBjb250csO0bGU8L3RpdGxlPgo8ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWRpZW50LWF1ZGl0b3IiIHgxPSIxOSUiIHkxPSIwJSIgeDI9Ijc3JSIgeTI9IjEwMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNGREEyNDkiLz48c3RvcCBvZmZzZXQ9IjUzJSIgc3RvcC1jb2xvcj0iI0VCN0UyNSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0RENjkxNyIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPgo8ZWxsaXBzZSBjeD0iMTI4IiBjeT0iMjMwIiByeD0iODEiIHJ5PSI5IiBmaWxsPSIjRUI3RTI1IiBvcGFjaXR5PSIwLjE2Ii8+CjxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI0VCN0UyNSIgc3Ryb2tlLXdpZHRoPSI5LjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCI+PHBhdGggZD0iTSAxOTYgNDkgTCAyMDUgMjkiLz4KPHBhdGggZD0iTSAyMTIgNTUgTCAyMjggNDciLz48L2c+CjxwYXRoIGQ9Ik0gMTA5LjY0IDQ4LjM1IEMgMTAxLjM3IDUwLjA2IDg1LjI1IDU3LjA2IDc4LjM2IDYxLjg1IEMgNzEuNDcgNjYuNjMgNTkuNTUgNzkuNjQgNTUuMjQgODYuMTQgQyA1MC45MyA5Mi42MyA0NS43NCAxMDUuMjcgNDQuMzYgMTEzLjEzIEMgNDIuOTggMTIwLjk5IDQyLjgxIDE0MC4xOCA0NC4zNiAxNDguMjIgQyA0NS45MSAxNTYuMjUgNTIuMjkgMTcwLjI0IDU2LjYwIDE3Ni41NiBDIDYwLjkxIDE4Mi44OSA3MS44MSAxOTMuODggNzguMzYgMTk4LjE1IEMgODQuOTEgMjAyLjQzIDk5LjY3IDIwOC43NiAxMDguMjggMjEwLjMwIEMgMTE2Ljg5IDIxMS44NCAxMzkuMzAgMjEwLjk4IDE0Ni4zNiAyMTAuMzAgQyAxNTMuNDIgMjA5LjYyIDE1OS4yMiAyMDcuMTIgMTY0LjA0IDIwNC45MCBDIDE2OC44NiAyMDIuNjggMTc5LjYyIDE5Ny4wMyAxODQuNDQgMTkyLjc2IEMgMTg5LjI2IDE4OC40OCAxOTguNjcgMTc3LjQ5IDIwMi4xMiAxNzEuMTYgQyAyMDUuNTcgMTY0Ljg0IDIxMC42MSAxNTAuMTcgMjExLjY0IDE0Mi44MiBDIDIxMi42NyAxMzUuNDcgMjEyLjUyIDEyMS4xNiAyMTAuMjggMTEzLjEzIEMgMjA4LjA0IDEwNS4xMCAxOTguOTYgODYuMjMgMTkzLjk2IDc5LjM5IEMgMTg4Ljk2IDcyLjU1IDE3Ny4yMSA2My4wOCAxNzAuODQgNTkuMTUgQyAxNjQuNDcgNTUuMjEgMTUxLjM5IDQ5LjcyIDE0My42NCA0OC4zNSBDIDEzNS44OSA0Ni45OCAxMTcuOTEgNDYuNjQgMTA5LjY0IDQ4LjM1IFoiIGZpbGw9InVybCgjZ3JhZGllbnQtYXVkaXRvcikiLz4KPGcgZmlsbD0id2hpdGUiPjxlbGxpcHNlIGN4PSI5MSIgY3k9IjEwNyIgcng9IjgiIHJ5PSIxMy4wIi8+PGVsbGlwc2UgY3g9IjEyOCIgY3k9IjEwNyIgcng9IjgiIHJ5PSIxMy4wIi8+PC9nPgo8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxMzIgMTM0KSBzY2FsZSgxLjAyKSI+PGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjUuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cmVjdCB4PSIxMCIgeT0iMTAiIHdpZHRoPSIzMiIgaGVpZ2h0PSIzNiIgcng9IjQiLz48cGF0aCBkPSJNMjAgNyBIMzEgQTMgMyAwIDAgMSAzNCAxMCBWMTUgSDE3IFYxMCBBMyAzIDAgMCAxIDIwIDcgWiIgZmlsbD0iI2ZmZiIvPjxwYXRoIGQ9Ik0xNyAzMCAyMyAzNiAzNSAyMyIvPjwvZz48L2c+Cjwvc3ZnPgo=', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLWF1ZGl0b3IiPgo8dGl0bGUgaWQ9InRpdGxlLWF1ZGl0b3IiPkF1ZGl0b3Ig4oCUIEF1ZGl0ZSBldCBjb250csO0bGU8L3RpdGxlPgo8ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWRpZW50LWF1ZGl0b3IiIHgxPSIxOSUiIHkxPSIwJSIgeDI9Ijc3JSIgeTI9IjEwMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNGREEyNDkiLz48c3RvcCBvZmZzZXQ9IjUzJSIgc3RvcC1jb2xvcj0iI0VCN0UyNSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0RENjkxNyIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPgo8cGF0aCBkPSJNIDEwOS42NCA0OC4zNSBDIDEwMS4zNyA1MC4wNiA4NS4yNSA1Ny4wNiA3OC4zNiA2MS44NSBDIDcxLjQ3IDY2LjYzIDU5LjU1IDc5LjY0IDU1LjI0IDg2LjE0IEMgNTAuOTMgOTIuNjMgNDUuNzQgMTA1LjI3IDQ0LjM2IDExMy4xMyBDIDQyLjk4IDEyMC45OSA0Mi44MSAxNDAuMTggNDQuMzYgMTQ4LjIyIEMgNDUuOTEgMTU2LjI1IDUyLjI5IDE3MC4yNCA1Ni42MCAxNzYuNTYgQyA2MC45MSAxODIuODkgNzEuODEgMTkzLjg4IDc4LjM2IDE5OC4xNSBDIDg0LjkxIDIwMi40MyA5OS42NyAyMDguNzYgMTA4LjI4IDIxMC4zMCBDIDExNi44OSAyMTEuODQgMTM5LjMwIDIxMC45OCAxNDYuMzYgMjEwLjMwIEMgMTUzLjQyIDIwOS42MiAxNTkuMjIgMjA3LjEyIDE2NC4wNCAyMDQuOTAgQyAxNjguODYgMjAyLjY4IDE3OS42MiAxOTcuMDMgMTg0LjQ0IDE5Mi43NiBDIDE4OS4yNiAxODguNDggMTk4LjY3IDE3Ny40OSAyMDIuMTIgMTcxLjE2IEMgMjA1LjU3IDE2NC44NCAyMTAuNjEgMTUwLjE3IDIxMS42NCAxNDIuODIgQyAyMTIuNjcgMTM1LjQ3IDIxMi41MiAxMjEuMTYgMjEwLjI4IDExMy4xMyBDIDIwOC4wNCAxMDUuMTAgMTk4Ljk2IDg2LjIzIDE5My45NiA3OS4zOSBDIDE4OC45NiA3Mi41NSAxNzcuMjEgNjMuMDggMTcwLjg0IDU5LjE1IEMgMTY0LjQ3IDU1LjIxIDE1MS4zOSA0OS43MiAxNDMuNjQgNDguMzUgQyAxMzUuODkgNDYuOTggMTE3LjkxIDQ2LjY0IDEwOS42NCA0OC4zNSBaIiBmaWxsPSJ1cmwoI2dyYWRpZW50LWF1ZGl0b3IpIi8+CjxnIGZpbGw9IndoaXRlIj48ZWxsaXBzZSBjeD0iOTEiIGN5PSIxMDciIHJ4PSI4IiByeT0iMTMuMCIvPjxlbGxpcHNlIGN4PSIxMjgiIGN5PSIxMDciIHJ4PSI4IiByeT0iMTMuMCIvPjwvZz4KPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTMyIDEzNCkgc2NhbGUoMS4wMikiPjxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSI1LjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHJlY3QgeD0iMTAiIHk9IjEwIiB3aWR0aD0iMzIiIGhlaWdodD0iMzYiIHJ4PSI0Ii8+PHBhdGggZD0iTTIwIDcgSDMxIEEzIDMgMCAwIDEgMzQgMTAgVjE1IEgxNyBWMTAgQTMgMyAwIDAgMSAyMCA3IFoiIGZpbGw9IiNmZmYiLz48cGF0aCBkPSJNMTcgMzAgMjMgMzYgMzUgMjMiLz48L2c+PC9nPgo8L3N2Zz4K' }),
+  dispatcher: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLWRpc3BhdGNoZXIiPgo8dGl0bGUgaWQ9InRpdGxlLWRpc3BhdGNoZXIiPkRpc3BhdGNoZXIg4oCUIERpc3RyaWJ1ZSBsZXMgdMOiY2hlczwvdGl0bGU+CjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZGllbnQtZGlzcGF0Y2hlciIgeDE9IjE5JSIgeTE9IjAlIiB4Mj0iNzclIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzFERDVGMiIvPjxzdG9wIG9mZnNldD0iNTMlIiBzdG9wLWNvbG9yPSIjMDNCNEUyIi8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMDA5OUQwIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+CjxlbGxpcHNlIGN4PSIxMjgiIGN5PSIyMzAiIHJ4PSI4MSIgcnk9IjkiIGZpbGw9IiMwM0I0RTIiIG9wYWNpdHk9IjAuMTYiLz4KPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMDNCNEUyIiBzdHJva2Utd2lkdGg9IjkuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIj48cGF0aCBkPSJNIDE5NiA0NiBMIDIwNCAyNCIvPgo8cGF0aCBkPSJNIDIxMCA1NCBMIDIyNSA0NSIvPgo8cGF0aCBkPSJNIDIyMCA2NiBMIDIzNiA2MCIvPjwvZz4KPHBhdGggZD0iTSA2MS4zMyA1OS4wMCBDIDU3LjQ1IDYxLjAzIDU2LjM2IDYzLjEzIDU0LjY3IDY1LjY3IEMgNTIuOTggNjguMjAgNDkuMzUgNzMuMDkgNDguMDAgNzkuMDAgQyA0Ni42NSA4NC45MSA0NC4zNCAxMDEuMzYgNDQuMDAgMTEyLjMzIEMgNDMuNjYgMTIzLjMxIDQ0LjE1IDE1NS44NyA0NS4zMyAxNjUuNjcgQyA0Ni41MiAxNzUuNDYgNTAuNDYgMTg1LjExIDUzLjMzIDE4OS42NyBDIDU2LjIwIDE5NC4yMyA2Mi4yNiAxOTkuMzAgNjguMDAgMjAxLjY3IEMgNzMuNzQgMjA0LjAzIDg1LjgzIDIwNy4zMiA5OC42NyAyMDguMzMgQyAxMTEuNTAgMjA5LjM1IDE1OC4zNiAyMDkuODQgMTY5LjMzIDIwOS42NyBDIDE4MC4zMSAyMDkuNTAgMTgxLjk2IDIwOC4wMSAxODUuMzMgMjA3LjAwIEMgMTg4LjcxIDIwNS45OSAxOTMuMzAgMjA0LjIwIDE5Ni4wMCAyMDEuNjcgQyAxOTguNzAgMTk5LjEzIDIwNC44MSAxOTEuNTYgMjA2LjY3IDE4Ny4wMCBDIDIwOC41MiAxODIuNDQgMjEwLjUwIDE3Ny44MyAyMTAuNjcgMTY1LjY3IEMgMjEwLjg0IDE1My41MSAyMDkuMzUgMTAzLjMzIDIwOC4wMCA5MS4wMCBDIDIwNi42NSA3OC42NyAyMDMuMDQgNzIuODkgMjAwLjAwIDY4LjMzIEMgMTk2Ljk2IDYzLjc3IDE5MC4wOCA1Ny41MyAxODQuMDAgNTUuMDAgQyAxNzcuOTIgNTIuNDcgMTU5LjI2IDQ5LjM1IDE1Mi4wMCA0OC4zMyBDIDE0NC43NCA0Ny4zMiAxMzUuMTEgNDYuODMgMTI2LjY3IDQ3LjAwIEMgMTE4LjIyIDQ3LjE3IDkzLjYxIDQ4LjE1IDg1LjMzIDQ5LjY3IEMgNzcuMDYgNTEuMTkgNjUuMjIgNTYuOTcgNjEuMzMgNTkuMDAgWiIgZmlsbD0idXJsKCNncmFkaWVudC1kaXNwYXRjaGVyKSIvPgo8ZyBmaWxsPSJ3aGl0ZSI+PGVsbGlwc2UgY3g9IjkyIiBjeT0iMTEwIiByeD0iOCIgcnk9IjEzLjAiLz48ZWxsaXBzZSBjeD0iMTI3IiBjeT0iMTEwIiByeD0iOCIgcnk9IjEzLjAiLz48L2c+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDE0OCAxNDUpIHNjYWxlKDEuMDYpIj48ZyBmaWxsPSJub25lIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMjUgNDMgVjkgTTI1IDI3IEw5IDE0IE0yNSAyNyBMNDEgMTQiLz48cGF0aCBkPSJNMTcgMTQgSDkgVjIyIE0zMyAxNCBINDEgVjIyIE0xOCAxMyBMMjUgNiBMMzIgMTMiLz48L2c+PC9nPgo8L3N2Zz4K', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLWRpc3BhdGNoZXIiPgo8dGl0bGUgaWQ9InRpdGxlLWRpc3BhdGNoZXIiPkRpc3BhdGNoZXIg4oCUIERpc3RyaWJ1ZSBsZXMgdMOiY2hlczwvdGl0bGU+CjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZGllbnQtZGlzcGF0Y2hlciIgeDE9IjE5JSIgeTE9IjAlIiB4Mj0iNzclIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzFERDVGMiIvPjxzdG9wIG9mZnNldD0iNTMlIiBzdG9wLWNvbG9yPSIjMDNCNEUyIi8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMDA5OUQwIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+CjxwYXRoIGQ9Ik0gNjEuMzMgNTkuMDAgQyA1Ny40NSA2MS4wMyA1Ni4zNiA2My4xMyA1NC42NyA2NS42NyBDIDUyLjk4IDY4LjIwIDQ5LjM1IDczLjA5IDQ4LjAwIDc5LjAwIEMgNDYuNjUgODQuOTEgNDQuMzQgMTAxLjM2IDQ0LjAwIDExMi4zMyBDIDQzLjY2IDEyMy4zMSA0NC4xNSAxNTUuODcgNDUuMzMgMTY1LjY3IEMgNDYuNTIgMTc1LjQ2IDUwLjQ2IDE4NS4xMSA1My4zMyAxODkuNjcgQyA1Ni4yMCAxOTQuMjMgNjIuMjYgMTk5LjMwIDY4LjAwIDIwMS42NyBDIDczLjc0IDIwNC4wMyA4NS44MyAyMDcuMzIgOTguNjcgMjA4LjMzIEMgMTExLjUwIDIwOS4zNSAxNTguMzYgMjA5Ljg0IDE2OS4zMyAyMDkuNjcgQyAxODAuMzEgMjA5LjUwIDE4MS45NiAyMDguMDEgMTg1LjMzIDIwNy4wMCBDIDE4OC43MSAyMDUuOTkgMTkzLjMwIDIwNC4yMCAxOTYuMDAgMjAxLjY3IEMgMTk4LjcwIDE5OS4xMyAyMDQuODEgMTkxLjU2IDIwNi42NyAxODcuMDAgQyAyMDguNTIgMTgyLjQ0IDIxMC41MCAxNzcuODMgMjEwLjY3IDE2NS42NyBDIDIxMC44NCAxNTMuNTEgMjA5LjM1IDEwMy4zMyAyMDguMDAgOTEuMDAgQyAyMDYuNjUgNzguNjcgMjAzLjA0IDcyLjg5IDIwMC4wMCA2OC4zMyBDIDE5Ni45NiA2My43NyAxOTAuMDggNTcuNTMgMTg0LjAwIDU1LjAwIEMgMTc3LjkyIDUyLjQ3IDE1OS4yNiA0OS4zNSAxNTIuMDAgNDguMzMgQyAxNDQuNzQgNDcuMzIgMTM1LjExIDQ2LjgzIDEyNi42NyA0Ny4wMCBDIDExOC4yMiA0Ny4xNyA5My42MSA0OC4xNSA4NS4zMyA0OS42NyBDIDc3LjA2IDUxLjE5IDY1LjIyIDU2Ljk3IDYxLjMzIDU5LjAwIFoiIGZpbGw9InVybCgjZ3JhZGllbnQtZGlzcGF0Y2hlcikiLz4KPGcgZmlsbD0id2hpdGUiPjxlbGxpcHNlIGN4PSI5MiIgY3k9IjExMCIgcng9IjgiIHJ5PSIxMy4wIi8+PGVsbGlwc2UgY3g9IjEyNyIgY3k9IjExMCIgcng9IjgiIHJ5PSIxMy4wIi8+PC9nPgo8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxNDggMTQ1KSBzY2FsZSgxLjA2KSI+PGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTI1IDQzIFY5IE0yNSAyNyBMOSAxNCBNMjUgMjcgTDQxIDE0Ii8+PHBhdGggZD0iTTE3IDE0IEg5IFYyMiBNMzMgMTQgSDQxIFYyMiBNMTggMTMgTDI1IDYgTDMyIDEzIi8+PC9nPjwvZz4KPC9zdmc+Cg==' }),
+  guardian: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLWd1YXJkaWFuIj4KPHRpdGxlIGlkPSJ0aXRsZS1ndWFyZGlhbiI+R3VhcmRpYW4g4oCUIFPDqWN1cmlzZSBldCBhcHBsaXF1ZSBsZXMgcsOoZ2xlczwvdGl0bGU+CjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZGllbnQtZ3VhcmRpYW4iIHgxPSIxOSUiIHkxPSIwJSIgeDI9Ijc3JSIgeTI9IjEwMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNGRDg3ODIiLz48c3RvcCBvZmZzZXQ9IjUzJSIgc3RvcC1jb2xvcj0iI0ZFNjU2MCIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0YxNEI0OSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPgo8ZWxsaXBzZSBjeD0iMTI4IiBjeT0iMjMwIiByeD0iODEiIHJ5PSI5IiBmaWxsPSIjRkU2NTYwIiBvcGFjaXR5PSIwLjE2Ii8+CjxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI0ZFNjU2MCIgc3Ryb2tlLXdpZHRoPSI5LjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCI+PHBhdGggZD0iTSAxOTQgNTYgTCAyMDMgMzUiLz4KPHBhdGggZD0iTSAyMTIgNjUgTCAyMjYgNTciLz48L2c+CjxwYXRoIGQ9Ik0gNzYuNzYgNjUuNzAgQyA3My4wMCA3MS42MyA1NC41NyAxMDAuMjQgNDkuNzkgMTA4LjU1IEMgNDUuMDEgMTE2Ljg2IDQwLjIwIDEyNi4zOSAzOS4wMCAxMzEuMzEgQyAzNy44MCAxMzYuMjMgMzYuNDIgMTM4LjkwIDQwLjM1IDE0Ny4zOCBDIDQ0LjI4IDE1NS44NiA2NS4wNiAxOTAuNjQgNzAuMDIgMTk4LjI3IEMgNzQuOTcgMjA1LjkwIDc3LjA2IDIwNS45NSA3OS40NSAyMDcuNjQgQyA4MS44NSAyMDkuMzQgNzcuNjIgMjExLjE1IDg4Ljg5IDIxMS42NiBDIDEwMC4xNyAyMTIuMTcgMTU3LjM1IDIxMi4xNyAxNjguNDUgMjExLjY2IEMgMTc5LjU2IDIxMS4xNSAxNzIuMjggMjEzLjA3IDE3Ni41NSAyMDcuNjQgQyAxODAuODIgMjAyLjIyIDE5Ny4yMSAxNzcuMjkgMjAyLjE3IDE2OC44MSBDIDIwNy4xMiAxNjAuMzMgMjE0LjExIDE0NS43OCAyMTUuNjUgMTQwLjY5IEMgMjE3LjE5IDEzNS42MCAyMTguNTcgMTM3LjI5IDIxNC4zMCAxMjguNjMgQyAyMTAuMDMgMTE5Ljk4IDE4Ny4yMyA4MC43MCAxODEuOTQgNzIuMzkgQyAxNzYuNjQgNjQuMDggMTc1LjIzIDY0LjcxIDE3Mi41MCA2My4wMiBDIDE2OS43NyA2MS4zMiAxNzAuNDQgNTkuNTEgMTYwLjM2IDU5LjAwIEMgMTUwLjI5IDU4LjQ5IDEwMy4xOSA1OC42NiA5Mi45NCA1OS4wMCBDIDgyLjY5IDU5LjM0IDgxLjUwIDYwLjgzIDc5LjQ1IDYxLjY4IEMgNzcuNDAgNjIuNTMgODAuNTIgNTkuNzYgNzYuNzYgNjUuNzAgWiIgZmlsbD0idXJsKCNncmFkaWVudC1ndWFyZGlhbikiLz4KPGcgZmlsbD0id2hpdGUiPjxlbGxpcHNlIGN4PSI5MiIgY3k9IjExMyIgcng9IjgiIHJ5PSIxMy4wIi8+PGVsbGlwc2UgY3g9IjEyNyIgY3k9IjExMyIgcng9IjgiIHJ5PSIxMy4wIi8+PC9nPgo8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxMzcgMTM1KSBzY2FsZSgxLjA0KSI+PHBhdGggZD0iTTI1IDQgQzMxIDkgNDAgMTIgNDQgMTMgVjI1IEM0NCAzNiAzNiA0MyAyNSA0OCBDMTQgNDMgNiAzNiA2IDI1IFYxMyBDMTIgMTIgMTkgOSAyNSA0IFoiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSI2IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L2c+Cjwvc3ZnPgo=', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLWd1YXJkaWFuIj4KPHRpdGxlIGlkPSJ0aXRsZS1ndWFyZGlhbiI+R3VhcmRpYW4g4oCUIFPDqWN1cmlzZSBldCBhcHBsaXF1ZSBsZXMgcsOoZ2xlczwvdGl0bGU+CjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZGllbnQtZ3VhcmRpYW4iIHgxPSIxOSUiIHkxPSIwJSIgeDI9Ijc3JSIgeTI9IjEwMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNGRDg3ODIiLz48c3RvcCBvZmZzZXQ9IjUzJSIgc3RvcC1jb2xvcj0iI0ZFNjU2MCIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0YxNEI0OSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPgo8cGF0aCBkPSJNIDc2Ljc2IDY1LjcwIEMgNzMuMDAgNzEuNjMgNTQuNTcgMTAwLjI0IDQ5Ljc5IDEwOC41NSBDIDQ1LjAxIDExNi44NiA0MC4yMCAxMjYuMzkgMzkuMDAgMTMxLjMxIEMgMzcuODAgMTM2LjIzIDM2LjQyIDEzOC45MCA0MC4zNSAxNDcuMzggQyA0NC4yOCAxNTUuODYgNjUuMDYgMTkwLjY0IDcwLjAyIDE5OC4yNyBDIDc0Ljk3IDIwNS45MCA3Ny4wNiAyMDUuOTUgNzkuNDUgMjA3LjY0IEMgODEuODUgMjA5LjM0IDc3LjYyIDIxMS4xNSA4OC44OSAyMTEuNjYgQyAxMDAuMTcgMjEyLjE3IDE1Ny4zNSAyMTIuMTcgMTY4LjQ1IDIxMS42NiBDIDE3OS41NiAyMTEuMTUgMTcyLjI4IDIxMy4wNyAxNzYuNTUgMjA3LjY0IEMgMTgwLjgyIDIwMi4yMiAxOTcuMjEgMTc3LjI5IDIwMi4xNyAxNjguODEgQyAyMDcuMTIgMTYwLjMzIDIxNC4xMSAxNDUuNzggMjE1LjY1IDE0MC42OSBDIDIxNy4xOSAxMzUuNjAgMjE4LjU3IDEzNy4yOSAyMTQuMzAgMTI4LjYzIEMgMjEwLjAzIDExOS45OCAxODcuMjMgODAuNzAgMTgxLjk0IDcyLjM5IEMgMTc2LjY0IDY0LjA4IDE3NS4yMyA2NC43MSAxNzIuNTAgNjMuMDIgQyAxNjkuNzcgNjEuMzIgMTcwLjQ0IDU5LjUxIDE2MC4zNiA1OS4wMCBDIDE1MC4yOSA1OC40OSAxMDMuMTkgNTguNjYgOTIuOTQgNTkuMDAgQyA4Mi42OSA1OS4zNCA4MS41MCA2MC44MyA3OS40NSA2MS42OCBDIDc3LjQwIDYyLjUzIDgwLjUyIDU5Ljc2IDc2Ljc2IDY1LjcwIFoiIGZpbGw9InVybCgjZ3JhZGllbnQtZ3VhcmRpYW4pIi8+CjxnIGZpbGw9IndoaXRlIj48ZWxsaXBzZSBjeD0iOTIiIGN5PSIxMTMiIHJ4PSI4IiByeT0iMTMuMCIvPjxlbGxpcHNlIGN4PSIxMjciIGN5PSIxMTMiIHJ4PSI4IiByeT0iMTMuMCIvPjwvZz4KPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTM3IDEzNSkgc2NhbGUoMS4wNCkiPjxwYXRoIGQ9Ik0yNSA0IEMzMSA5IDQwIDEyIDQ0IDEzIFYyNSBDNDQgMzYgMzYgNDMgMjUgNDggQzE0IDQzIDYgMzYgNiAyNSBWMTMgQzEyIDEyIDE5IDkgMjUgNCBaIiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9nPgo8L3N2Zz4K' }),
+  integrator: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLWludGVncmF0b3IiPgo8dGl0bGUgaWQ9InRpdGxlLWludGVncmF0b3IiPkludGVncmF0b3Ig4oCUIEFzc2VtYmxlIGV0IGNvbnNvbGlkZTwvdGl0bGU+CjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZGllbnQtaW50ZWdyYXRvciIgeDE9IjE5JSIgeTE9IjAlIiB4Mj0iNzclIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzM2RDBBNSIvPjxzdG9wIG9mZnNldD0iNTMlIiBzdG9wLWNvbG9yPSIjMTJBRDg2Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMDQ5MjcxIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+CjxlbGxpcHNlIGN4PSIxMjgiIGN5PSIyMzAiIHJ4PSI4MSIgcnk9IjkiIGZpbGw9IiMxMkFEODYiIG9wYWNpdHk9IjAuMTYiLz4KPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMTJBRDg2IiBzdHJva2Utd2lkdGg9IjkuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIj48cGF0aCBkPSJNIDIwMCA2MCBMIDIwOSAzNyIvPgo8cGF0aCBkPSJNIDIxNSA2OCBMIDIyNyA1NCIvPgo8cGF0aCBkPSJNIDIyNiA3NyBMIDI0MSA2OCIvPjwvZz4KPHBhdGggZD0iTSAyOS4wMCAxNTEuNTMgQyAyOC4zMiAxNTYuNjEgMjguMzEgMTY4LjY2IDMwLjMzIDE3NC4yNSBDIDMyLjM2IDE3OS44MyA0MS43OSAxOTIuMDcgNDUuMDAgMTk1LjYzIEMgNDguMjEgMTk5LjE4IDUyLjEyIDIwMC43OSA1NS42NyAyMDIuMzEgQyA1OS4yMSAyMDMuODMgNjUuOTEgMjA2LjQ3IDczLjAwIDIwNy42NSBDIDgwLjA5IDIwOC44NCAxMDAuMDEgMjExLjMzIDExMS42NyAyMTEuNjYgQyAxMjMuMzIgMjEyLjAwIDE1NC4zNiAyMTEuNjggMTY1LjAwIDIxMC4zMyBDIDE3NS42NCAyMDguOTcgMTg5LjQyIDIwNC4zNiAxOTUuNjcgMjAwLjk3IEMgMjAxLjkyIDE5Ny41OSAyMTEuMTIgMTg3LjY2IDIxNC4zMyAxODMuNjAgQyAyMTcuNTQgMTc5LjU0IDIxOS44MiAxNzIuNjMgMjIxLjAwIDE2OC45MCBDIDIyMi4xOCAxNjUuMTggMjI0LjAwIDE1OS4yOCAyMjMuNjcgMTU0LjIwIEMgMjIzLjMzIDE0OS4xMyAyMjEuMjAgMTM0Ljc0IDIxOC4zMyAxMjguODEgQyAyMTUuNDYgMTIyLjg5IDIwNC44OCAxMTAuOTkgMjAxLjAwIDEwNy40MyBDIDE5Ny4xMiAxMDMuODggMTkxLjIxIDEwMS43NyAxODcuNjcgMTAwLjc1IEMgMTg0LjEyIDk5Ljc0IDE3Ni4zOCAxMDEuOTUgMTczLjAwIDk5LjQyIEMgMTY5LjYyIDk2Ljg4IDE2My43MCA4NC4wOSAxNjEuMDAgODAuNzEgQyAxNTguMzAgNzcuMzIgMTU0LjM3IDc0LjU1IDE1MS42NyA3Mi42OSBDIDE0OC45NiA3MC44MyAxNDMuMjEgNjcuMzYgMTM5LjY3IDY2LjAxIEMgMTM2LjEyIDY0LjY1IDEyOC4yMyA2Mi4zNCAxMjMuNjcgNjIuMDAgQyAxMTkuMTEgNjEuNjYgMTA5LjQxIDYxLjQ3IDEwMy42NyA2My4zNCBDIDk3LjkyIDY1LjIwIDgzLjQwIDcyLjMwIDc4LjMzIDc2LjcwIEMgNzMuMjcgODEuMTAgNjYuMDMgOTMuMDAgNjMuNjcgOTguMDggQyA2MS4zMCAxMDMuMTYgNjEuODYgMTEzLjU3IDU5LjY3IDExNi43OSBDIDU3LjQ3IDEyMC4wMCA0OS4zNyAxMjEuMjcgNDYuMzMgMTIzLjQ3IEMgNDMuMjkgMTI1LjY3IDM3Ljg2IDEzMC42MCAzNS42NyAxMzQuMTYgQyAzMy40NyAxMzcuNzEgMjkuNjggMTQ2LjQ1IDI5LjAwIDE1MS41MyBaIiBmaWxsPSJ1cmwoI2dyYWRpZW50LWludGVncmF0b3IpIi8+CjxnIGZpbGw9IndoaXRlIj48ZWxsaXBzZSBjeD0iOTEiIGN5PSIxMjUiIHJ4PSI4IiByeT0iMTMuMCIvPjxlbGxpcHNlIGN4PSIxMjciIGN5PSIxMjUiIHJ4PSI4IiByeT0iMTMuMCIvPjwvZz4KPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTQ2IDE0NCkgc2NhbGUoMS4xNCkiPjxnIHN0cm9rZT0iI2ZmZiIgZmlsbD0ibm9uZSIgc3Ryb2tlLXdpZHRoPSI1LjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTI1IDUgNDUgMTUgMjUgMjYgNSAxNSBaIiBmaWxsPSIjZmZmIiBzdHJva2U9Im5vbmUiLz48cGF0aCBkPSJNNSAyNiAyNSAzNyA0NSAyNiBNNSAzNiAyNSA0NyA0NSAzNiIvPjwvZz48L2c+Cjwvc3ZnPgo=', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLWludGVncmF0b3IiPgo8dGl0bGUgaWQ9InRpdGxlLWludGVncmF0b3IiPkludGVncmF0b3Ig4oCUIEFzc2VtYmxlIGV0IGNvbnNvbGlkZTwvdGl0bGU+CjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZGllbnQtaW50ZWdyYXRvciIgeDE9IjE5JSIgeTE9IjAlIiB4Mj0iNzclIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzM2RDBBNSIvPjxzdG9wIG9mZnNldD0iNTMlIiBzdG9wLWNvbG9yPSIjMTJBRDg2Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMDQ5MjcxIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+CjxwYXRoIGQ9Ik0gMjkuMDAgMTUxLjUzIEMgMjguMzIgMTU2LjYxIDI4LjMxIDE2OC42NiAzMC4zMyAxNzQuMjUgQyAzMi4zNiAxNzkuODMgNDEuNzkgMTkyLjA3IDQ1LjAwIDE5NS42MyBDIDQ4LjIxIDE5OS4xOCA1Mi4xMiAyMDAuNzkgNTUuNjcgMjAyLjMxIEMgNTkuMjEgMjAzLjgzIDY1LjkxIDIwNi40NyA3My4wMCAyMDcuNjUgQyA4MC4wOSAyMDguODQgMTAwLjAxIDIxMS4zMyAxMTEuNjcgMjExLjY2IEMgMTIzLjMyIDIxMi4wMCAxNTQuMzYgMjExLjY4IDE2NS4wMCAyMTAuMzMgQyAxNzUuNjQgMjA4Ljk3IDE4OS40MiAyMDQuMzYgMTk1LjY3IDIwMC45NyBDIDIwMS45MiAxOTcuNTkgMjExLjEyIDE4Ny42NiAyMTQuMzMgMTgzLjYwIEMgMjE3LjU0IDE3OS41NCAyMTkuODIgMTcyLjYzIDIyMS4wMCAxNjguOTAgQyAyMjIuMTggMTY1LjE4IDIyNC4wMCAxNTkuMjggMjIzLjY3IDE1NC4yMCBDIDIyMy4zMyAxNDkuMTMgMjIxLjIwIDEzNC43NCAyMTguMzMgMTI4LjgxIEMgMjE1LjQ2IDEyMi44OSAyMDQuODggMTEwLjk5IDIwMS4wMCAxMDcuNDMgQyAxOTcuMTIgMTAzLjg4IDE5MS4yMSAxMDEuNzcgMTg3LjY3IDEwMC43NSBDIDE4NC4xMiA5OS43NCAxNzYuMzggMTAxLjk1IDE3My4wMCA5OS40MiBDIDE2OS42MiA5Ni44OCAxNjMuNzAgODQuMDkgMTYxLjAwIDgwLjcxIEMgMTU4LjMwIDc3LjMyIDE1NC4zNyA3NC41NSAxNTEuNjcgNzIuNjkgQyAxNDguOTYgNzAuODMgMTQzLjIxIDY3LjM2IDEzOS42NyA2Ni4wMSBDIDEzNi4xMiA2NC42NSAxMjguMjMgNjIuMzQgMTIzLjY3IDYyLjAwIEMgMTE5LjExIDYxLjY2IDEwOS40MSA2MS40NyAxMDMuNjcgNjMuMzQgQyA5Ny45MiA2NS4yMCA4My40MCA3Mi4zMCA3OC4zMyA3Ni43MCBDIDczLjI3IDgxLjEwIDY2LjAzIDkzLjAwIDYzLjY3IDk4LjA4IEMgNjEuMzAgMTAzLjE2IDYxLjg2IDExMy41NyA1OS42NyAxMTYuNzkgQyA1Ny40NyAxMjAuMDAgNDkuMzcgMTIxLjI3IDQ2LjMzIDEyMy40NyBDIDQzLjI5IDEyNS42NyAzNy44NiAxMzAuNjAgMzUuNjcgMTM0LjE2IEMgMzMuNDcgMTM3LjcxIDI5LjY4IDE0Ni40NSAyOS4wMCAxNTEuNTMgWiIgZmlsbD0idXJsKCNncmFkaWVudC1pbnRlZ3JhdG9yKSIvPgo8ZyBmaWxsPSJ3aGl0ZSI+PGVsbGlwc2UgY3g9IjkxIiBjeT0iMTI1IiByeD0iOCIgcnk9IjEzLjAiLz48ZWxsaXBzZSBjeD0iMTI3IiBjeT0iMTI1IiByeD0iOCIgcnk9IjEzLjAiLz48L2c+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDE0NiAxNDQpIHNjYWxlKDEuMTQpIj48ZyBzdHJva2U9IiNmZmYiIGZpbGw9Im5vbmUiIHN0cm9rZS13aWR0aD0iNS40IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Ik0yNSA1IDQ1IDE1IDI1IDI2IDUgMTUgWiIgZmlsbD0iI2ZmZiIgc3Ryb2tlPSJub25lIi8+PHBhdGggZD0iTTUgMjYgMjUgMzcgNDUgMjYgTTUgMzYgMjUgNDcgNDUgMzYiLz48L2c+PC9nPgo8L3N2Zz4K' }),
+  knowledge_manager: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLWtub3dsZWRnZV9tYW5hZ2VyIj4KPHRpdGxlIGlkPSJ0aXRsZS1rbm93bGVkZ2VfbWFuYWdlciI+S25vd2xlZGdlIE1hbmFnZXIg4oCUIENvbnNlcnZlIGV0IGRpZmZ1c2U8L3RpdGxlPgo8ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWRpZW50LWtub3dsZWRnZV9tYW5hZ2VyIiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjQzY5OEZCIi8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiNBNTcyRjMiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM4RjVERTUiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPGVsbGlwc2UgY3g9IjEyOCIgY3k9IjIzMCIgcng9IjgxIiByeT0iOSIgZmlsbD0iI0E1NzJGMyIgb3BhY2l0eT0iMC4xNiIvPgo8ZyBmaWxsPSJub25lIiBzdHJva2U9IiNBNTcyRjMiIHN0cm9rZS13aWR0aD0iOS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxwYXRoIGQ9Ik0gNTMgNDMgTCA0MSAzNCIvPgo8cGF0aCBkPSJNIDY1IDMwIEwgNTcgMTciLz4KPHBhdGggZD0iTSA4MyAyNSBMIDgwIDExIi8+PC9nPgo8cGF0aCBkPSJNIDEwNy4xMyA0Ni45NyBDIDEwMS4zOCA1MS4zNCA4Ni4wMiA2NS40NiA3OS4wOCA3My41MyBDIDcyLjE1IDgxLjYxIDU4LjI5IDEwMC4yOSA1Mi4zNyAxMTAuNzMgQyA0Ni40NSAxMjEuMTYgMzUuMDQgMTQ4LjY1IDMyLjM0IDE1NS44OSBDIDI5LjYzIDE2My4xMiAzMC40OSAxNjQuMTQgMzEuMDAgMTY3Ljg0IEMgMzEuNTEgMTcxLjU0IDM0LjgyIDE4MS45MSAzNi4zNCAxODUuMTEgQyAzNy44NyAxODguMzAgNDAuMTQgMTkwLjg5IDQzLjAyIDE5My4wOCBDIDQ1LjkwIDE5NS4yNiA1MS45NCAyMDAuMTkgNTkuMDUgMjAyLjM3IEMgNjYuMTUgMjA0LjU2IDg0Ljc0IDIwOS4zMyA5OS4xMiAyMTAuMzQgQyAxMTMuNTAgMjExLjM1IDE2MS4wNyAyMTAuNjggMTcyLjU4IDIxMC4zNCBDIDE4NC4wOCAyMTAuMDEgMTg1LjU0IDIwOC44NiAxODkuOTQgMjA3LjY5IEMgMTk0LjM0IDIwNi41MSAyMDMuOTIgMjAyLjkwIDIwNy4zMCAyMDEuMDUgQyAyMTAuNjggMTk5LjIwIDIxNC42MiAxOTUuNjAgMjE2LjY1IDE5My4wOCBDIDIxOC42OCAxOTAuNTUgMjIyLjMxIDE4NS44MyAyMjMuMzMgMTgxLjEyIEMgMjI0LjM0IDE3Ni40MSAyMjUuODUgMTYyLjk1IDIyNC42NiAxNTUuODkgQyAyMjMuNDggMTQ4LjgyIDIxOC4wNCAxMzQuNDIgMjEzLjk4IDEyNS4zNCBDIDIwOS45MiAxMTYuMjUgMTk3LjAxIDkxLjczIDE5Mi42MSA4NC4xNiBDIDE4OC4yMSA3Ni41OSAxODIuODEgNjkuNzcgMTc5LjI1IDY1LjU2IEMgMTc1LjcwIDYxLjM2IDE2OC43OSA1NC4xNSAxNjQuNTYgNTAuOTUgQyAxNjAuMzMgNDcuNzYgMTUwLjk0IDQxLjg0IDE0NS44NiA0MC4zMyBDIDE0MC43OSAzOC44MSAxMjkuNDAgMzguMTYgMTI0LjQ5IDM5LjAwIEMgMTE5LjU5IDM5Ljg0IDExMi44OCA0Mi42MCAxMDcuMTMgNDYuOTcgWiIgZmlsbD0idXJsKCNncmFkaWVudC1rbm93bGVkZ2VfbWFuYWdlcikiLz4KPGcgZmlsbD0id2hpdGUiPjxlbGxpcHNlIGN4PSIxMDAiIGN5PSIxMDgiIHJ4PSI4IiByeT0iMTMuMCIvPjxlbGxpcHNlIGN4PSIxMzQiIGN5PSIxMDgiIHJ4PSI4IiByeT0iMTMuMCIvPjwvZz4KPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTUxIDE0Nykgc2NhbGUoMS4xKSI+PGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjUuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMjUgMTIgQzE3IDcgMTEgNyA1IDExIFY0MCBDMTQgMzYgMTkgMzkgMjUgNDQgQzMxIDM5IDM2IDM2IDQ1IDQwIFYxMSBDMzkgNyAzMyA3IDI1IDEyIFoiLz48cGF0aCBkPSJNMjUgMTIgVjQ0Ii8+PC9nPjwvZz4KPC9zdmc+Cg==', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLWtub3dsZWRnZV9tYW5hZ2VyIj4KPHRpdGxlIGlkPSJ0aXRsZS1rbm93bGVkZ2VfbWFuYWdlciI+S25vd2xlZGdlIE1hbmFnZXIg4oCUIENvbnNlcnZlIGV0IGRpZmZ1c2U8L3RpdGxlPgo8ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWRpZW50LWtub3dsZWRnZV9tYW5hZ2VyIiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjQzY5OEZCIi8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiNBNTcyRjMiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM4RjVERTUiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPHBhdGggZD0iTSAxMDcuMTMgNDYuOTcgQyAxMDEuMzggNTEuMzQgODYuMDIgNjUuNDYgNzkuMDggNzMuNTMgQyA3Mi4xNSA4MS42MSA1OC4yOSAxMDAuMjkgNTIuMzcgMTEwLjczIEMgNDYuNDUgMTIxLjE2IDM1LjA0IDE0OC42NSAzMi4zNCAxNTUuODkgQyAyOS42MyAxNjMuMTIgMzAuNDkgMTY0LjE0IDMxLjAwIDE2Ny44NCBDIDMxLjUxIDE3MS41NCAzNC44MiAxODEuOTEgMzYuMzQgMTg1LjExIEMgMzcuODcgMTg4LjMwIDQwLjE0IDE5MC44OSA0My4wMiAxOTMuMDggQyA0NS45MCAxOTUuMjYgNTEuOTQgMjAwLjE5IDU5LjA1IDIwMi4zNyBDIDY2LjE1IDIwNC41NiA4NC43NCAyMDkuMzMgOTkuMTIgMjEwLjM0IEMgMTEzLjUwIDIxMS4zNSAxNjEuMDcgMjEwLjY4IDE3Mi41OCAyMTAuMzQgQyAxODQuMDggMjEwLjAxIDE4NS41NCAyMDguODYgMTg5Ljk0IDIwNy42OSBDIDE5NC4zNCAyMDYuNTEgMjAzLjkyIDIwMi45MCAyMDcuMzAgMjAxLjA1IEMgMjEwLjY4IDE5OS4yMCAyMTQuNjIgMTk1LjYwIDIxNi42NSAxOTMuMDggQyAyMTguNjggMTkwLjU1IDIyMi4zMSAxODUuODMgMjIzLjMzIDE4MS4xMiBDIDIyNC4zNCAxNzYuNDEgMjI1Ljg1IDE2Mi45NSAyMjQuNjYgMTU1Ljg5IEMgMjIzLjQ4IDE0OC44MiAyMTguMDQgMTM0LjQyIDIxMy45OCAxMjUuMzQgQyAyMDkuOTIgMTE2LjI1IDE5Ny4wMSA5MS43MyAxOTIuNjEgODQuMTYgQyAxODguMjEgNzYuNTkgMTgyLjgxIDY5Ljc3IDE3OS4yNSA2NS41NiBDIDE3NS43MCA2MS4zNiAxNjguNzkgNTQuMTUgMTY0LjU2IDUwLjk1IEMgMTYwLjMzIDQ3Ljc2IDE1MC45NCA0MS44NCAxNDUuODYgNDAuMzMgQyAxNDAuNzkgMzguODEgMTI5LjQwIDM4LjE2IDEyNC40OSAzOS4wMCBDIDExOS41OSAzOS44NCAxMTIuODggNDIuNjAgMTA3LjEzIDQ2Ljk3IFoiIGZpbGw9InVybCgjZ3JhZGllbnQta25vd2xlZGdlX21hbmFnZXIpIi8+CjxnIGZpbGw9IndoaXRlIj48ZWxsaXBzZSBjeD0iMTAwIiBjeT0iMTA4IiByeD0iOCIgcnk9IjEzLjAiLz48ZWxsaXBzZSBjeD0iMTM0IiBjeT0iMTA4IiByeD0iOCIgcnk9IjEzLjAiLz48L2c+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDE1MSAxNDcpIHNjYWxlKDEuMSkiPjxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSI1LjgiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTI1IDEyIEMxNyA3IDExIDcgNSAxMSBWNDAgQzE0IDM2IDE5IDM5IDI1IDQ0IEMzMSAzOSAzNiAzNiA0NSA0MCBWMTEgQzM5IDcgMzMgNyAyNSAxMiBaIi8+PHBhdGggZD0iTTI1IDEyIFY0NCIvPjwvZz48L2c+Cjwvc3ZnPgo=' }),
+  observer: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLW9ic2VydmVyIj4KPHRpdGxlIGlkPSJ0aXRsZS1vYnNlcnZlciI+T2JzZXJ2ZXIg4oCUIFN1cnZlaWxsZSBldCBhbGVydGU8L3RpdGxlPgo8ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWRpZW50LW9ic2VydmVyIiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjN0VCMERGIi8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiM1RjkyQzciLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM0RjdFQjAiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPGVsbGlwc2UgY3g9IjEyOCIgY3k9IjIzMCIgcng9IjgxIiByeT0iOSIgZmlsbD0iIzVGOTJDNyIgb3BhY2l0eT0iMC4xNiIvPgo8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM1RjkyQzciIHN0cm9rZS13aWR0aD0iOS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxwYXRoIGQ9Ik0gMTk2IDQ2IEwgMjA0IDI0Ii8+CjxwYXRoIGQ9Ik0gMjEwIDU0IEwgMjI1IDQ1Ii8+CjxwYXRoIGQ9Ik0gMjIwIDY2IEwgMjM2IDYwIi8+PC9nPgo8cGF0aCBkPSJNIDYxLjMzIDU5LjAwIEMgNTcuNDUgNjEuMDMgNTYuMzYgNjMuMTMgNTQuNjcgNjUuNjcgQyA1Mi45OCA2OC4yMCA0OS4zNSA3My4wOSA0OC4wMCA3OS4wMCBDIDQ2LjY1IDg0LjkxIDQ0LjM0IDEwMS4zNiA0NC4wMCAxMTIuMzMgQyA0My42NiAxMjMuMzEgNDQuMTUgMTU1Ljg3IDQ1LjMzIDE2NS42NyBDIDQ2LjUyIDE3NS40NiA1MC40NiAxODUuMTEgNTMuMzMgMTg5LjY3IEMgNTYuMjAgMTk0LjIzIDYyLjI2IDE5OS4zMCA2OC4wMCAyMDEuNjcgQyA3My43NCAyMDQuMDMgODUuODMgMjA3LjMyIDk4LjY3IDIwOC4zMyBDIDExMS41MCAyMDkuMzUgMTU4LjM2IDIwOS44NCAxNjkuMzMgMjA5LjY3IEMgMTgwLjMxIDIwOS41MCAxODEuOTYgMjA4LjAxIDE4NS4zMyAyMDcuMDAgQyAxODguNzEgMjA1Ljk5IDE5My4zMCAyMDQuMjAgMTk2LjAwIDIwMS42NyBDIDE5OC43MCAxOTkuMTMgMjA0LjgxIDE5MS41NiAyMDYuNjcgMTg3LjAwIEMgMjA4LjUyIDE4Mi40NCAyMTAuNTAgMTc3LjgzIDIxMC42NyAxNjUuNjcgQyAyMTAuODQgMTUzLjUxIDIwOS4zNSAxMDMuMzMgMjA4LjAwIDkxLjAwIEMgMjA2LjY1IDc4LjY3IDIwMy4wNCA3Mi44OSAyMDAuMDAgNjguMzMgQyAxOTYuOTYgNjMuNzcgMTkwLjA4IDU3LjUzIDE4NC4wMCA1NS4wMCBDIDE3Ny45MiA1Mi40NyAxNTkuMjYgNDkuMzUgMTUyLjAwIDQ4LjMzIEMgMTQ0Ljc0IDQ3LjMyIDEzNS4xMSA0Ni44MyAxMjYuNjcgNDcuMDAgQyAxMTguMjIgNDcuMTcgOTMuNjEgNDguMTUgODUuMzMgNDkuNjcgQyA3Ny4wNiA1MS4xOSA2NS4yMiA1Ni45NyA2MS4zMyA1OS4wMCBaIiBmaWxsPSJ1cmwoI2dyYWRpZW50LW9ic2VydmVyKSIvPgo8ZyBmaWxsPSJ3aGl0ZSI+PGVsbGlwc2UgY3g9IjkyIiBjeT0iMTEwIiByeD0iOCIgcnk9IjEzLjAiLz48ZWxsaXBzZSBjeD0iMTI3IiBjeT0iMTEwIiByeD0iOCIgcnk9IjEzLjAiLz48L2c+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDE0OCAxNDUpIHNjYWxlKDEuMDYpIj48cGF0aCBkPSJNNCAyNiBIMTQgTDIwIDExIEwyOSA0MCBMMzYgMjEgTDQxIDI2IEg0NyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjUuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9nPgo8L3N2Zz4K', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLW9ic2VydmVyIj4KPHRpdGxlIGlkPSJ0aXRsZS1vYnNlcnZlciI+T2JzZXJ2ZXIg4oCUIFN1cnZlaWxsZSBldCBhbGVydGU8L3RpdGxlPgo8ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWRpZW50LW9ic2VydmVyIiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjN0VCMERGIi8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiM1RjkyQzciLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM0RjdFQjAiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPHBhdGggZD0iTSA2MS4zMyA1OS4wMCBDIDU3LjQ1IDYxLjAzIDU2LjM2IDYzLjEzIDU0LjY3IDY1LjY3IEMgNTIuOTggNjguMjAgNDkuMzUgNzMuMDkgNDguMDAgNzkuMDAgQyA0Ni42NSA4NC45MSA0NC4zNCAxMDEuMzYgNDQuMDAgMTEyLjMzIEMgNDMuNjYgMTIzLjMxIDQ0LjE1IDE1NS44NyA0NS4zMyAxNjUuNjcgQyA0Ni41MiAxNzUuNDYgNTAuNDYgMTg1LjExIDUzLjMzIDE4OS42NyBDIDU2LjIwIDE5NC4yMyA2Mi4yNiAxOTkuMzAgNjguMDAgMjAxLjY3IEMgNzMuNzQgMjA0LjAzIDg1LjgzIDIwNy4zMiA5OC42NyAyMDguMzMgQyAxMTEuNTAgMjA5LjM1IDE1OC4zNiAyMDkuODQgMTY5LjMzIDIwOS42NyBDIDE4MC4zMSAyMDkuNTAgMTgxLjk2IDIwOC4wMSAxODUuMzMgMjA3LjAwIEMgMTg4LjcxIDIwNS45OSAxOTMuMzAgMjA0LjIwIDE5Ni4wMCAyMDEuNjcgQyAxOTguNzAgMTk5LjEzIDIwNC44MSAxOTEuNTYgMjA2LjY3IDE4Ny4wMCBDIDIwOC41MiAxODIuNDQgMjEwLjUwIDE3Ny44MyAyMTAuNjcgMTY1LjY3IEMgMjEwLjg0IDE1My41MSAyMDkuMzUgMTAzLjMzIDIwOC4wMCA5MS4wMCBDIDIwNi42NSA3OC42NyAyMDMuMDQgNzIuODkgMjAwLjAwIDY4LjMzIEMgMTk2Ljk2IDYzLjc3IDE5MC4wOCA1Ny41MyAxODQuMDAgNTUuMDAgQyAxNzcuOTIgNTIuNDcgMTU5LjI2IDQ5LjM1IDE1Mi4wMCA0OC4zMyBDIDE0NC43NCA0Ny4zMiAxMzUuMTEgNDYuODMgMTI2LjY3IDQ3LjAwIEMgMTE4LjIyIDQ3LjE3IDkzLjYxIDQ4LjE1IDg1LjMzIDQ5LjY3IEMgNzcuMDYgNTEuMTkgNjUuMjIgNTYuOTcgNjEuMzMgNTkuMDAgWiIgZmlsbD0idXJsKCNncmFkaWVudC1vYnNlcnZlcikiLz4KPGcgZmlsbD0id2hpdGUiPjxlbGxpcHNlIGN4PSI5MiIgY3k9IjExMCIgcng9IjgiIHJ5PSIxMy4wIi8+PGVsbGlwc2UgY3g9IjEyNyIgY3k9IjExMCIgcng9IjgiIHJ5PSIxMy4wIi8+PC9nPgo8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxNDggMTQ1KSBzY2FsZSgxLjA2KSI+PHBhdGggZD0iTTQgMjYgSDE0IEwyMCAxMSBMMjkgNDAgTDM2IDIxIEw0MSAyNiBINDciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSI1LjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjwvZz4KPC9zdmc+Cg==' }),
+  optimizer: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLW9wdGltaXplciI+Cjx0aXRsZSBpZD0idGl0bGUtb3B0aW1pemVyIj5PcHRpbWl6ZXIg4oCUIEFtw6lsaW9yZSBldCBvcHRpbWlzZTwvdGl0bGU+CjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZGllbnQtb3B0aW1pemVyIiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjQTdFMDM5Ii8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiM4RUNGMTAiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM3REMwMDAiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPGVsbGlwc2UgY3g9IjEyOCIgY3k9IjIzMCIgcng9IjgxIiByeT0iOSIgZmlsbD0iIzhFQ0YxMCIgb3BhY2l0eT0iMC4xNiIvPgo8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM4RUNGMTAiIHN0cm9rZS13aWR0aD0iOS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxwYXRoIGQ9Ik0gMjAwIDYwIEwgMjA5IDM3Ii8+CjxwYXRoIGQ9Ik0gMjE1IDY4IEwgMjI3IDU0Ii8+CjxwYXRoIGQ9Ik0gMjI2IDc3IEwgMjQxIDY4Ii8+PC9nPgo8cGF0aCBkPSJNIDI5LjAwIDE1MS41MyBDIDI4LjMyIDE1Ni42MSAyOC4zMSAxNjguNjYgMzAuMzMgMTc0LjI1IEMgMzIuMzYgMTc5LjgzIDQxLjc5IDE5Mi4wNyA0NS4wMCAxOTUuNjMgQyA0OC4yMSAxOTkuMTggNTIuMTIgMjAwLjc5IDU1LjY3IDIwMi4zMSBDIDU5LjIxIDIwMy44MyA2NS45MSAyMDYuNDcgNzMuMDAgMjA3LjY1IEMgODAuMDkgMjA4Ljg0IDEwMC4wMSAyMTEuMzMgMTExLjY3IDIxMS42NiBDIDEyMy4zMiAyMTIuMDAgMTU0LjM2IDIxMS42OCAxNjUuMDAgMjEwLjMzIEMgMTc1LjY0IDIwOC45NyAxODkuNDIgMjA0LjM2IDE5NS42NyAyMDAuOTcgQyAyMDEuOTIgMTk3LjU5IDIxMS4xMiAxODcuNjYgMjE0LjMzIDE4My42MCBDIDIxNy41NCAxNzkuNTQgMjE5LjgyIDE3Mi42MyAyMjEuMDAgMTY4LjkwIEMgMjIyLjE4IDE2NS4xOCAyMjQuMDAgMTU5LjI4IDIyMy42NyAxNTQuMjAgQyAyMjMuMzMgMTQ5LjEzIDIyMS4yMCAxMzQuNzQgMjE4LjMzIDEyOC44MSBDIDIxNS40NiAxMjIuODkgMjA0Ljg4IDExMC45OSAyMDEuMDAgMTA3LjQzIEMgMTk3LjEyIDEwMy44OCAxOTEuMjEgMTAxLjc3IDE4Ny42NyAxMDAuNzUgQyAxODQuMTIgOTkuNzQgMTc2LjM4IDEwMS45NSAxNzMuMDAgOTkuNDIgQyAxNjkuNjIgOTYuODggMTYzLjcwIDg0LjA5IDE2MS4wMCA4MC43MSBDIDE1OC4zMCA3Ny4zMiAxNTQuMzcgNzQuNTUgMTUxLjY3IDcyLjY5IEMgMTQ4Ljk2IDcwLjgzIDE0My4yMSA2Ny4zNiAxMzkuNjcgNjYuMDEgQyAxMzYuMTIgNjQuNjUgMTI4LjIzIDYyLjM0IDEyMy42NyA2Mi4wMCBDIDExOS4xMSA2MS42NiAxMDkuNDEgNjEuNDcgMTAzLjY3IDYzLjM0IEMgOTcuOTIgNjUuMjAgODMuNDAgNzIuMzAgNzguMzMgNzYuNzAgQyA3My4yNyA4MS4xMCA2Ni4wMyA5My4wMCA2My42NyA5OC4wOCBDIDYxLjMwIDEwMy4xNiA2MS44NiAxMTMuNTcgNTkuNjcgMTE2Ljc5IEMgNTcuNDcgMTIwLjAwIDQ5LjM3IDEyMS4yNyA0Ni4zMyAxMjMuNDcgQyA0My4yOSAxMjUuNjcgMzcuODYgMTMwLjYwIDM1LjY3IDEzNC4xNiBDIDMzLjQ3IDEzNy43MSAyOS42OCAxNDYuNDUgMjkuMDAgMTUxLjUzIFoiIGZpbGw9InVybCgjZ3JhZGllbnQtb3B0aW1pemVyKSIvPgo8ZyBmaWxsPSJ3aGl0ZSI+PGVsbGlwc2UgY3g9IjkxIiBjeT0iMTI1IiByeD0iOCIgcnk9IjEzLjAiLz48ZWxsaXBzZSBjeD0iMTI3IiBjeT0iMTI1IiByeD0iOCIgcnk9IjEzLjAiLz48L2c+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDE0NiAxNDQpIHNjYWxlKDEuMTQpIj48ZyBmaWxsPSJub25lIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iNi40IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Ik01IDM5IEwxOSAyNiAyNyAzMyA0NiAxMSIvPjxwYXRoIGQ9Ik0zNCAxMSBINDYgVjIzIi8+PC9nPjwvZz4KPC9zdmc+Cg==', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLW9wdGltaXplciI+Cjx0aXRsZSBpZD0idGl0bGUtb3B0aW1pemVyIj5PcHRpbWl6ZXIg4oCUIEFtw6lsaW9yZSBldCBvcHRpbWlzZTwvdGl0bGU+CjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZGllbnQtb3B0aW1pemVyIiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjQTdFMDM5Ii8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiM4RUNGMTAiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM3REMwMDAiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPHBhdGggZD0iTSAyOS4wMCAxNTEuNTMgQyAyOC4zMiAxNTYuNjEgMjguMzEgMTY4LjY2IDMwLjMzIDE3NC4yNSBDIDMyLjM2IDE3OS44MyA0MS43OSAxOTIuMDcgNDUuMDAgMTk1LjYzIEMgNDguMjEgMTk5LjE4IDUyLjEyIDIwMC43OSA1NS42NyAyMDIuMzEgQyA1OS4yMSAyMDMuODMgNjUuOTEgMjA2LjQ3IDczLjAwIDIwNy42NSBDIDgwLjA5IDIwOC44NCAxMDAuMDEgMjExLjMzIDExMS42NyAyMTEuNjYgQyAxMjMuMzIgMjEyLjAwIDE1NC4zNiAyMTEuNjggMTY1LjAwIDIxMC4zMyBDIDE3NS42NCAyMDguOTcgMTg5LjQyIDIwNC4zNiAxOTUuNjcgMjAwLjk3IEMgMjAxLjkyIDE5Ny41OSAyMTEuMTIgMTg3LjY2IDIxNC4zMyAxODMuNjAgQyAyMTcuNTQgMTc5LjU0IDIxOS44MiAxNzIuNjMgMjIxLjAwIDE2OC45MCBDIDIyMi4xOCAxNjUuMTggMjI0LjAwIDE1OS4yOCAyMjMuNjcgMTU0LjIwIEMgMjIzLjMzIDE0OS4xMyAyMjEuMjAgMTM0Ljc0IDIxOC4zMyAxMjguODEgQyAyMTUuNDYgMTIyLjg5IDIwNC44OCAxMTAuOTkgMjAxLjAwIDEwNy40MyBDIDE5Ny4xMiAxMDMuODggMTkxLjIxIDEwMS43NyAxODcuNjcgMTAwLjc1IEMgMTg0LjEyIDk5Ljc0IDE3Ni4zOCAxMDEuOTUgMTczLjAwIDk5LjQyIEMgMTY5LjYyIDk2Ljg4IDE2My43MCA4NC4wOSAxNjEuMDAgODAuNzEgQyAxNTguMzAgNzcuMzIgMTU0LjM3IDc0LjU1IDE1MS42NyA3Mi42OSBDIDE0OC45NiA3MC44MyAxNDMuMjEgNjcuMzYgMTM5LjY3IDY2LjAxIEMgMTM2LjEyIDY0LjY1IDEyOC4yMyA2Mi4zNCAxMjMuNjcgNjIuMDAgQyAxMTkuMTEgNjEuNjYgMTA5LjQxIDYxLjQ3IDEwMy42NyA2My4zNCBDIDk3LjkyIDY1LjIwIDgzLjQwIDcyLjMwIDc4LjMzIDc2LjcwIEMgNzMuMjcgODEuMTAgNjYuMDMgOTMuMDAgNjMuNjcgOTguMDggQyA2MS4zMCAxMDMuMTYgNjEuODYgMTEzLjU3IDU5LjY3IDExNi43OSBDIDU3LjQ3IDEyMC4wMCA0OS4zNyAxMjEuMjcgNDYuMzMgMTIzLjQ3IEMgNDMuMjkgMTI1LjY3IDM3Ljg2IDEzMC42MCAzNS42NyAxMzQuMTYgQyAzMy40NyAxMzcuNzEgMjkuNjggMTQ2LjQ1IDI5LjAwIDE1MS41MyBaIiBmaWxsPSJ1cmwoI2dyYWRpZW50LW9wdGltaXplcikiLz4KPGcgZmlsbD0id2hpdGUiPjxlbGxpcHNlIGN4PSI5MSIgY3k9IjEyNSIgcng9IjgiIHJ5PSIxMy4wIi8+PGVsbGlwc2UgY3g9IjEyNyIgY3k9IjEyNSIgcng9IjgiIHJ5PSIxMy4wIi8+PC9nPgo8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxNDYgMTQ0KSBzY2FsZSgxLjE0KSI+PGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjYuNCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNNSAzOSBMMTkgMjYgMjcgMzMgNDYgMTEiLz48cGF0aCBkPSJNMzQgMTEgSDQ2IFYyMyIvPjwvZz48L2c+Cjwvc3ZnPgo=' }),
+  orchestrator: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLW9yY2hlc3RyYXRvciI+Cjx0aXRsZSBpZD0idGl0bGUtb3JjaGVzdHJhdG9yIj5PcmNoZXN0cmF0b3Ig4oCUIENvb3Jkb25uZSBldCBwaWxvdGU8L3RpdGxlPgo8ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWRpZW50LW9yY2hlc3RyYXRvciIgeDE9IjE5JSIgeTE9IjAlIiB4Mj0iNzclIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI0I0N0NGQSIvPjxzdG9wIG9mZnNldD0iNTMlIiBzdG9wLWNvbG9yPSIjOEQ1NUVBIi8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjNzY0M0Q3Ii8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+CjxlbGxpcHNlIGN4PSIxMjgiIGN5PSIyMzAiIHJ4PSI4MSIgcnk9IjkiIGZpbGw9IiM4RDU1RUEiIG9wYWNpdHk9IjAuMTYiLz4KPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjOEQ1NUVBIiBzdHJva2Utd2lkdGg9IjkuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIj48cGF0aCBkPSJNIDUzIDQzIEwgNDEgMzQiLz4KPHBhdGggZD0iTSA2NSAzMCBMIDU3IDE3Ii8+CjxwYXRoIGQ9Ik0gODMgMjUgTCA4MCAxMSIvPjwvZz4KPHBhdGggZD0iTSAxMDcuMTMgNDYuOTcgQyAxMDEuMzggNTEuMzQgODYuMDIgNjUuNDYgNzkuMDggNzMuNTMgQyA3Mi4xNSA4MS42MSA1OC4yOSAxMDAuMjkgNTIuMzcgMTEwLjczIEMgNDYuNDUgMTIxLjE2IDM1LjA0IDE0OC42NSAzMi4zNCAxNTUuODkgQyAyOS42MyAxNjMuMTIgMzAuNDkgMTY0LjE0IDMxLjAwIDE2Ny44NCBDIDMxLjUxIDE3MS41NCAzNC44MiAxODEuOTEgMzYuMzQgMTg1LjExIEMgMzcuODcgMTg4LjMwIDQwLjE0IDE5MC44OSA0My4wMiAxOTMuMDggQyA0NS45MCAxOTUuMjYgNTEuOTQgMjAwLjE5IDU5LjA1IDIwMi4zNyBDIDY2LjE1IDIwNC41NiA4NC43NCAyMDkuMzMgOTkuMTIgMjEwLjM0IEMgMTEzLjUwIDIxMS4zNSAxNjEuMDcgMjEwLjY4IDE3Mi41OCAyMTAuMzQgQyAxODQuMDggMjEwLjAxIDE4NS41NCAyMDguODYgMTg5Ljk0IDIwNy42OSBDIDE5NC4zNCAyMDYuNTEgMjAzLjkyIDIwMi45MCAyMDcuMzAgMjAxLjA1IEMgMjEwLjY4IDE5OS4yMCAyMTQuNjIgMTk1LjYwIDIxNi42NSAxOTMuMDggQyAyMTguNjggMTkwLjU1IDIyMi4zMSAxODUuODMgMjIzLjMzIDE4MS4xMiBDIDIyNC4zNCAxNzYuNDEgMjI1Ljg1IDE2Mi45NSAyMjQuNjYgMTU1Ljg5IEMgMjIzLjQ4IDE0OC44MiAyMTguMDQgMTM0LjQyIDIxMy45OCAxMjUuMzQgQyAyMDkuOTIgMTE2LjI1IDE5Ny4wMSA5MS43MyAxOTIuNjEgODQuMTYgQyAxODguMjEgNzYuNTkgMTgyLjgxIDY5Ljc3IDE3OS4yNSA2NS41NiBDIDE3NS43MCA2MS4zNiAxNjguNzkgNTQuMTUgMTY0LjU2IDUwLjk1IEMgMTYwLjMzIDQ3Ljc2IDE1MC45NCA0MS44NCAxNDUuODYgNDAuMzMgQyAxNDAuNzkgMzguODEgMTI5LjQwIDM4LjE2IDEyNC40OSAzOS4wMCBDIDExOS41OSAzOS44NCAxMTIuODggNDIuNjAgMTA3LjEzIDQ2Ljk3IFoiIGZpbGw9InVybCgjZ3JhZGllbnQtb3JjaGVzdHJhdG9yKSIvPgo8ZyBmaWxsPSJ3aGl0ZSI+PGVsbGlwc2UgY3g9IjEwMCIgY3k9IjEwOCIgcng9IjgiIHJ5PSIxMy4wIi8+PGVsbGlwc2UgY3g9IjEzNCIgY3k9IjEwOCIgcng9IjgiIHJ5PSIxMy4wIi8+PC9nPgo8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxNTEgMTQ3KSBzY2FsZSgxLjEpIj48ZyBzdHJva2U9IiNmZmYiIGZpbGw9Im5vbmUiIHN0cm9rZS13aWR0aD0iNS42IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Ik0yNSAxMSBWMjcgTTI1IDI3IEg4IFYzNiBNMjUgMjcgSDQyIFYzNiIvPjwvZz48ZyBmaWxsPSIjZmZmIj48Y2lyY2xlIGN4PSIyNSIgY3k9IjgiIHI9IjcuNCIvPjxjaXJjbGUgY3g9IjgiIGN5PSI0MSIgcj0iNy40Ii8+PGNpcmNsZSBjeD0iNDIiIGN5PSI0MSIgcj0iNy40Ii8+PC9nPjwvZz4KPC9zdmc+Cg==', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLW9yY2hlc3RyYXRvciI+Cjx0aXRsZSBpZD0idGl0bGUtb3JjaGVzdHJhdG9yIj5PcmNoZXN0cmF0b3Ig4oCUIENvb3Jkb25uZSBldCBwaWxvdGU8L3RpdGxlPgo8ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWRpZW50LW9yY2hlc3RyYXRvciIgeDE9IjE5JSIgeTE9IjAlIiB4Mj0iNzclIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI0I0N0NGQSIvPjxzdG9wIG9mZnNldD0iNTMlIiBzdG9wLWNvbG9yPSIjOEQ1NUVBIi8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjNzY0M0Q3Ii8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+CjxwYXRoIGQ9Ik0gMTA3LjEzIDQ2Ljk3IEMgMTAxLjM4IDUxLjM0IDg2LjAyIDY1LjQ2IDc5LjA4IDczLjUzIEMgNzIuMTUgODEuNjEgNTguMjkgMTAwLjI5IDUyLjM3IDExMC43MyBDIDQ2LjQ1IDEyMS4xNiAzNS4wNCAxNDguNjUgMzIuMzQgMTU1Ljg5IEMgMjkuNjMgMTYzLjEyIDMwLjQ5IDE2NC4xNCAzMS4wMCAxNjcuODQgQyAzMS41MSAxNzEuNTQgMzQuODIgMTgxLjkxIDM2LjM0IDE4NS4xMSBDIDM3Ljg3IDE4OC4zMCA0MC4xNCAxOTAuODkgNDMuMDIgMTkzLjA4IEMgNDUuOTAgMTk1LjI2IDUxLjk0IDIwMC4xOSA1OS4wNSAyMDIuMzcgQyA2Ni4xNSAyMDQuNTYgODQuNzQgMjA5LjMzIDk5LjEyIDIxMC4zNCBDIDExMy41MCAyMTEuMzUgMTYxLjA3IDIxMC42OCAxNzIuNTggMjEwLjM0IEMgMTg0LjA4IDIxMC4wMSAxODUuNTQgMjA4Ljg2IDE4OS45NCAyMDcuNjkgQyAxOTQuMzQgMjA2LjUxIDIwMy45MiAyMDIuOTAgMjA3LjMwIDIwMS4wNSBDIDIxMC42OCAxOTkuMjAgMjE0LjYyIDE5NS42MCAyMTYuNjUgMTkzLjA4IEMgMjE4LjY4IDE5MC41NSAyMjIuMzEgMTg1LjgzIDIyMy4zMyAxODEuMTIgQyAyMjQuMzQgMTc2LjQxIDIyNS44NSAxNjIuOTUgMjI0LjY2IDE1NS44OSBDIDIyMy40OCAxNDguODIgMjE4LjA0IDEzNC40MiAyMTMuOTggMTI1LjM0IEMgMjA5LjkyIDExNi4yNSAxOTcuMDEgOTEuNzMgMTkyLjYxIDg0LjE2IEMgMTg4LjIxIDc2LjU5IDE4Mi44MSA2OS43NyAxNzkuMjUgNjUuNTYgQyAxNzUuNzAgNjEuMzYgMTY4Ljc5IDU0LjE1IDE2NC41NiA1MC45NSBDIDE2MC4zMyA0Ny43NiAxNTAuOTQgNDEuODQgMTQ1Ljg2IDQwLjMzIEMgMTQwLjc5IDM4LjgxIDEyOS40MCAzOC4xNiAxMjQuNDkgMzkuMDAgQyAxMTkuNTkgMzkuODQgMTEyLjg4IDQyLjYwIDEwNy4xMyA0Ni45NyBaIiBmaWxsPSJ1cmwoI2dyYWRpZW50LW9yY2hlc3RyYXRvcikiLz4KPGcgZmlsbD0id2hpdGUiPjxlbGxpcHNlIGN4PSIxMDAiIGN5PSIxMDgiIHJ4PSI4IiByeT0iMTMuMCIvPjxlbGxpcHNlIGN4PSIxMzQiIGN5PSIxMDgiIHJ4PSI4IiByeT0iMTMuMCIvPjwvZz4KPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTUxIDE0Nykgc2NhbGUoMS4xKSI+PGcgc3Ryb2tlPSIjZmZmIiBmaWxsPSJub25lIiBzdHJva2Utd2lkdGg9IjUuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMjUgMTEgVjI3IE0yNSAyNyBIOCBWMzYgTTI1IDI3IEg0MiBWMzYiLz48L2c+PGcgZmlsbD0iI2ZmZiI+PGNpcmNsZSBjeD0iMjUiIGN5PSI4IiByPSI3LjQiLz48Y2lyY2xlIGN4PSI4IiBjeT0iNDEiIHI9IjcuNCIvPjxjaXJjbGUgY3g9IjQyIiBjeT0iNDEiIHI9IjcuNCIvPjwvZz48L2c+Cjwvc3ZnPgo=' }),
+  planner: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLXBsYW5uZXIiPgo8dGl0bGUgaWQ9InRpdGxlLXBsYW5uZXIiPlBsYW5uZXIg4oCUIFBsYW5pZmllIGV0IG9yZ2FuaXNlPC90aXRsZT4KPGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJncmFkaWVudC1wbGFubmVyIiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjM0NCMkZEIi8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiMyMjhGRkQiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMwRjc5RjMiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPGVsbGlwc2UgY3g9IjEyOCIgY3k9IjIzMCIgcng9IjgxIiByeT0iOSIgZmlsbD0iIzIyOEZGRCIgb3BhY2l0eT0iMC4xNiIvPgo8ZyBmaWxsPSJub25lIiBzdHJva2U9IiMyMjhGRkQiIHN0cm9rZS13aWR0aD0iOS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxwYXRoIGQ9Ik0gMTk2IDQ2IEwgMjA0IDI0Ii8+CjxwYXRoIGQ9Ik0gMjEwIDU0IEwgMjI1IDQ1Ii8+CjxwYXRoIGQ9Ik0gMjIwIDY2IEwgMjM2IDYwIi8+PC9nPgo8cGF0aCBkPSJNIDYxLjMzIDU5LjAwIEMgNTcuNDUgNjEuMDMgNTYuMzYgNjMuMTMgNTQuNjcgNjUuNjcgQyA1Mi45OCA2OC4yMCA0OS4zNSA3My4wOSA0OC4wMCA3OS4wMCBDIDQ2LjY1IDg0LjkxIDQ0LjM0IDEwMS4zNiA0NC4wMCAxMTIuMzMgQyA0My42NiAxMjMuMzEgNDQuMTUgMTU1Ljg3IDQ1LjMzIDE2NS42NyBDIDQ2LjUyIDE3NS40NiA1MC40NiAxODUuMTEgNTMuMzMgMTg5LjY3IEMgNTYuMjAgMTk0LjIzIDYyLjI2IDE5OS4zMCA2OC4wMCAyMDEuNjcgQyA3My43NCAyMDQuMDMgODUuODMgMjA3LjMyIDk4LjY3IDIwOC4zMyBDIDExMS41MCAyMDkuMzUgMTU4LjM2IDIwOS44NCAxNjkuMzMgMjA5LjY3IEMgMTgwLjMxIDIwOS41MCAxODEuOTYgMjA4LjAxIDE4NS4zMyAyMDcuMDAgQyAxODguNzEgMjA1Ljk5IDE5My4zMCAyMDQuMjAgMTk2LjAwIDIwMS42NyBDIDE5OC43MCAxOTkuMTMgMjA0LjgxIDE5MS41NiAyMDYuNjcgMTg3LjAwIEMgMjA4LjUyIDE4Mi40NCAyMTAuNTAgMTc3LjgzIDIxMC42NyAxNjUuNjcgQyAyMTAuODQgMTUzLjUxIDIwOS4zNSAxMDMuMzMgMjA4LjAwIDkxLjAwIEMgMjA2LjY1IDc4LjY3IDIwMy4wNCA3Mi44OSAyMDAuMDAgNjguMzMgQyAxOTYuOTYgNjMuNzcgMTkwLjA4IDU3LjUzIDE4NC4wMCA1NS4wMCBDIDE3Ny45MiA1Mi40NyAxNTkuMjYgNDkuMzUgMTUyLjAwIDQ4LjMzIEMgMTQ0Ljc0IDQ3LjMyIDEzNS4xMSA0Ni44MyAxMjYuNjcgNDcuMDAgQyAxMTguMjIgNDcuMTcgOTMuNjEgNDguMTUgODUuMzMgNDkuNjcgQyA3Ny4wNiA1MS4xOSA2NS4yMiA1Ni45NyA2MS4zMyA1OS4wMCBaIiBmaWxsPSJ1cmwoI2dyYWRpZW50LXBsYW5uZXIpIi8+CjxnIGZpbGw9IndoaXRlIj48ZWxsaXBzZSBjeD0iOTIiIGN5PSIxMTAiIHJ4PSI4IiByeT0iMTMuMCIvPjxlbGxpcHNlIGN4PSIxMjciIGN5PSIxMTAiIHJ4PSI4IiByeT0iMTMuMCIvPjwvZz4KPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTQ4IDE0NSkgc2NhbGUoMS4wNikiPjxnIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSI3LjEiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCI+PHBhdGggZD0iTTYgMTEgSDQ0IE02IDI1IEg0NCBNNiAzOSBINDQiLz48L2c+PC9nPgo8L3N2Zz4K', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLXBsYW5uZXIiPgo8dGl0bGUgaWQ9InRpdGxlLXBsYW5uZXIiPlBsYW5uZXIg4oCUIFBsYW5pZmllIGV0IG9yZ2FuaXNlPC90aXRsZT4KPGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJncmFkaWVudC1wbGFubmVyIiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjM0NCMkZEIi8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiMyMjhGRkQiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMwRjc5RjMiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPHBhdGggZD0iTSA2MS4zMyA1OS4wMCBDIDU3LjQ1IDYxLjAzIDU2LjM2IDYzLjEzIDU0LjY3IDY1LjY3IEMgNTIuOTggNjguMjAgNDkuMzUgNzMuMDkgNDguMDAgNzkuMDAgQyA0Ni42NSA4NC45MSA0NC4zNCAxMDEuMzYgNDQuMDAgMTEyLjMzIEMgNDMuNjYgMTIzLjMxIDQ0LjE1IDE1NS44NyA0NS4zMyAxNjUuNjcgQyA0Ni41MiAxNzUuNDYgNTAuNDYgMTg1LjExIDUzLjMzIDE4OS42NyBDIDU2LjIwIDE5NC4yMyA2Mi4yNiAxOTkuMzAgNjguMDAgMjAxLjY3IEMgNzMuNzQgMjA0LjAzIDg1LjgzIDIwNy4zMiA5OC42NyAyMDguMzMgQyAxMTEuNTAgMjA5LjM1IDE1OC4zNiAyMDkuODQgMTY5LjMzIDIwOS42NyBDIDE4MC4zMSAyMDkuNTAgMTgxLjk2IDIwOC4wMSAxODUuMzMgMjA3LjAwIEMgMTg4LjcxIDIwNS45OSAxOTMuMzAgMjA0LjIwIDE5Ni4wMCAyMDEuNjcgQyAxOTguNzAgMTk5LjEzIDIwNC44MSAxOTEuNTYgMjA2LjY3IDE4Ny4wMCBDIDIwOC41MiAxODIuNDQgMjEwLjUwIDE3Ny44MyAyMTAuNjcgMTY1LjY3IEMgMjEwLjg0IDE1My41MSAyMDkuMzUgMTAzLjMzIDIwOC4wMCA5MS4wMCBDIDIwNi42NSA3OC42NyAyMDMuMDQgNzIuODkgMjAwLjAwIDY4LjMzIEMgMTk2Ljk2IDYzLjc3IDE5MC4wOCA1Ny41MyAxODQuMDAgNTUuMDAgQyAxNzcuOTIgNTIuNDcgMTU5LjI2IDQ5LjM1IDE1Mi4wMCA0OC4zMyBDIDE0NC43NCA0Ny4zMiAxMzUuMTEgNDYuODMgMTI2LjY3IDQ3LjAwIEMgMTE4LjIyIDQ3LjE3IDkzLjYxIDQ4LjE1IDg1LjMzIDQ5LjY3IEMgNzcuMDYgNTEuMTkgNjUuMjIgNTYuOTcgNjEuMzMgNTkuMDAgWiIgZmlsbD0idXJsKCNncmFkaWVudC1wbGFubmVyKSIvPgo8ZyBmaWxsPSJ3aGl0ZSI+PGVsbGlwc2UgY3g9IjkyIiBjeT0iMTEwIiByeD0iOCIgcnk9IjEzLjAiLz48ZWxsaXBzZSBjeD0iMTI3IiBjeT0iMTEwIiByeD0iOCIgcnk9IjEzLjAiLz48L2c+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDE0OCAxNDUpIHNjYWxlKDEuMDYpIj48ZyBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iNy4xIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxwYXRoIGQ9Ik02IDExIEg0NCBNNiAyNSBINDQgTTYgMzkgSDQ0Ii8+PC9nPjwvZz4KPC9zdmc+Cg==' }),
+  researcher: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLXJlc2VhcmNoZXIiPgo8dGl0bGUgaWQ9InRpdGxlLXJlc2VhcmNoZXIiPlJlc2VhcmNoZXIg4oCUIEV4cGxvcmUgZXQgcmVjaGVyY2hlPC90aXRsZT4KPGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJncmFkaWVudC1yZXNlYXJjaGVyIiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNEVFMEMxIi8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiMyNUM1QTYiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMwRUFGOEUiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPGVsbGlwc2UgY3g9IjEyOCIgY3k9IjIzMCIgcng9IjgxIiByeT0iOSIgZmlsbD0iIzI1QzVBNiIgb3BhY2l0eT0iMC4xNiIvPgo8ZyBmaWxsPSJub25lIiBzdHJva2U9IiMyNUM1QTYiIHN0cm9rZS13aWR0aD0iOS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxwYXRoIGQ9Ik0gMjAwIDYwIEwgMjA5IDM3Ii8+CjxwYXRoIGQ9Ik0gMjE1IDY4IEwgMjI3IDU0Ii8+CjxwYXRoIGQ9Ik0gMjI2IDc3IEwgMjQxIDY4Ii8+PC9nPgo8cGF0aCBkPSJNIDI5LjAwIDE1MS41MyBDIDI4LjMyIDE1Ni42MSAyOC4zMSAxNjguNjYgMzAuMzMgMTc0LjI1IEMgMzIuMzYgMTc5LjgzIDQxLjc5IDE5Mi4wNyA0NS4wMCAxOTUuNjMgQyA0OC4yMSAxOTkuMTggNTIuMTIgMjAwLjc5IDU1LjY3IDIwMi4zMSBDIDU5LjIxIDIwMy44MyA2NS45MSAyMDYuNDcgNzMuMDAgMjA3LjY1IEMgODAuMDkgMjA4Ljg0IDEwMC4wMSAyMTEuMzMgMTExLjY3IDIxMS42NiBDIDEyMy4zMiAyMTIuMDAgMTU0LjM2IDIxMS42OCAxNjUuMDAgMjEwLjMzIEMgMTc1LjY0IDIwOC45NyAxODkuNDIgMjA0LjM2IDE5NS42NyAyMDAuOTcgQyAyMDEuOTIgMTk3LjU5IDIxMS4xMiAxODcuNjYgMjE0LjMzIDE4My42MCBDIDIxNy41NCAxNzkuNTQgMjE5LjgyIDE3Mi42MyAyMjEuMDAgMTY4LjkwIEMgMjIyLjE4IDE2NS4xOCAyMjQuMDAgMTU5LjI4IDIyMy42NyAxNTQuMjAgQyAyMjMuMzMgMTQ5LjEzIDIyMS4yMCAxMzQuNzQgMjE4LjMzIDEyOC44MSBDIDIxNS40NiAxMjIuODkgMjA0Ljg4IDExMC45OSAyMDEuMDAgMTA3LjQzIEMgMTk3LjEyIDEwMy44OCAxOTEuMjEgMTAxLjc3IDE4Ny42NyAxMDAuNzUgQyAxODQuMTIgOTkuNzQgMTc2LjM4IDEwMS45NSAxNzMuMDAgOTkuNDIgQyAxNjkuNjIgOTYuODggMTYzLjcwIDg0LjA5IDE2MS4wMCA4MC43MSBDIDE1OC4zMCA3Ny4zMiAxNTQuMzcgNzQuNTUgMTUxLjY3IDcyLjY5IEMgMTQ4Ljk2IDcwLjgzIDE0My4yMSA2Ny4zNiAxMzkuNjcgNjYuMDEgQyAxMzYuMTIgNjQuNjUgMTI4LjIzIDYyLjM0IDEyMy42NyA2Mi4wMCBDIDExOS4xMSA2MS42NiAxMDkuNDEgNjEuNDcgMTAzLjY3IDYzLjM0IEMgOTcuOTIgNjUuMjAgODMuNDAgNzIuMzAgNzguMzMgNzYuNzAgQyA3My4yNyA4MS4xMCA2Ni4wMyA5My4wMCA2My42NyA5OC4wOCBDIDYxLjMwIDEwMy4xNiA2MS44NiAxMTMuNTcgNTkuNjcgMTE2Ljc5IEMgNTcuNDcgMTIwLjAwIDQ5LjM3IDEyMS4yNyA0Ni4zMyAxMjMuNDcgQyA0My4yOSAxMjUuNjcgMzcuODYgMTMwLjYwIDM1LjY3IDEzNC4xNiBDIDMzLjQ3IDEzNy43MSAyOS42OCAxNDYuNDUgMjkuMDAgMTUxLjUzIFoiIGZpbGw9InVybCgjZ3JhZGllbnQtcmVzZWFyY2hlcikiLz4KPGcgZmlsbD0id2hpdGUiPjxlbGxpcHNlIGN4PSI5MSIgY3k9IjEyNSIgcng9IjgiIHJ5PSIxMy4wIi8+PGVsbGlwc2UgY3g9IjEyNyIgY3k9IjEyNSIgcng9IjgiIHJ5PSIxMy4wIi8+PC9nPgo8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxNDYgMTQ0KSBzY2FsZSgxLjE0KSI+PGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjYuNyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIj48Y2lyY2xlIGN4PSIyMCIgY3k9IjIwIiByPSIxNCIvPjxwYXRoIGQ9Ik0zMSAzMSBMNDYgNDYiLz48L2c+PC9nPgo8L3N2Zz4K', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLXJlc2VhcmNoZXIiPgo8dGl0bGUgaWQ9InRpdGxlLXJlc2VhcmNoZXIiPlJlc2VhcmNoZXIg4oCUIEV4cGxvcmUgZXQgcmVjaGVyY2hlPC90aXRsZT4KPGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJncmFkaWVudC1yZXNlYXJjaGVyIiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNEVFMEMxIi8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiMyNUM1QTYiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMwRUFGOEUiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPHBhdGggZD0iTSAyOS4wMCAxNTEuNTMgQyAyOC4zMiAxNTYuNjEgMjguMzEgMTY4LjY2IDMwLjMzIDE3NC4yNSBDIDMyLjM2IDE3OS44MyA0MS43OSAxOTIuMDcgNDUuMDAgMTk1LjYzIEMgNDguMjEgMTk5LjE4IDUyLjEyIDIwMC43OSA1NS42NyAyMDIuMzEgQyA1OS4yMSAyMDMuODMgNjUuOTEgMjA2LjQ3IDczLjAwIDIwNy42NSBDIDgwLjA5IDIwOC44NCAxMDAuMDEgMjExLjMzIDExMS42NyAyMTEuNjYgQyAxMjMuMzIgMjEyLjAwIDE1NC4zNiAyMTEuNjggMTY1LjAwIDIxMC4zMyBDIDE3NS42NCAyMDguOTcgMTg5LjQyIDIwNC4zNiAxOTUuNjcgMjAwLjk3IEMgMjAxLjkyIDE5Ny41OSAyMTEuMTIgMTg3LjY2IDIxNC4zMyAxODMuNjAgQyAyMTcuNTQgMTc5LjU0IDIxOS44MiAxNzIuNjMgMjIxLjAwIDE2OC45MCBDIDIyMi4xOCAxNjUuMTggMjI0LjAwIDE1OS4yOCAyMjMuNjcgMTU0LjIwIEMgMjIzLjMzIDE0OS4xMyAyMjEuMjAgMTM0Ljc0IDIxOC4zMyAxMjguODEgQyAyMTUuNDYgMTIyLjg5IDIwNC44OCAxMTAuOTkgMjAxLjAwIDEwNy40MyBDIDE5Ny4xMiAxMDMuODggMTkxLjIxIDEwMS43NyAxODcuNjcgMTAwLjc1IEMgMTg0LjEyIDk5Ljc0IDE3Ni4zOCAxMDEuOTUgMTczLjAwIDk5LjQyIEMgMTY5LjYyIDk2Ljg4IDE2My43MCA4NC4wOSAxNjEuMDAgODAuNzEgQyAxNTguMzAgNzcuMzIgMTU0LjM3IDc0LjU1IDE1MS42NyA3Mi42OSBDIDE0OC45NiA3MC44MyAxNDMuMjEgNjcuMzYgMTM5LjY3IDY2LjAxIEMgMTM2LjEyIDY0LjY1IDEyOC4yMyA2Mi4zNCAxMjMuNjcgNjIuMDAgQyAxMTkuMTEgNjEuNjYgMTA5LjQxIDYxLjQ3IDEwMy42NyA2My4zNCBDIDk3LjkyIDY1LjIwIDgzLjQwIDcyLjMwIDc4LjMzIDc2LjcwIEMgNzMuMjcgODEuMTAgNjYuMDMgOTMuMDAgNjMuNjcgOTguMDggQyA2MS4zMCAxMDMuMTYgNjEuODYgMTEzLjU3IDU5LjY3IDExNi43OSBDIDU3LjQ3IDEyMC4wMCA0OS4zNyAxMjEuMjcgNDYuMzMgMTIzLjQ3IEMgNDMuMjkgMTI1LjY3IDM3Ljg2IDEzMC42MCAzNS42NyAxMzQuMTYgQyAzMy40NyAxMzcuNzEgMjkuNjggMTQ2LjQ1IDI5LjAwIDE1MS41MyBaIiBmaWxsPSJ1cmwoI2dyYWRpZW50LXJlc2VhcmNoZXIpIi8+CjxnIGZpbGw9IndoaXRlIj48ZWxsaXBzZSBjeD0iOTEiIGN5PSIxMjUiIHJ4PSI4IiByeT0iMTMuMCIvPjxlbGxpcHNlIGN4PSIxMjciIGN5PSIxMjUiIHJ4PSI4IiByeT0iMTMuMCIvPjwvZz4KPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTQ2IDE0NCkgc2NhbGUoMS4xNCkiPjxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSI2LjciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCI+PGNpcmNsZSBjeD0iMjAiIGN5PSIyMCIgcj0iMTQiLz48cGF0aCBkPSJNMzEgMzEgTDQ2IDQ2Ii8+PC9nPjwvZz4KPC9zdmc+Cg==' }),
+  reviewer: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLXJldmlld2VyIj4KPHRpdGxlIGlkPSJ0aXRsZS1yZXZpZXdlciI+UmV2aWV3ZXIg4oCUIFJlbGl0IGV0IMOpdmFsdWU8L3RpdGxlPgo8ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWRpZW50LXJldmlld2VyIiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjRkVBODM4Ii8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiNGQjg4MTkiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNFQzcwMDMiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPGVsbGlwc2UgY3g9IjEyOCIgY3k9IjIzMCIgcng9IjgxIiByeT0iOSIgZmlsbD0iI0ZCODgxOSIgb3BhY2l0eT0iMC4xNiIvPgo8ZyBmaWxsPSJub25lIiBzdHJva2U9IiNGQjg4MTkiIHN0cm9rZS13aWR0aD0iOS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxwYXRoIGQ9Ik0gMTk2IDQ5IEwgMjA1IDI5Ii8+CjxwYXRoIGQ9Ik0gMjEyIDU1IEwgMjI4IDQ3Ii8+PC9nPgo8cGF0aCBkPSJNIDEwOS42NCA0OC4zNSBDIDEwMS4zNyA1MC4wNiA4NS4yNSA1Ny4wNiA3OC4zNiA2MS44NSBDIDcxLjQ3IDY2LjYzIDU5LjU1IDc5LjY0IDU1LjI0IDg2LjE0IEMgNTAuOTMgOTIuNjMgNDUuNzQgMTA1LjI3IDQ0LjM2IDExMy4xMyBDIDQyLjk4IDEyMC45OSA0Mi44MSAxNDAuMTggNDQuMzYgMTQ4LjIyIEMgNDUuOTEgMTU2LjI1IDUyLjI5IDE3MC4yNCA1Ni42MCAxNzYuNTYgQyA2MC45MSAxODIuODkgNzEuODEgMTkzLjg4IDc4LjM2IDE5OC4xNSBDIDg0LjkxIDIwMi40MyA5OS42NyAyMDguNzYgMTA4LjI4IDIxMC4zMCBDIDExNi44OSAyMTEuODQgMTM5LjMwIDIxMC45OCAxNDYuMzYgMjEwLjMwIEMgMTUzLjQyIDIwOS42MiAxNTkuMjIgMjA3LjEyIDE2NC4wNCAyMDQuOTAgQyAxNjguODYgMjAyLjY4IDE3OS42MiAxOTcuMDMgMTg0LjQ0IDE5Mi43NiBDIDE4OS4yNiAxODguNDggMTk4LjY3IDE3Ny40OSAyMDIuMTIgMTcxLjE2IEMgMjA1LjU3IDE2NC44NCAyMTAuNjEgMTUwLjE3IDIxMS42NCAxNDIuODIgQyAyMTIuNjcgMTM1LjQ3IDIxMi41MiAxMjEuMTYgMjEwLjI4IDExMy4xMyBDIDIwOC4wNCAxMDUuMTAgMTk4Ljk2IDg2LjIzIDE5My45NiA3OS4zOSBDIDE4OC45NiA3Mi41NSAxNzcuMjEgNjMuMDggMTcwLjg0IDU5LjE1IEMgMTY0LjQ3IDU1LjIxIDE1MS4zOSA0OS43MiAxNDMuNjQgNDguMzUgQyAxMzUuODkgNDYuOTggMTE3LjkxIDQ2LjY0IDEwOS42NCA0OC4zNSBaIiBmaWxsPSJ1cmwoI2dyYWRpZW50LXJldmlld2VyKSIvPgo8ZyBmaWxsPSJ3aGl0ZSI+PGVsbGlwc2UgY3g9IjkxIiBjeT0iMTA3IiByeD0iOCIgcnk9IjEzLjAiLz48ZWxsaXBzZSBjeD0iMTI4IiBjeT0iMTA3IiByeD0iOCIgcnk9IjEzLjAiLz48L2c+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDEzMiAxMzQpIHNjYWxlKDEuMDIpIj48ZyBmaWxsPSJub25lIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iNi43IiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxjaXJjbGUgY3g9IjIwIiBjeT0iMjAiIHI9IjE0Ii8+PHBhdGggZD0iTTMxIDMxIEw0NiA0NiIvPjwvZz48L2c+Cjwvc3ZnPgo=', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLXJldmlld2VyIj4KPHRpdGxlIGlkPSJ0aXRsZS1yZXZpZXdlciI+UmV2aWV3ZXIg4oCUIFJlbGl0IGV0IMOpdmFsdWU8L3RpdGxlPgo8ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWRpZW50LXJldmlld2VyIiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjRkVBODM4Ii8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiNGQjg4MTkiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNFQzcwMDMiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPHBhdGggZD0iTSAxMDkuNjQgNDguMzUgQyAxMDEuMzcgNTAuMDYgODUuMjUgNTcuMDYgNzguMzYgNjEuODUgQyA3MS40NyA2Ni42MyA1OS41NSA3OS42NCA1NS4yNCA4Ni4xNCBDIDUwLjkzIDkyLjYzIDQ1Ljc0IDEwNS4yNyA0NC4zNiAxMTMuMTMgQyA0Mi45OCAxMjAuOTkgNDIuODEgMTQwLjE4IDQ0LjM2IDE0OC4yMiBDIDQ1LjkxIDE1Ni4yNSA1Mi4yOSAxNzAuMjQgNTYuNjAgMTc2LjU2IEMgNjAuOTEgMTgyLjg5IDcxLjgxIDE5My44OCA3OC4zNiAxOTguMTUgQyA4NC45MSAyMDIuNDMgOTkuNjcgMjA4Ljc2IDEwOC4yOCAyMTAuMzAgQyAxMTYuODkgMjExLjg0IDEzOS4zMCAyMTAuOTggMTQ2LjM2IDIxMC4zMCBDIDE1My40MiAyMDkuNjIgMTU5LjIyIDIwNy4xMiAxNjQuMDQgMjA0LjkwIEMgMTY4Ljg2IDIwMi42OCAxNzkuNjIgMTk3LjAzIDE4NC40NCAxOTIuNzYgQyAxODkuMjYgMTg4LjQ4IDE5OC42NyAxNzcuNDkgMjAyLjEyIDE3MS4xNiBDIDIwNS41NyAxNjQuODQgMjEwLjYxIDE1MC4xNyAyMTEuNjQgMTQyLjgyIEMgMjEyLjY3IDEzNS40NyAyMTIuNTIgMTIxLjE2IDIxMC4yOCAxMTMuMTMgQyAyMDguMDQgMTA1LjEwIDE5OC45NiA4Ni4yMyAxOTMuOTYgNzkuMzkgQyAxODguOTYgNzIuNTUgMTc3LjIxIDYzLjA4IDE3MC44NCA1OS4xNSBDIDE2NC40NyA1NS4yMSAxNTEuMzkgNDkuNzIgMTQzLjY0IDQ4LjM1IEMgMTM1Ljg5IDQ2Ljk4IDExNy45MSA0Ni42NCAxMDkuNjQgNDguMzUgWiIgZmlsbD0idXJsKCNncmFkaWVudC1yZXZpZXdlcikiLz4KPGcgZmlsbD0id2hpdGUiPjxlbGxpcHNlIGN4PSI5MSIgY3k9IjEwNyIgcng9IjgiIHJ5PSIxMy4wIi8+PGVsbGlwc2UgY3g9IjEyOCIgY3k9IjEwNyIgcng9IjgiIHJ5PSIxMy4wIi8+PC9nPgo8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxMzIgMTM0KSBzY2FsZSgxLjAyKSI+PGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjYuNyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIj48Y2lyY2xlIGN4PSIyMCIgY3k9IjIwIiByPSIxNCIvPjxwYXRoIGQ9Ik0zMSAzMSBMNDYgNDYiLz48L2c+PC9nPgo8L3N2Zz4K' }),
+  super_orchestrator: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLXN1cGVyX29yY2hlc3RyYXRvciI+Cjx0aXRsZSBpZD0idGl0bGUtc3VwZXJfb3JjaGVzdHJhdG9yIj5TdXBlciBPcmNoZXN0cmF0b3Ig4oCUIENvb3Jkb25uZSBwbHVzaWV1cnMgcHJvamV0cyBldCBsZXVycyBvcmNoZXN0cmF0ZXVyczwvdGl0bGU+CjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZGllbnQtc3VwZXJfb3JjaGVzdHJhdG9yIiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjQTc3Q0Y3Ii8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiM3MDQzREIiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM1MzI0QjQiLz48L2xpbmVhckdyYWRpZW50PjxsaW5lYXJHcmFkaWVudCBpZD0icmVnYWxpYS1zdXBlcl9vcmNoZXN0cmF0b3IiIHgxPSIxMCUiIHkxPSIwJSIgeDI9IjYwJSIgeTI9IjEwMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNGRkYyQTciLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNGMkI5MzYiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPGVsbGlwc2UgY3g9IjEyOCIgY3k9IjIzMCIgcng9IjgxIiByeT0iOSIgZmlsbD0iIzcwNDNEQiIgb3BhY2l0eT0iMC4xNiIvPgo8ZyBmaWxsPSJub25lIiBzdHJva2U9IiM3MDQzREIiIHN0cm9rZS13aWR0aD0iOS41IiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxwYXRoIGQ9Ik0gNTMgNDMgTCA0MSAzNCIvPgo8cGF0aCBkPSJNIDY1IDMwIEwgNTcgMTciLz4KPHBhdGggZD0iTSA4MyAyNSBMIDgwIDExIi8+PC9nPgo8cGF0aCBkPSJNIDEwNy4xMyA0Ni45NyBDIDEwMS4zOCA1MS4zNCA4Ni4wMiA2NS40NiA3OS4wOCA3My41MyBDIDcyLjE1IDgxLjYxIDU4LjI5IDEwMC4yOSA1Mi4zNyAxMTAuNzMgQyA0Ni40NSAxMjEuMTYgMzUuMDQgMTQ4LjY1IDMyLjM0IDE1NS44OSBDIDI5LjYzIDE2My4xMiAzMC40OSAxNjQuMTQgMzEuMDAgMTY3Ljg0IEMgMzEuNTEgMTcxLjU0IDM0LjgyIDE4MS45MSAzNi4zNCAxODUuMTEgQyAzNy44NyAxODguMzAgNDAuMTQgMTkwLjg5IDQzLjAyIDE5My4wOCBDIDQ1LjkwIDE5NS4yNiA1MS45NCAyMDAuMTkgNTkuMDUgMjAyLjM3IEMgNjYuMTUgMjA0LjU2IDg0Ljc0IDIwOS4zMyA5OS4xMiAyMTAuMzQgQyAxMTMuNTAgMjExLjM1IDE2MS4wNyAyMTAuNjggMTcyLjU4IDIxMC4zNCBDIDE4NC4wOCAyMTAuMDEgMTg1LjU0IDIwOC44NiAxODkuOTQgMjA3LjY5IEMgMTk0LjM0IDIwNi41MSAyMDMuOTIgMjAyLjkwIDIwNy4zMCAyMDEuMDUgQyAyMTAuNjggMTk5LjIwIDIxNC42MiAxOTUuNjAgMjE2LjY1IDE5My4wOCBDIDIxOC42OCAxOTAuNTUgMjIyLjMxIDE4NS44MyAyMjMuMzMgMTgxLjEyIEMgMjI0LjM0IDE3Ni40MSAyMjUuODUgMTYyLjk1IDIyNC42NiAxNTUuODkgQyAyMjMuNDggMTQ4LjgyIDIxOC4wNCAxMzQuNDIgMjEzLjk4IDEyNS4zNCBDIDIwOS45MiAxMTYuMjUgMTk3LjAxIDkxLjczIDE5Mi42MSA4NC4xNiBDIDE4OC4yMSA3Ni41OSAxODIuODEgNjkuNzcgMTc5LjI1IDY1LjU2IEMgMTc1LjcwIDYxLjM2IDE2OC43OSA1NC4xNSAxNjQuNTYgNTAuOTUgQyAxNjAuMzMgNDcuNzYgMTUwLjk0IDQxLjg0IDE0NS44NiA0MC4zMyBDIDE0MC43OSAzOC44MSAxMjkuNDAgMzguMTYgMTI0LjQ5IDM5LjAwIEMgMTE5LjU5IDM5Ljg0IDExMi44OCA0Mi42MCAxMDcuMTMgNDYuOTcgWiIgZmlsbD0idXJsKCNncmFkaWVudC1zdXBlcl9vcmNoZXN0cmF0b3IpIi8+CjxnIGZpbGw9IndoaXRlIj48ZWxsaXBzZSBjeD0iMTAwIiBjeT0iMTA4IiByeD0iOCIgcnk9IjEzLjAiLz48ZWxsaXBzZSBjeD0iMTM0IiBjeT0iMTA4IiByeD0iOCIgcnk9IjEzLjAiLz48L2c+CjxwYXRoIGQ9Ik0gMTAxIDM3IEwgMTA1IDE0IFEgMTA2IDExIDExMCAxNSBMIDEyMCAyNiBMIDEzMiA3IFEgMTM1IDIgMTM4IDcgTCAxNTEgMjYgTCAxNjEgMTUgUSAxNjYgMTAgMTY3IDE3IEwgMTcwIDM3IFEgMTM2IDQ2IDEwMSAzNyBaIiBmaWxsPSJ1cmwoI3JlZ2FsaWEtc3VwZXJfb3JjaGVzdHJhdG9yKSIgc3Ryb2tlPSIjRkZGRkZGIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48cGF0aCBkPSJNIDEwMyAzOCBRIDEzNSA0NSAxNjggMzgiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI0ZCRjFDMCIgc3Ryb2tlLXdpZHRoPSIzLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxNTEgMTQ3KSBzY2FsZSgxLjEpIj48ZyBzdHJva2U9IiNmZmYiIGZpbGw9Im5vbmUiIHN0cm9rZS13aWR0aD0iNS42IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Ik0yNSAxMSBWMjcgTTI1IDI3IEg4IFYzNiBNMjUgMjcgSDQyIFYzNiIvPjwvZz48ZyBmaWxsPSIjZmZmIj48Y2lyY2xlIGN4PSIyNSIgY3k9IjgiIHI9IjcuNCIvPjxjaXJjbGUgY3g9IjgiIGN5PSI0MSIgcj0iNy40Ii8+PGNpcmNsZSBjeD0iNDIiIGN5PSI0MSIgcj0iNy40Ii8+PC9nPjwvZz4KPC9zdmc+Cg==', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLXN1cGVyX29yY2hlc3RyYXRvciI+Cjx0aXRsZSBpZD0idGl0bGUtc3VwZXJfb3JjaGVzdHJhdG9yIj5TdXBlciBPcmNoZXN0cmF0b3Ig4oCUIENvb3Jkb25uZSBwbHVzaWV1cnMgcHJvamV0cyBldCBsZXVycyBvcmNoZXN0cmF0ZXVyczwvdGl0bGU+CjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZGllbnQtc3VwZXJfb3JjaGVzdHJhdG9yIiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjQTc3Q0Y3Ii8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiM3MDQzREIiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM1MzI0QjQiLz48L2xpbmVhckdyYWRpZW50PjxsaW5lYXJHcmFkaWVudCBpZD0icmVnYWxpYS1zdXBlcl9vcmNoZXN0cmF0b3IiIHgxPSIxMCUiIHkxPSIwJSIgeDI9IjYwJSIgeTI9IjEwMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNGRkYyQTciLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNGMkI5MzYiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz4KPHBhdGggZD0iTSAxMDcuMTMgNDYuOTcgQyAxMDEuMzggNTEuMzQgODYuMDIgNjUuNDYgNzkuMDggNzMuNTMgQyA3Mi4xNSA4MS42MSA1OC4yOSAxMDAuMjkgNTIuMzcgMTEwLjczIEMgNDYuNDUgMTIxLjE2IDM1LjA0IDE0OC42NSAzMi4zNCAxNTUuODkgQyAyOS42MyAxNjMuMTIgMzAuNDkgMTY0LjE0IDMxLjAwIDE2Ny44NCBDIDMxLjUxIDE3MS41NCAzNC44MiAxODEuOTEgMzYuMzQgMTg1LjExIEMgMzcuODcgMTg4LjMwIDQwLjE0IDE5MC44OSA0My4wMiAxOTMuMDggQyA0NS45MCAxOTUuMjYgNTEuOTQgMjAwLjE5IDU5LjA1IDIwMi4zNyBDIDY2LjE1IDIwNC41NiA4NC43NCAyMDkuMzMgOTkuMTIgMjEwLjM0IEMgMTEzLjUwIDIxMS4zNSAxNjEuMDcgMjEwLjY4IDE3Mi41OCAyMTAuMzQgQyAxODQuMDggMjEwLjAxIDE4NS41NCAyMDguODYgMTg5Ljk0IDIwNy42OSBDIDE5NC4zNCAyMDYuNTEgMjAzLjkyIDIwMi45MCAyMDcuMzAgMjAxLjA1IEMgMjEwLjY4IDE5OS4yMCAyMTQuNjIgMTk1LjYwIDIxNi42NSAxOTMuMDggQyAyMTguNjggMTkwLjU1IDIyMi4zMSAxODUuODMgMjIzLjMzIDE4MS4xMiBDIDIyNC4zNCAxNzYuNDEgMjI1Ljg1IDE2Mi45NSAyMjQuNjYgMTU1Ljg5IEMgMjIzLjQ4IDE0OC44MiAyMTguMDQgMTM0LjQyIDIxMy45OCAxMjUuMzQgQyAyMDkuOTIgMTE2LjI1IDE5Ny4wMSA5MS43MyAxOTIuNjEgODQuMTYgQyAxODguMjEgNzYuNTkgMTgyLjgxIDY5Ljc3IDE3OS4yNSA2NS41NiBDIDE3NS43MCA2MS4zNiAxNjguNzkgNTQuMTUgMTY0LjU2IDUwLjk1IEMgMTYwLjMzIDQ3Ljc2IDE1MC45NCA0MS44NCAxNDUuODYgNDAuMzMgQyAxNDAuNzkgMzguODEgMTI5LjQwIDM4LjE2IDEyNC40OSAzOS4wMCBDIDExOS41OSAzOS44NCAxMTIuODggNDIuNjAgMTA3LjEzIDQ2Ljk3IFoiIGZpbGw9InVybCgjZ3JhZGllbnQtc3VwZXJfb3JjaGVzdHJhdG9yKSIvPgo8ZyBmaWxsPSJ3aGl0ZSI+PGVsbGlwc2UgY3g9IjEwMCIgY3k9IjEwOCIgcng9IjgiIHJ5PSIxMy4wIi8+PGVsbGlwc2UgY3g9IjEzNCIgY3k9IjEwOCIgcng9IjgiIHJ5PSIxMy4wIi8+PC9nPgo8cGF0aCBkPSJNIDEwMSAzNyBMIDEwNSAxNCBRIDEwNiAxMSAxMTAgMTUgTCAxMjAgMjYgTCAxMzIgNyBRIDEzNSAyIDEzOCA3IEwgMTUxIDI2IEwgMTYxIDE1IFEgMTY2IDEwIDE2NyAxNyBMIDE3MCAzNyBRIDEzNiA0NiAxMDEgMzcgWiIgZmlsbD0idXJsKCNyZWdhbGlhLXN1cGVyX29yY2hlc3RyYXRvcikiIHN0cm9rZT0iI0ZGRkZGRiIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PHBhdGggZD0iTSAxMDMgMzggUSAxMzUgNDUgMTY4IDM4IiBmaWxsPSJub25lIiBzdHJva2U9IiNGQkYxQzAiIHN0cm9rZS13aWR0aD0iMy41IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTUxIDE0Nykgc2NhbGUoMS4xKSI+PGcgc3Ryb2tlPSIjZmZmIiBmaWxsPSJub25lIiBzdHJva2Utd2lkdGg9IjUuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMjUgMTEgVjI3IE0yNSAyNyBIOCBWMzYgTTI1IDI3IEg0MiBWMzYiLz48L2c+PGcgZmlsbD0iI2ZmZiI+PGNpcmNsZSBjeD0iMjUiIGN5PSI4IiByPSI3LjQiLz48Y2lyY2xlIGN4PSI4IiBjeT0iNDEiIHI9IjcuNCIvPjxjaXJjbGUgY3g9IjQyIiBjeT0iNDEiIHI9IjcuNCIvPjwvZz48L2c+Cjwvc3ZnPgo=' }),
+  super_orchestrator_bolt: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLXN1cGVyX29yY2hlc3RyYXRvcl9ib2x0Ij4KPHRpdGxlIGlkPSJ0aXRsZS1zdXBlcl9vcmNoZXN0cmF0b3JfYm9sdCI+U3VwZXIgT3JjaGVzdHJhdG9yIOKAlCBDb29yZG9ubmUgcGx1c2lldXJzIHByb2pldHMgZXQgbGV1cnMgb3JjaGVzdHJhdGV1cnM8L3RpdGxlPgo8ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWRpZW50LXN1cGVyX29yY2hlc3RyYXRvcl9ib2x0IiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjQTc3Q0Y3Ii8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiM3MDQzREIiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM1MzI0QjQiLz48L2xpbmVhckdyYWRpZW50PjxsaW5lYXJHcmFkaWVudCBpZD0icmVnYWxpYS1zdXBlcl9vcmNoZXN0cmF0b3JfYm9sdCIgeDE9IjEwJSIgeTE9IjAlIiB4Mj0iNjAlIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI0ZGRjJBNyIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0YyQjkzNiIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPgo8ZWxsaXBzZSBjeD0iMTI4IiBjeT0iMjMwIiByeD0iODEiIHJ5PSI5IiBmaWxsPSIjNzA0M0RCIiBvcGFjaXR5PSIwLjE2Ii8+CjxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzcwNDNEQiIgc3Ryb2tlLXdpZHRoPSI5LjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCI+PHBhdGggZD0iTSA1MyA0MyBMIDQxIDM0Ii8+CjxwYXRoIGQ9Ik0gNjUgMzAgTCA1NyAxNyIvPgo8cGF0aCBkPSJNIDgzIDI1IEwgODAgMTEiLz48L2c+CjxwYXRoIGQ9Ik0gMTA3LjEzIDQ2Ljk3IEMgMTAxLjM4IDUxLjM0IDg2LjAyIDY1LjQ2IDc5LjA4IDczLjUzIEMgNzIuMTUgODEuNjEgNTguMjkgMTAwLjI5IDUyLjM3IDExMC43MyBDIDQ2LjQ1IDEyMS4xNiAzNS4wNCAxNDguNjUgMzIuMzQgMTU1Ljg5IEMgMjkuNjMgMTYzLjEyIDMwLjQ5IDE2NC4xNCAzMS4wMCAxNjcuODQgQyAzMS41MSAxNzEuNTQgMzQuODIgMTgxLjkxIDM2LjM0IDE4NS4xMSBDIDM3Ljg3IDE4OC4zMCA0MC4xNCAxOTAuODkgNDMuMDIgMTkzLjA4IEMgNDUuOTAgMTk1LjI2IDUxLjk0IDIwMC4xOSA1OS4wNSAyMDIuMzcgQyA2Ni4xNSAyMDQuNTYgODQuNzQgMjA5LjMzIDk5LjEyIDIxMC4zNCBDIDExMy41MCAyMTEuMzUgMTYxLjA3IDIxMC42OCAxNzIuNTggMjEwLjM0IEMgMTg0LjA4IDIxMC4wMSAxODUuNTQgMjA4Ljg2IDE4OS45NCAyMDcuNjkgQyAxOTQuMzQgMjA2LjUxIDIwMy45MiAyMDIuOTAgMjA3LjMwIDIwMS4wNSBDIDIxMC42OCAxOTkuMjAgMjE0LjYyIDE5NS42MCAyMTYuNjUgMTkzLjA4IEMgMjE4LjY4IDE5MC41NSAyMjIuMzEgMTg1LjgzIDIyMy4zMyAxODEuMTIgQyAyMjQuMzQgMTc2LjQxIDIyNS44NSAxNjIuOTUgMjI0LjY2IDE1NS44OSBDIDIyMy40OCAxNDguODIgMjE4LjA0IDEzNC40MiAyMTMuOTggMTI1LjM0IEMgMjA5LjkyIDExNi4yNSAxOTcuMDEgOTEuNzMgMTkyLjYxIDg0LjE2IEMgMTg4LjIxIDc2LjU5IDE4Mi44MSA2OS43NyAxNzkuMjUgNjUuNTYgQyAxNzUuNzAgNjEuMzYgMTY4Ljc5IDU0LjE1IDE2NC41NiA1MC45NSBDIDE2MC4zMyA0Ny43NiAxNTAuOTQgNDEuODQgMTQ1Ljg2IDQwLjMzIEMgMTQwLjc5IDM4LjgxIDEyOS40MCAzOC4xNiAxMjQuNDkgMzkuMDAgQyAxMTkuNTkgMzkuODQgMTEyLjg4IDQyLjYwIDEwNy4xMyA0Ni45NyBaIiBmaWxsPSJ1cmwoI2dyYWRpZW50LXN1cGVyX29yY2hlc3RyYXRvcl9ib2x0KSIvPgo8ZyBmaWxsPSJ3aGl0ZSI+PGVsbGlwc2UgY3g9IjEwMCIgY3k9IjEwOCIgcng9IjgiIHJ5PSIxMy4wIi8+PGVsbGlwc2UgY3g9IjEzNCIgY3k9IjEwOCIgcng9IjgiIHJ5PSIxMy4wIi8+PC9nPgo8cGF0aCBkPSJNIDE0MiAzIEwgMTA5IDI3IFEgMTA3IDMwIDExMyAzMCBIMTMxIEwgMTIyIDQ5IEwgMTU4IDIxIFEgMTYxIDE3IDE1NiAxNyBIMTM5IFoiIGZpbGw9InVybCgjcmVnYWxpYS1zdXBlcl9vcmNoZXN0cmF0b3JfYm9sdCkiIHN0cm9rZT0iI0ZGRkZGRiIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDE1MSAxNDcpIHNjYWxlKDEuMSkiPjxnIHN0cm9rZT0iI2ZmZiIgZmlsbD0ibm9uZSIgc3Ryb2tlLXdpZHRoPSI1LjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTI1IDExIFYyNyBNMjUgMjcgSDggVjM2IE0yNSAyNyBINDIgVjM2Ii8+PC9nPjxnIGZpbGw9IiNmZmYiPjxjaXJjbGUgY3g9IjI1IiBjeT0iOCIgcj0iNy40Ii8+PGNpcmNsZSBjeD0iOCIgY3k9IjQxIiByPSI3LjQiLz48Y2lyY2xlIGN4PSI0MiIgY3k9IjQxIiByPSI3LjQiLz48L2c+PC9nPgo8L3N2Zz4K', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLXN1cGVyX29yY2hlc3RyYXRvcl9ib2x0Ij4KPHRpdGxlIGlkPSJ0aXRsZS1zdXBlcl9vcmNoZXN0cmF0b3JfYm9sdCI+U3VwZXIgT3JjaGVzdHJhdG9yIOKAlCBDb29yZG9ubmUgcGx1c2lldXJzIHByb2pldHMgZXQgbGV1cnMgb3JjaGVzdHJhdGV1cnM8L3RpdGxlPgo8ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWRpZW50LXN1cGVyX29yY2hlc3RyYXRvcl9ib2x0IiB4MT0iMTklIiB5MT0iMCUiIHgyPSI3NyUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjQTc3Q0Y3Ii8+PHN0b3Agb2Zmc2V0PSI1MyUiIHN0b3AtY29sb3I9IiM3MDQzREIiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM1MzI0QjQiLz48L2xpbmVhckdyYWRpZW50PjxsaW5lYXJHcmFkaWVudCBpZD0icmVnYWxpYS1zdXBlcl9vcmNoZXN0cmF0b3JfYm9sdCIgeDE9IjEwJSIgeTE9IjAlIiB4Mj0iNjAlIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI0ZGRjJBNyIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0YyQjkzNiIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPgo8cGF0aCBkPSJNIDEwNy4xMyA0Ni45NyBDIDEwMS4zOCA1MS4zNCA4Ni4wMiA2NS40NiA3OS4wOCA3My41MyBDIDcyLjE1IDgxLjYxIDU4LjI5IDEwMC4yOSA1Mi4zNyAxMTAuNzMgQyA0Ni40NSAxMjEuMTYgMzUuMDQgMTQ4LjY1IDMyLjM0IDE1NS44OSBDIDI5LjYzIDE2My4xMiAzMC40OSAxNjQuMTQgMzEuMDAgMTY3Ljg0IEMgMzEuNTEgMTcxLjU0IDM0LjgyIDE4MS45MSAzNi4zNCAxODUuMTEgQyAzNy44NyAxODguMzAgNDAuMTQgMTkwLjg5IDQzLjAyIDE5My4wOCBDIDQ1LjkwIDE5NS4yNiA1MS45NCAyMDAuMTkgNTkuMDUgMjAyLjM3IEMgNjYuMTUgMjA0LjU2IDg0Ljc0IDIwOS4zMyA5OS4xMiAyMTAuMzQgQyAxMTMuNTAgMjExLjM1IDE2MS4wNyAyMTAuNjggMTcyLjU4IDIxMC4zNCBDIDE4NC4wOCAyMTAuMDEgMTg1LjU0IDIwOC44NiAxODkuOTQgMjA3LjY5IEMgMTk0LjM0IDIwNi41MSAyMDMuOTIgMjAyLjkwIDIwNy4zMCAyMDEuMDUgQyAyMTAuNjggMTk5LjIwIDIxNC42MiAxOTUuNjAgMjE2LjY1IDE5My4wOCBDIDIxOC42OCAxOTAuNTUgMjIyLjMxIDE4NS44MyAyMjMuMzMgMTgxLjEyIEMgMjI0LjM0IDE3Ni40MSAyMjUuODUgMTYyLjk1IDIyNC42NiAxNTUuODkgQyAyMjMuNDggMTQ4LjgyIDIxOC4wNCAxMzQuNDIgMjEzLjk4IDEyNS4zNCBDIDIwOS45MiAxMTYuMjUgMTk3LjAxIDkxLjczIDE5Mi42MSA4NC4xNiBDIDE4OC4yMSA3Ni41OSAxODIuODEgNjkuNzcgMTc5LjI1IDY1LjU2IEMgMTc1LjcwIDYxLjM2IDE2OC43OSA1NC4xNSAxNjQuNTYgNTAuOTUgQyAxNjAuMzMgNDcuNzYgMTUwLjk0IDQxLjg0IDE0NS44NiA0MC4zMyBDIDE0MC43OSAzOC44MSAxMjkuNDAgMzguMTYgMTI0LjQ5IDM5LjAwIEMgMTE5LjU5IDM5Ljg0IDExMi44OCA0Mi42MCAxMDcuMTMgNDYuOTcgWiIgZmlsbD0idXJsKCNncmFkaWVudC1zdXBlcl9vcmNoZXN0cmF0b3JfYm9sdCkiLz4KPGcgZmlsbD0id2hpdGUiPjxlbGxpcHNlIGN4PSIxMDAiIGN5PSIxMDgiIHJ4PSI4IiByeT0iMTMuMCIvPjxlbGxpcHNlIGN4PSIxMzQiIGN5PSIxMDgiIHJ4PSI4IiByeT0iMTMuMCIvPjwvZz4KPHBhdGggZD0iTSAxNDIgMyBMIDEwOSAyNyBRIDEwNyAzMCAxMTMgMzAgSDEzMSBMIDEyMiA0OSBMIDE1OCAyMSBRIDE2MSAxNyAxNTYgMTcgSDEzOSBaIiBmaWxsPSJ1cmwoI3JlZ2FsaWEtc3VwZXJfb3JjaGVzdHJhdG9yX2JvbHQpIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxNTEgMTQ3KSBzY2FsZSgxLjEpIj48ZyBzdHJva2U9IiNmZmYiIGZpbGw9Im5vbmUiIHN0cm9rZS13aWR0aD0iNS42IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Ik0yNSAxMSBWMjcgTTI1IDI3IEg4IFYzNiBNMjUgMjcgSDQyIFYzNiIvPjwvZz48ZyBmaWxsPSIjZmZmIj48Y2lyY2xlIGN4PSIyNSIgY3k9IjgiIHI9IjcuNCIvPjxjaXJjbGUgY3g9IjgiIGN5PSI0MSIgcj0iNy40Ii8+PGNpcmNsZSBjeD0iNDIiIGN5PSI0MSIgcj0iNy40Ii8+PC9nPjwvZz4KPC9zdmc+Cg==' }),
+  verifier: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLXZlcmlmaWVyIj4KPHRpdGxlIGlkPSJ0aXRsZS12ZXJpZmllciI+VmVyaWZpZXIg4oCUIFRlc3RlIGV0IHZhbGlkZTwvdGl0bGU+CjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZGllbnQtdmVyaWZpZXIiIHgxPSIxOSUiIHkxPSIwJSIgeDI9Ijc3JSIgeTI9IjEwMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNGRURCM0IiLz48c3RvcCBvZmZzZXQ9IjUzJSIgc3RvcC1jb2xvcj0iI0ZFQkYwRCIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0ZFQUUwMiIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPgo8ZWxsaXBzZSBjeD0iMTI4IiBjeT0iMjMwIiByeD0iODEiIHJ5PSI5IiBmaWxsPSIjRkVCRjBEIiBvcGFjaXR5PSIwLjE2Ii8+CjxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI0ZFQkYwRCIgc3Ryb2tlLXdpZHRoPSI5LjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCI+PHBhdGggZD0iTSAxOTcgNTEgTCAyMDYgMzEiLz4KPHBhdGggZD0iTSAyMTUgNjIgTCAyMzAgNTMiLz48L2c+CjxwYXRoIGQ9Ik0gMTE5LjIwIDUxLjAwIEMgMTE1LjI1IDUyLjE5IDExMS42OSA1Mi41OCAxMDIuOTQgNjAuNDEgQyA5NC4yMCA2OC4yNCA1Ny42NyAxMDQuNjYgNTAuMTMgMTEyLjg0IEMgNDIuNTggMTIxLjAxIDQ0LjM4IDEyMi4wNCA0My4zNSAxMjQuOTMgQyA0Mi4zMyAxMjcuODMgNDAuOTcgMTMxLjc3IDQyLjAwIDEzNS42OSBDIDQzLjAzIDEzOS42MCA0NS44MiAxNDkuMDQgNTEuNDggMTU1Ljg1IEMgNTcuMTQgMTYyLjY2IDc5LjE0IDE4Mi44MiA4Ni42OSAxODkuNDYgQyA5NC4yNCAxOTYuMTAgMTA1LjU4IDIwNS4yMSAxMTEuMDcgMjA4LjI4IEMgMTE2LjU2IDIxMS4zNCAxMjUuNzQgMjEzLjY2IDEzMC4wMyAyMTMuNjYgQyAxMzQuMzIgMjEzLjY2IDE0MC45OCAyMTAuNDkgMTQ0LjkzIDIwOC4yOCBDIDE0OC44NyAyMDYuMDcgMTUzLjI5IDIwMy4zMyAxNjEuMTggMTk2LjE4IEMgMTY5LjA3IDE4OS4wMyAyMDAuNzEgMTU4LjgwIDIwNy4yMyAxNTEuODIgQyAyMTMuNzUgMTQ0Ljg0IDIxMS45NiAxNDQuMTMgMjEyLjY1IDE0MS4wNyBDIDIxMy4zMyAxMzguMDAgMjEzLjY3IDEzMS4yMCAyMTIuNjUgMTI3LjYyIEMgMjExLjYyIDEyNC4wNSAyMTIuNzUgMTIxLjY5IDIwNC41MiAxMTIuODQgQyAxOTYuMjkgMTAzLjk4IDE1Ni41NiA2NS41NSAxNDcuNjQgNTcuNzIgQyAxMzguNzIgNDkuODkgMTM3LjcwIDUxLjg1IDEzNC4wOSA1MS4wMCBDIDEzMC40OSA1MC4xNSAxMjMuMTQgNDkuODEgMTE5LjIwIDUxLjAwIFoiIGZpbGw9InVybCgjZ3JhZGllbnQtdmVyaWZpZXIpIi8+CjxnIGZpbGw9IndoaXRlIj48ZWxsaXBzZSBjeD0iOTMiIGN5PSIxMTQiIHJ4PSI4IiByeT0iMTMuMCIvPjxlbGxpcHNlIGN4PSIxMzAiIGN5PSIxMTQiIHJ4PSI4IiByeT0iMTMuMCIvPjwvZz4KPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTM5IDEzOCkgc2NhbGUoMS4wNCkiPjxwYXRoIGQ9Ik01IDI2IDE5IDM5IDQ2IDEwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iNy4zIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L2c+Cjwvc3ZnPgo=', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLXZlcmlmaWVyIj4KPHRpdGxlIGlkPSJ0aXRsZS12ZXJpZmllciI+VmVyaWZpZXIg4oCUIFRlc3RlIGV0IHZhbGlkZTwvdGl0bGU+CjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZGllbnQtdmVyaWZpZXIiIHgxPSIxOSUiIHkxPSIwJSIgeDI9Ijc3JSIgeTI9IjEwMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNGRURCM0IiLz48c3RvcCBvZmZzZXQ9IjUzJSIgc3RvcC1jb2xvcj0iI0ZFQkYwRCIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI0ZFQUUwMiIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPgo8cGF0aCBkPSJNIDExOS4yMCA1MS4wMCBDIDExNS4yNSA1Mi4xOSAxMTEuNjkgNTIuNTggMTAyLjk0IDYwLjQxIEMgOTQuMjAgNjguMjQgNTcuNjcgMTA0LjY2IDUwLjEzIDExMi44NCBDIDQyLjU4IDEyMS4wMSA0NC4zOCAxMjIuMDQgNDMuMzUgMTI0LjkzIEMgNDIuMzMgMTI3LjgzIDQwLjk3IDEzMS43NyA0Mi4wMCAxMzUuNjkgQyA0My4wMyAxMzkuNjAgNDUuODIgMTQ5LjA0IDUxLjQ4IDE1NS44NSBDIDU3LjE0IDE2Mi42NiA3OS4xNCAxODIuODIgODYuNjkgMTg5LjQ2IEMgOTQuMjQgMTk2LjEwIDEwNS41OCAyMDUuMjEgMTExLjA3IDIwOC4yOCBDIDExNi41NiAyMTEuMzQgMTI1Ljc0IDIxMy42NiAxMzAuMDMgMjEzLjY2IEMgMTM0LjMyIDIxMy42NiAxNDAuOTggMjEwLjQ5IDE0NC45MyAyMDguMjggQyAxNDguODcgMjA2LjA3IDE1My4yOSAyMDMuMzMgMTYxLjE4IDE5Ni4xOCBDIDE2OS4wNyAxODkuMDMgMjAwLjcxIDE1OC44MCAyMDcuMjMgMTUxLjgyIEMgMjEzLjc1IDE0NC44NCAyMTEuOTYgMTQ0LjEzIDIxMi42NSAxNDEuMDcgQyAyMTMuMzMgMTM4LjAwIDIxMy42NyAxMzEuMjAgMjEyLjY1IDEyNy42MiBDIDIxMS42MiAxMjQuMDUgMjEyLjc1IDEyMS42OSAyMDQuNTIgMTEyLjg0IEMgMTk2LjI5IDEwMy45OCAxNTYuNTYgNjUuNTUgMTQ3LjY0IDU3LjcyIEMgMTM4LjcyIDQ5Ljg5IDEzNy43MCA1MS44NSAxMzQuMDkgNTEuMDAgQyAxMzAuNDkgNTAuMTUgMTIzLjE0IDQ5LjgxIDExOS4yMCA1MS4wMCBaIiBmaWxsPSJ1cmwoI2dyYWRpZW50LXZlcmlmaWVyKSIvPgo8ZyBmaWxsPSJ3aGl0ZSI+PGVsbGlwc2UgY3g9IjkzIiBjeT0iMTE0IiByeD0iOCIgcnk9IjEzLjAiLz48ZWxsaXBzZSBjeD0iMTMwIiBjeT0iMTE0IiByeD0iOCIgcnk9IjEzLjAiLz48L2c+CjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDEzOSAxMzgpIHNjYWxlKDEuMDQpIj48cGF0aCBkPSJNNSAyNiAxOSAzOSA0NiAxMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjcuMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9nPgo8L3N2Zz4K' }),
+  worker: Object.freeze({ full: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLXdvcmtlciI+Cjx0aXRsZSBpZD0idGl0bGUtd29ya2VyIj5Xb3JrZXIg4oCUIEV4w6ljdXRlIGV0IHByb2R1aXQ8L3RpdGxlPgo8ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWRpZW50LXdvcmtlciIgeDE9IjE5JSIgeTE9IjAlIiB4Mj0iNzclIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzU2RTA3OSIvPjxzdG9wIG9mZnNldD0iNTMlIiBzdG9wLWNvbG9yPSIjMzZDQjVFIi8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMjJCOTRCIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+CjxlbGxpcHNlIGN4PSIxMjgiIGN5PSIyMzAiIHJ4PSI4MSIgcnk9IjkiIGZpbGw9IiMzNkNCNUUiIG9wYWNpdHk9IjAuMTYiLz4KPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMzZDQjVFIiBzdHJva2Utd2lkdGg9IjkuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIj48cGF0aCBkPSJNIDIwMCA2MCBMIDIwOSAzNyIvPgo8cGF0aCBkPSJNIDIxNSA2OCBMIDIyNyA1NCIvPgo8cGF0aCBkPSJNIDIyNiA3NyBMIDI0MSA2OCIvPjwvZz4KPHBhdGggZD0iTSAyOS4wMCAxNTEuNTMgQyAyOC4zMiAxNTYuNjEgMjguMzEgMTY4LjY2IDMwLjMzIDE3NC4yNSBDIDMyLjM2IDE3OS44MyA0MS43OSAxOTIuMDcgNDUuMDAgMTk1LjYzIEMgNDguMjEgMTk5LjE4IDUyLjEyIDIwMC43OSA1NS42NyAyMDIuMzEgQyA1OS4yMSAyMDMuODMgNjUuOTEgMjA2LjQ3IDczLjAwIDIwNy42NSBDIDgwLjA5IDIwOC44NCAxMDAuMDEgMjExLjMzIDExMS42NyAyMTEuNjYgQyAxMjMuMzIgMjEyLjAwIDE1NC4zNiAyMTEuNjggMTY1LjAwIDIxMC4zMyBDIDE3NS42NCAyMDguOTcgMTg5LjQyIDIwNC4zNiAxOTUuNjcgMjAwLjk3IEMgMjAxLjkyIDE5Ny41OSAyMTEuMTIgMTg3LjY2IDIxNC4zMyAxODMuNjAgQyAyMTcuNTQgMTc5LjU0IDIxOS44MiAxNzIuNjMgMjIxLjAwIDE2OC45MCBDIDIyMi4xOCAxNjUuMTggMjI0LjAwIDE1OS4yOCAyMjMuNjcgMTU0LjIwIEMgMjIzLjMzIDE0OS4xMyAyMjEuMjAgMTM0Ljc0IDIxOC4zMyAxMjguODEgQyAyMTUuNDYgMTIyLjg5IDIwNC44OCAxMTAuOTkgMjAxLjAwIDEwNy40MyBDIDE5Ny4xMiAxMDMuODggMTkxLjIxIDEwMS43NyAxODcuNjcgMTAwLjc1IEMgMTg0LjEyIDk5Ljc0IDE3Ni4zOCAxMDEuOTUgMTczLjAwIDk5LjQyIEMgMTY5LjYyIDk2Ljg4IDE2My43MCA4NC4wOSAxNjEuMDAgODAuNzEgQyAxNTguMzAgNzcuMzIgMTU0LjM3IDc0LjU1IDE1MS42NyA3Mi42OSBDIDE0OC45NiA3MC44MyAxNDMuMjEgNjcuMzYgMTM5LjY3IDY2LjAxIEMgMTM2LjEyIDY0LjY1IDEyOC4yMyA2Mi4zNCAxMjMuNjcgNjIuMDAgQyAxMTkuMTEgNjEuNjYgMTA5LjQxIDYxLjQ3IDEwMy42NyA2My4zNCBDIDk3LjkyIDY1LjIwIDgzLjQwIDcyLjMwIDc4LjMzIDc2LjcwIEMgNzMuMjcgODEuMTAgNjYuMDMgOTMuMDAgNjMuNjcgOTguMDggQyA2MS4zMCAxMDMuMTYgNjEuODYgMTEzLjU3IDU5LjY3IDExNi43OSBDIDU3LjQ3IDEyMC4wMCA0OS4zNyAxMjEuMjcgNDYuMzMgMTIzLjQ3IEMgNDMuMjkgMTI1LjY3IDM3Ljg2IDEzMC42MCAzNS42NyAxMzQuMTYgQyAzMy40NyAxMzcuNzEgMjkuNjggMTQ2LjQ1IDI5LjAwIDE1MS41MyBaIiBmaWxsPSJ1cmwoI2dyYWRpZW50LXdvcmtlcikiLz4KPGcgZmlsbD0id2hpdGUiPjxlbGxpcHNlIGN4PSI5MSIgY3k9IjEyNSIgcng9IjgiIHJ5PSIxMy4wIi8+PGVsbGlwc2UgY3g9IjEyNyIgY3k9IjEyNSIgcng9IjgiIHJ5PSIxMy4wIi8+PC9nPgo8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxNDYgMTQ0KSBzY2FsZSgxLjE0KSI+PHBhdGggZD0iTTQzIDcgQzM1IDMgMjUgMTAgMjUgMjAgTDggMzcgQzQgNDEgNyA0NyAxMiA0NyBDMTUgNDcgMTcgNDUgMTkgNDMgTDM2IDI2IEM0NSAyNiA0OSAxNSA0MyA3IFogTTM2IDcgNDQgMTQgMzUgMjMgMjggMTYgWiIgZmlsbD0iI2ZmZiIgZmlsbC1ydWxlPSJldmVub2RkIi8+PC9nPgo8L3N2Zz4K', compact: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsbGVkYnk9InRpdGxlLXdvcmtlciI+Cjx0aXRsZSBpZD0idGl0bGUtd29ya2VyIj5Xb3JrZXIg4oCUIEV4w6ljdXRlIGV0IHByb2R1aXQ8L3RpdGxlPgo8ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWRpZW50LXdvcmtlciIgeDE9IjE5JSIgeTE9IjAlIiB4Mj0iNzclIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzU2RTA3OSIvPjxzdG9wIG9mZnNldD0iNTMlIiBzdG9wLWNvbG9yPSIjMzZDQjVFIi8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMjJCOTRCIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+CjxwYXRoIGQ9Ik0gMjkuMDAgMTUxLjUzIEMgMjguMzIgMTU2LjYxIDI4LjMxIDE2OC42NiAzMC4zMyAxNzQuMjUgQyAzMi4zNiAxNzkuODMgNDEuNzkgMTkyLjA3IDQ1LjAwIDE5NS42MyBDIDQ4LjIxIDE5OS4xOCA1Mi4xMiAyMDAuNzkgNTUuNjcgMjAyLjMxIEMgNTkuMjEgMjAzLjgzIDY1LjkxIDIwNi40NyA3My4wMCAyMDcuNjUgQyA4MC4wOSAyMDguODQgMTAwLjAxIDIxMS4zMyAxMTEuNjcgMjExLjY2IEMgMTIzLjMyIDIxMi4wMCAxNTQuMzYgMjExLjY4IDE2NS4wMCAyMTAuMzMgQyAxNzUuNjQgMjA4Ljk3IDE4OS40MiAyMDQuMzYgMTk1LjY3IDIwMC45NyBDIDIwMS45MiAxOTcuNTkgMjExLjEyIDE4Ny42NiAyMTQuMzMgMTgzLjYwIEMgMjE3LjU0IDE3OS41NCAyMTkuODIgMTcyLjYzIDIyMS4wMCAxNjguOTAgQyAyMjIuMTggMTY1LjE4IDIyNC4wMCAxNTkuMjggMjIzLjY3IDE1NC4yMCBDIDIyMy4zMyAxNDkuMTMgMjIxLjIwIDEzNC43NCAyMTguMzMgMTI4LjgxIEMgMjE1LjQ2IDEyMi44OSAyMDQuODggMTEwLjk5IDIwMS4wMCAxMDcuNDMgQyAxOTcuMTIgMTAzLjg4IDE5MS4yMSAxMDEuNzcgMTg3LjY3IDEwMC43NSBDIDE4NC4xMiA5OS43NCAxNzYuMzggMTAxLjk1IDE3My4wMCA5OS40MiBDIDE2OS42MiA5Ni44OCAxNjMuNzAgODQuMDkgMTYxLjAwIDgwLjcxIEMgMTU4LjMwIDc3LjMyIDE1NC4zNyA3NC41NSAxNTEuNjcgNzIuNjkgQyAxNDguOTYgNzAuODMgMTQzLjIxIDY3LjM2IDEzOS42NyA2Ni4wMSBDIDEzNi4xMiA2NC42NSAxMjguMjMgNjIuMzQgMTIzLjY3IDYyLjAwIEMgMTE5LjExIDYxLjY2IDEwOS40MSA2MS40NyAxMDMuNjcgNjMuMzQgQyA5Ny45MiA2NS4yMCA4My40MCA3Mi4zMCA3OC4zMyA3Ni43MCBDIDczLjI3IDgxLjEwIDY2LjAzIDkzLjAwIDYzLjY3IDk4LjA4IEMgNjEuMzAgMTAzLjE2IDYxLjg2IDExMy41NyA1OS42NyAxMTYuNzkgQyA1Ny40NyAxMjAuMDAgNDkuMzcgMTIxLjI3IDQ2LjMzIDEyMy40NyBDIDQzLjI5IDEyNS42NyAzNy44NiAxMzAuNjAgMzUuNjcgMTM0LjE2IEMgMzMuNDcgMTM3LjcxIDI5LjY4IDE0Ni40NSAyOS4wMCAxNTEuNTMgWiIgZmlsbD0idXJsKCNncmFkaWVudC13b3JrZXIpIi8+CjxnIGZpbGw9IndoaXRlIj48ZWxsaXBzZSBjeD0iOTEiIGN5PSIxMjUiIHJ4PSI4IiByeT0iMTMuMCIvPjxlbGxpcHNlIGN4PSIxMjciIGN5PSIxMjUiIHJ4PSI4IiByeT0iMTMuMCIvPjwvZz4KPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTQ2IDE0NCkgc2NhbGUoMS4xNCkiPjxwYXRoIGQ9Ik00MyA3IEMzNSAzIDI1IDEwIDI1IDIwIEw4IDM3IEM0IDQxIDcgNDcgMTIgNDcgQzE1IDQ3IDE3IDQ1IDE5IDQzIEwzNiAyNiBDNDUgMjYgNDkgMTUgNDMgNyBaIE0zNiA3IDQ0IDE0IDM1IDIzIDI4IDE2IFoiIGZpbGw9IiNmZmYiIGZpbGwtcnVsZT0iZXZlbm9kZCIvPjwvZz4KPC9zdmc+Cg==' }),
+})
+
+
+// ---- src/client/ui/avatar.js ----
+/**
+ * AgentAvatar: the approved mascot (or a neutral grey mark), a separate status
+ * dot and an optional Task Board state chip.
+ *
+ * Client module concatenated into the browser artifact by
+ * scripts/build-client.mjs: everything here is global to the bundle. It uses
+ * React.createElement only — no JSX and no HTML string sink: an SVG data URI is
+ * only ever assigned to an `<img>` `src`. The role never carries a status
+ * colour: the dot is a distinct element driven by `data-tone`.
+ *
+ * The wrapper owns the accessible name (`role="img"` + composed aria-label);
+ * the `<img>` is decorative (`alt=""`). `decorative` renders `aria-hidden`.
+ * Size flows to CSS through the `--dab-avatar-size` custom property. There is no
+ * animation by default; any pulse a stylesheet adds must be disabled under
+ * `prefers-reduced-motion` (styles.js owns that rule).
+ *
+ * @module dsh-agent-board/client/ui/avatar
+ */
+
+/** Injected data-URI map. The bundle defines AGENT_BOT_ASSETS before this file. */
+function dabAvatarSources(props) {
+  if (Object.prototype.hasOwnProperty.call(props, 'sources')) return props.sources ?? null
+  if (typeof AGENT_BOT_ASSETS !== 'undefined') return AGENT_BOT_ASSETS
+  return null
+}
+
+/**
+ * Neutral grey identity mark used when the role is unknown or the asset source
+ * is missing. Deliberately NOT one of the 15 mascot silhouettes: a plain person
+ * glyph, so an unknown agent is never given a guessed role.
+ */
+function dabAvatarGenericMark(h) {
+  return h('svg', {
+    className: 'dab-avatar-generic',
+    viewBox: '0 0 24 24',
+    width: '60%',
+    height: '60%',
+    'aria-hidden': 'true',
+    focusable: 'false',
+  },
+  h('circle', { key: 'head', cx: 12, cy: 8.5, r: 3.6, fill: '#7E8B9C' }),
+  h('path', {
+    key: 'body',
+    d: 'M4.6 20.2c1.2-4.2 4.1-6.4 7.4-6.4s6.2 2.2 7.4 6.4',
+    fill: 'none',
+    stroke: '#7E8B9C',
+    strokeWidth: 2.4,
+    strokeLinecap: 'round',
+  }))
+}
+
+/** Compose the accessible name from the pure model's structured parts. */
+function dabAvatarAltText(model) {
+  const parts = []
+  for (const part of model.altParts) {
+    const text = part.labelKey !== undefined ? dabT(part.labelKey) : part.text
+    if (typeof text === 'string' && text.trim() !== '' && !parts.includes(text)) parts.push(text)
+  }
+  // No declared name and no readable status: name the element without guessing
+  // a role. `agent` is a generic label owned by strings.js.
+  if (parts.length === 0) parts.push(dabT('agent'))
+  return parts.join(' — ')
+}
+
+/**
+ * @param {object} props
+ * @param {string|object|null} [props.role] declared role/name
+ * @param {string|null} [props.name]
+ * @param {string|null} [props.status] one of the board's EXISTING statuses
+ * @param {string|null} [props.taskState] Task Board workflow state (separate)
+ * @param {number} [props.size] rendered size in px (CSS variable)
+ * @param {'full'|'compact'|'auto'} [props.variant]
+ * @param {'crown'|'bolt'} [props.emblem]
+ * @param {boolean} [props.selected]
+ * @param {boolean} [props.decorative]
+ * @returns {object} React element
+ */
+function DabAgentAvatar(props) {
+  const h = React.createElement
+  const model = dabAgentAvatarModel({
+    role: props.role,
+    name: props.name,
+    status: props.status,
+    taskState: props.taskState,
+    size: props.size,
+    variant: props.variant,
+    emblem: props.emblem,
+    sources: dabAvatarSources(props),
+  })
+  const decorative = props.decorative === true
+  const selected = props.selected === true
+  const label = dabAvatarAltText(model)
+
+  const children = []
+  if (model.src !== null) {
+    children.push(h('img', {
+      key: 'image',
+      className: 'dab-avatar-img',
+      src: model.src,
+      alt: '',
+      width: model.size,
+      height: model.size,
+      draggable: false,
+      decoding: 'async',
+    }))
+  } else {
+    children.push(h('span', { key: 'generic', className: 'dab-avatar-fallback' }, dabAvatarGenericMark(h)))
+  }
+  // The status dot is separate from the mascot: role colour is identity, the dot
+  // is the runtime status tone. Its colour is a stylesheet decision (data-tone).
+  children.push(h('span', {
+    key: 'status',
+    className: 'dab-avatar-dot',
+    'data-tone': model.tone,
+    title: dabT(model.toneLabelKey),
+    'aria-hidden': 'true',
+  }))
+  if (model.taskTone !== null) {
+    const taskLabel = dabT(model.taskToneLabelKey)
+    children.push(h('span', {
+      key: 'task',
+      className: 'dab-avatar-task',
+      'data-tone': model.taskTone,
+      title: `${dabT('task')} · ${taskLabel}`,
+    }, taskLabel))
+  }
+
+  const attributes = {
+    className: 'dab-avatar',
+    'data-role': model.roleId ?? 'generic',
+    'data-tone': model.tone,
+    'data-variant': model.variant,
+    'data-selected': selected ? 'true' : 'false',
+    'data-size': String(model.size),
+    style: { '--dab-avatar-size': `${model.size}px` },
+  }
+  if (model.emblem !== null) attributes['data-emblem'] = model.emblem
+  if (decorative) {
+    attributes['aria-hidden'] = 'true'
+  } else {
+    attributes.role = 'img'
+    attributes['aria-label'] = label
+  }
+  return h('span', attributes, children)
+}
+
+
 // ---- src/client/ui/card.js ----
 /**
  * AgentCard: one compact card per agent. Pointer and keyboard go through the
@@ -2662,32 +5016,75 @@ function dabInjectStyles(ctxStyles) {
  * The branch toggle and the quick "open" button stop propagation so they never
  * trigger inspection or acknowledgement.
  *
+ * Identity is expressed by the official mascot (`DabAgentAvatar`, from
+ * ui/avatar.js) and the resolved DECLARED role; status stays on the existing
+ * mark and dot, never on the role colour. The real activity (turn/step counters
+ * the runtime reports) is shown as text when present: there is deliberately no
+ * bar or percentage, because no reliable completion measure exists.
+ *
  * @module dsh-agent-board/client/ui/card
  */
 
+/**
+ * Render the mascot when the avatar module is part of the bundle. `typeof` on an
+ * undeclared global is safe, so a partial build never throws at render time.
+ */
+function dabMascot(h, props) {
+  return typeof DabAgentAvatar === 'function' ? h(DabAgentAvatar, props) : null
+}
+
+function dabCardRole(node, resolved) {
+  if (resolved !== null && resolved !== undefined) return resolved
+  if (typeof dabResolveAgentRole === 'function') return dabResolveAgentRole(node.role)
+  return { roleId: null, roleLabel: null, family: null, source: 'generic', raw: node.role ?? null }
+}
+
 function dabCardSignature(props) {
   const node = props.node
+  const role = dabCardRole(node, props.role)
   return [
     node.id, node.status, node.seen, node.title, node.role, node.updatedAt, node.expectedAction, node.waitingDetail,
     node.model?.model, node.model?.provider, node.model?.reasoningEffort, node.model?.source, node.recentlyFinished,
     node.taskId, node.error, node.orphan, node.parentCycle, node.parentReason, node.interrupted, node.providerUnavailable,
+    node.projectId, node.projectTitle, node.origin,
+    node.activity?.turns, node.activity?.steps,
+    role?.roleId, role?.roleLabel, role?.family, role?.source,
     props.selected, props.root, props.hiddenChildren, props.totalChildren, props.collapsed, props.expanded, props.groupActive,
-    props.depth, props.compact, props.nowBucket,
+    props.depth, props.compact, props.nowBucket, props.taskState, props.groupedProject,
   ].join('|')
 }
 
 function DabAgentCardImpl(props) {
-  const { node, selected, root, arbiter, onToggleBranch, onRevealHidden, hiddenChildren, totalChildren, collapsed, expanded, groupActive, depth, compact } = props
+  const { node, selected, root, arbiter, onToggleBranch, onRevealHidden, hiddenChildren, totalChildren, collapsed, expanded, groupActive, depth, compact, taskState, groupedProject } = props
   const h = React.createElement
+  const role = dabCardRole(node, props.role)
+  const roleText = role.roleLabel ?? (typeof node.role === 'string' && node.role !== '' ? node.role : null)
+  const genericRole = role.roleId === null || role.roleId === undefined
+  const familyText = typeof dabFamilyLabel === 'function' ? dabFamilyLabel(role.family) : null
+  const taskLabel = typeof dabTaskStateLabel === 'function' && typeof taskState === 'string' ? dabTaskStateLabel(taskState) : null
   const modelLabel = dabModelText(node.model)
   const age = dabFormatAge(node.updatedAt)
   const statusText = dabStatusLabel(node.status)
+  const projectText = node.projectId === 'unassigned' ? dabT('unassigned') : (typeof node.projectTitle === 'string' ? node.projectTitle : null)
+  const activity = node.activity !== null && node.activity !== undefined && (Number(node.activity.turns) > 0 || Number(node.activity.steps) > 0)
+    ? { turns: Number(node.activity.turns) || 0, steps: Number(node.activity.steps) || 0 }
+    : null
   const calm = !(node.status === 'running' || node.status === 'recovering' || node.status === 'waiting_user' || node.status === 'finished_unread' || node.status === 'interrupted' || node.status === 'provider_unavailable' || (node.status === 'failed' && node.seen !== true))
-  const label = [node.title, statusText, node.role, groupActive ? dabT('groupActive') : null].filter(Boolean).join(' — ')
+  const label = [node.title, statusText, roleText, projectText, taskLabel, groupActive ? dabT('groupActive') : null].filter(Boolean).join(' — ')
 
   const stop = event => { event.stopPropagation() }
-  const children = []
-  children.push(h(
+  const mascot = dabMascot(h, {
+    role: node.role,
+    name: node.title,
+    status: node.status,
+    // The card renders its own linked-task chip in the meta row; the mascot
+    // stays identity + status only (no duplicated task chip).
+    taskState: null,
+    size: compact ? 20 : 30,
+    variant: compact ? 'compact' : 'full',
+    decorative: true,
+  })
+  const top = h(
     'div', { className: 'dab-card-top', key: 'top' },
     h('span', { className: 'dab-mark', 'data-status': node.status, 'data-seen': node.seen === true ? 'true' : 'false', role: 'img', 'aria-label': statusText, title: statusText }),
     h('span', { className: 'dab-name', title: node.title }, node.title),
@@ -2696,12 +5093,47 @@ function DabAgentCardImpl(props) {
       onClick: event => { stop(event); arbiter.open(node.id) },
       onDoubleClick: stop, onKeyDown: stop,
     }, '↗'),
-  ))
+  )
   const meta = []
-  if (node.role) meta.push(h('span', { key: 'role', className: 'dab-role' }, node.role))
-  // Compact model chip: the card's provider/model fact, never a guess. The
-  // height does not change: it lives in the existing single-line meta row.
-  if (root || !node.role) {
+  // Row 1 = identity: role (and the model chip for root cards). The family is
+  // identity context too, but it is already part of the role tooltip and of the
+  // inspector; keeping it out of the row leaves room for the model.
+  // Role identity. A declared role that resolves to nothing gets ONE neutral
+  // chip (never a guessed role, never a role colour); the raw declared string
+  // stays in the tooltip. Compact cards only keep the raw name when present.
+  if (genericRole) {
+    if (compact !== true) {
+      meta.push(h('span', {
+        key: 'role',
+        className: 'dab-role-chip',
+        'data-resolution': 'generic',
+        'data-role': 'generic',
+        title: [dabT('role'), dabT('noDeclaredRole'), dabT('genericIdentity'),
+          role.raw !== null && role.raw !== undefined && role.raw !== '' ? `(${role.raw})` : null]
+          .filter(Boolean).join(' · '),
+      }, dabT('noDeclaredRole')))
+    } else if (roleText !== null) {
+      meta.push(h('span', {
+        key: 'role',
+        className: 'dab-role-chip',
+        'data-resolution': 'generic',
+        'data-role': 'generic',
+        title: [dabT('role'), roleText, dabT('genericIdentity')].filter(Boolean).join(' · '),
+      }, roleText))
+    }
+  } else if (roleText !== null) {
+    meta.push(h('span', {
+      key: 'role',
+      className: 'dab-role-chip',
+      'data-resolution': role.source ?? 'generic',
+      'data-role': role.roleId ?? 'generic',
+      title: [dabT('role'), roleText, familyText, role.raw !== null && role.raw !== undefined && role.raw !== roleText ? `(${role.raw})` : null]
+        .filter(Boolean).join(' · '),
+    }, roleText))
+  }
+  // Compact model chip: the card's provider/model fact, never a guess. It shares
+  // the identity row with the role, so the work facts keep their own row.
+  if (root || roleText === null) {
     meta.push(h('span', {
       key: 'model',
       className: 'dab-chip',
@@ -2709,23 +5141,42 @@ function DabAgentCardImpl(props) {
       title: dabModelTitle(node.model),
     }, modelLabel ?? dabT('noModel')))
   }
-  if (node.taskId) meta.push(h('span', { key: 'task', className: 'dab-mono', title: `${dabT('task')} ${node.taskId}` }, node.taskId))
-  if (age !== '') meta.push(h('span', { key: 'age', title: node.updatedAt ? new Date(node.updatedAt).toLocaleString() : '' }, age))
-  if (node.orphan) meta.push(h('span', { key: 'orphan', title: dabT('orphan') }, `⚠ ${dabT('orphan')}`))
-  if (node.parentCycle) meta.push(h('span', { key: 'cycle', title: dabT('cycle') }, `⚠ ${dabT('cycle')}`))
-  if (node.parentContested) meta.push(h('span', { key: 'contested', title: `${dabT('cycle')} · ${(node.parentCandidates ?? []).join(', ')}` }, `⚠ ${dabT('contest')}`))
-  const metaWithSeps = []
-  meta.forEach((item, index) => {
-    if (index > 0) metaWithSeps.push(h('span', { key: `sep-${index}`, className: 'dab-sep', 'aria-hidden': 'true' }))
-    metaWithSeps.push(item)
-  })
-  if (metaWithSeps.length > 0) children.push(h('div', { className: 'dab-meta', key: 'meta' }, metaWithSeps))
-  if (node.status === 'waiting_user') {
-    children.push(h('div', { className: 'dab-wait', key: 'wait', title: node.waitingDetail ?? '' }, node.waitingDetail ?? dabWaitingLabel(node.expectedAction)))
+  // Row 2 = work facts: the project context (only when the card is not already
+  // grouped inside that project), the linked task, its Task Board state and the
+  // age. The row may wrap; it is never clipped mid-line.
+  const work = []
+  // The project is already the section title when the card is grouped inside its
+  // project (tree, compact grid, hierarchy): the chip would only steal width
+  // from the task/age facts. It stays in the aria-label and the inspector.
+  if (projectText !== null && groupedProject !== true) {
+    work.push(h('span', { key: 'project', className: 'dab-project-line', title: `${dabT('project')} : ${projectText}` }, projectText))
   }
-  if (node.status === 'failed' && node.seen !== true) {
-    children.push(h('div', { className: 'dab-err', key: 'err', title: node.error ?? '' }, node.error ?? dabStatusLabel('failed')))
+  if (node.taskId) work.push(h('span', { key: 'task', className: 'dab-mono', title: `${dabT('task')} ${node.taskId}` }, node.taskId))
+  // The linked Task Board state is a SEPARATE vocabulary from the agent status.
+  // Rendered only when the integration really reported the state.
+  if (taskLabel !== null) {
+    work.push(h('span', {
+      key: 'taskState',
+      className: 'dab-task-chip',
+      'data-state': taskState,
+      'data-tone': typeof AGENT_TASK_STATE_TONE === 'object' ? AGENT_TASK_STATE_TONE[taskState] ?? 'idle' : 'idle',
+      title: `${dabT('taskStateTitle')} — ${taskLabel}`,
+    }, h('span', { className: 'dab-task-dot', 'aria-hidden': 'true' }), taskLabel))
   }
+  if (age !== '') work.push(h('span', { key: 'age', title: node.updatedAt ? new Date(node.updatedAt).toLocaleString() : '' }, age))
+  if (node.orphan) work.push(h('span', { key: 'orphan', title: dabT('orphan') }, `⚠ ${dabT('orphan')}`))
+  if (node.parentCycle) work.push(h('span', { key: 'cycle', title: dabT('cycle') }, `⚠ ${dabT('cycle')}`))
+  if (node.parentContested) work.push(h('span', { key: 'contested', title: `${dabT('cycle')} · ${(node.parentCandidates ?? []).join(', ')}` }, `⚠ ${dabT('contest')}`))
+  const withSeparators = items => {
+    const out = []
+    items.forEach((item, index) => {
+      if (index > 0) out.push(h('span', { key: `sep-${index}`, className: 'dab-sep', 'aria-hidden': 'true' }))
+      out.push(item)
+    })
+    return out
+  }
+  const metaWithSeps = withSeparators(meta)
+  const workWithSeps = withSeparators(work)
 
   const foot = []
   if (!compact && totalChildren > 0) {
@@ -2747,7 +5198,28 @@ function DabAgentCardImpl(props) {
   } else if (groupActive) {
     foot.push(h('span', { key: 'grp', className: 'dab-muted' }, h('span', { className: 'dab-group-ring', 'aria-hidden': 'true' }), dabT('groupActive')))
   }
-  if (foot.length > 0) children.push(h('div', { className: 'dab-card-foot', key: 'foot' }, foot))
+  // REAL activity only: the runtime counters, never a percentage or a bar.
+  if (activity !== null) {
+    const activityText = typeof dabTurnStepLabel === 'function'
+      ? dabTurnStepLabel(activity.turns, activity.steps)
+      : `${activity.turns} ${dabT('turns')} · ${activity.steps} ${dabT('steps')}`
+    foot.push(h('span', {
+      key: 'activity',
+      className: 'dab-activity',
+      title: dabT('activityReal', { activity: activityText }),
+    }, activityText))
+  }
+
+  const ident = [top]
+  if (metaWithSeps.length > 0) ident.push(h('div', { className: 'dab-meta', key: 'meta' }, metaWithSeps))
+  if (workWithSeps.length > 0) ident.push(h('div', { className: 'dab-meta dab-meta-work', key: 'work' }, workWithSeps))
+  if (node.status === 'waiting_user') {
+    ident.push(h('div', { className: 'dab-wait', key: 'wait', title: node.waitingDetail ?? '' }, node.waitingDetail ?? dabWaitingLabel(node.expectedAction)))
+  }
+  if (node.status === 'failed' && node.seen !== true) {
+    ident.push(h('div', { className: 'dab-err', key: 'err', title: node.error ?? '' }, node.error ?? dabStatusLabel('failed')))
+  }
+  if (foot.length > 0) ident.push(h('div', { className: 'dab-card-foot', key: 'foot' }, foot))
 
   return h('div', {
     className: 'dab-card',
@@ -2761,6 +5233,9 @@ function DabAgentCardImpl(props) {
     'data-root': root ? 'true' : 'false',
     'data-selected': selected ? 'true' : 'false',
     'data-calm': calm ? 'true' : 'false',
+    'data-role': role.roleId ?? 'generic',
+    'data-role-resolution': role.source ?? 'generic',
+    'data-task-state': taskLabel === null ? undefined : taskState,
     // Non-status view hint: the turn really completed inside the recent window.
     'data-recent': node.recentlyFinished === true ? 'true' : 'false',
     'data-depth': String(depth ?? 0),
@@ -2771,10 +5246,376 @@ function DabAgentCardImpl(props) {
       if (event.target !== event.currentTarget) return
       if (arbiter.key(node.id, event.key)) event.preventDefault()
     },
-  }, children)
+  },
+  mascot === null
+    ? ident
+    : h('div', { className: 'dab-card-main' },
+      h('span', { className: 'dab-card-mascot', 'aria-hidden': 'true' }, mascot),
+      h('div', { className: 'dab-card-ident' }, ident)),
+  )
 }
 
 const DabAgentCard = React.memo(DabAgentCardImpl, (a, b) => dabCardSignature(a) === dabCardSignature(b) && a.arbiter === b.arbiter)
+
+
+// ---- src/client/ui/hierarchy.js ----
+/**
+ * Supervision band and hierarchy view (presentational, pure props).
+ *
+ * `DabSupervisionBand` renders the host supervision LAYER (not an agent): the
+ * super-orchestrator mascot, the real mode, the aggregate counts, the blocking
+ * items, the cross-project dependency count, the recommendations (explicitly
+ * tagged "proposal — not applied") and the capability matrix, where every
+ * unavailable capability shows its reason. It is collapsible, keyboard
+ * reachable, and stacks on narrow panels.
+ *
+ * `DabHierarchyView` renders workspace -> project -> orchestrator -> agents. A
+ * project without a DECLARED orchestrator shows an explicit gap: the board never
+ * creates an agent. Grouped compact cards reuse `DabAgentCard`; there is no
+ * full-width connector line and no raw HTML sink anywhere.
+ *
+ * @module dsh-agent-board/client/ui/hierarchy
+ */
+
+const DAB_SUPERVISION_BODY_ID = 'dab-supervision-body'
+
+/** The seven capabilities of the supervision contract, in display order. */
+const DAB_CAPABILITY_ROWS = Object.freeze([
+  ['observe', 'capObserve'],
+  ['recommend', 'capRecommend'],
+  ['delegate', 'capDelegate'],
+  ['reassign', 'capReassign'],
+  ['priority', 'capPriority'],
+  ['receiveOrchestratorReports', 'capReceiveReports'],
+  ['kanbanWrite', 'capKanbanWrite'],
+])
+
+/**
+ * Map one capability value to a visible state and an explicit reason. An absent
+ * value is unavailable, never assumed available. The host's own reason (a real
+ * code such as `taskboard_write_api_unavailable`) wins over a generic label.
+ */
+function dabCapabilityEntry(key, capabilities, reasons) {
+  const missing = capabilities === null || capabilities === undefined
+  const value = missing ? undefined : capabilities[key]
+  const hosted = reasons !== null && reasons !== undefined && typeof reasons[key] === 'string' && reasons[key] !== ''
+    ? reasons[key]
+    : null
+  const withReason = (labelKey, available, fallbackKey) => ({ labelKey, available, reasonKey: hosted === null ? fallbackKey : null, reason: hosted })
+  if (value === true) return { labelKey: 'capabilityAvailable', available: true, reasonKey: null, reason: null }
+  if (value === 'gated') return withReason('capabilityGated', true, 'capReasonGated')
+  if (value === 'proposal_only') return withReason('capabilityProposalOnly', false, 'capReasonProposalOnly')
+  if (value === 'unavailable' || value === false) {
+    if (key === 'kanbanWrite') return withReason('capabilityUnavailable', false, 'capReasonReadOnly')
+    if (key === 'receiveOrchestratorReports') return withReason('capabilityUnavailable', false, 'capReasonNoChannel')
+    if (key === 'delegate') return withReason('capabilityUnavailable', false, 'capReasonDisabled')
+    if (key === 'reassign' || key === 'priority') return withReason('capabilityUnavailable', false, 'capReasonProposalOnly')
+    return withReason('capabilityUnavailable', false, 'capReasonDisabled')
+  }
+  return {
+    labelKey: 'capabilityUnavailable',
+    available: false,
+    reasonKey: missing ? 'capReasonSupervisionUnavailable' : 'capReasonUnknown',
+    reason: null,
+  }
+}
+
+function dabCounter(h, key, tone, value, label) {
+  if (!(value > 0)) return null
+  return h('span', { key, className: 'dab-counter', title: `${value} ${label}`, 'aria-label': `${value} ${label}` },
+    h('span', { className: 'dab-dot', 'data-tone': tone }), h('b', null, value))
+}
+
+/** Translated singular/plural label for a count (never "1 projets"). */
+function dabCountText(count, singularKey, pluralKey) {
+  return typeof dabCountLabel === 'function'
+    ? dabCountLabel(count, singularKey, pluralKey)
+    : `${Number(count) || 0} ${dabT(Math.abs(Number(count)) === 1 ? singularKey : pluralKey)}`
+}
+
+/** Noun only, for counters that render the number themselves. */
+function dabCountNounText(count, singularKey, pluralKey) {
+  return typeof dabCountNoun === 'function'
+    ? dabCountNoun(count, singularKey, pluralKey)
+    : dabT(Math.abs(Number(count)) === 1 ? singularKey : pluralKey)
+}
+
+function dabModeLabel(mode) {
+  if (mode === 'off' || mode === 'supervised' || mode === 'autonomous') return dabT(mode)
+  return null
+}
+
+function dabWorkspaceStatusChip(h, workspace) {
+  return h('span', {
+    className: 'dab-sup-status',
+    'data-status': workspace.status,
+    title: workspace.statusReason === null || workspace.statusReason === undefined
+      ? dabSupervisionStatusLabel(workspace.status)
+      : `${dabSupervisionStatusLabel(workspace.status)} · ${workspace.statusReason}`,
+  }, h('span', { className: 'dab-dot', 'data-tone': 'idle', 'aria-hidden': 'true' }),
+  dabSupervisionStatusLabel(workspace.status))
+}
+
+function dabBlockList(h, blocks) {
+  if (!Array.isArray(blocks) || blocks.length === 0) return h('div', { className: 'dab-muted' }, dabT('supervisionNoBlocks'))
+  return h('ul', { className: 'dab-list dab-band-list' }, blocks.slice(0, 20).map(block => h('li', { key: String(block.id) },
+    h('span', { className: 'dab-tag', title: block.source ?? '' }, String(block.source ?? '?')),
+    h('span', { className: 'dab-grow' }, String(block.reason ?? '')),
+    block.taskId ? h('span', { className: 'dab-mono' }, String(block.taskId)) : null,
+    block.agentId ? h('span', { className: 'dab-mono' }, String(block.agentId)) : null)))
+}
+
+function dabDependencyList(h, dependencies, projects) {
+  if (!Array.isArray(dependencies) || dependencies.length === 0) return h('div', { className: 'dab-muted' }, dabT('supervisionNoDependencies'))
+  const titleOf = id => projects.find(project => project.id === id)?.title ?? String(id)
+  return h('ul', { className: 'dab-list dab-band-list' }, dependencies.slice(0, 20).map(dependency => h('li', { key: String(dependency.id) },
+    h('span', { className: 'dab-grow dab-mono' },
+      `${titleOf(dependency.fromProjectId)} (${String(dependency.fromTaskId)}) → ${titleOf(dependency.toProjectId)} (${String(dependency.toTaskId)})`))))
+}
+
+function dabRecommendationList(h, recommendations, projects) {
+  if (!Array.isArray(recommendations) || recommendations.length === 0) return h('div', { className: 'dab-muted' }, dabT('supervisionNoRecommendations'))
+  const titleOf = id => projects.find(project => project.id === id)?.title ?? String(id)
+  return h('ul', { className: 'dab-list dab-band-list' }, recommendations.slice(0, 20).map(recommendation => h('li', { key: String(recommendation.id) },
+    // Never an action: a recommendation is a proposal the host would have to
+    // apply, and it states so explicitly.
+    h('span', { className: 'dab-tag', 'data-tone': 'proposal', title: dabT('recommendationNotApplied') }, dabT('recommendationNotApplied')),
+    h('span', { className: 'dab-grow' },
+      `${dabRecommendationLabel(recommendation.kind)} · ${titleOf(recommendation.projectId)}`,
+      recommendation.reason ? h('span', { className: 'dab-muted' }, ` — ${String(recommendation.reason)}`) : null),
+    recommendation.taskId ? h('span', { className: 'dab-mono' }, String(recommendation.taskId)) : null)))
+}
+
+function dabCapabilityMatrix(h, capabilities, reasons) {
+  return h('div', { className: 'dab-cap-grid', role: 'list', 'aria-label': dabT('supervisionCapabilities') },
+    DAB_CAPABILITY_ROWS.map(([key, labelKey]) => {
+      const entry = dabCapabilityEntry(key, capabilities, reasons)
+      return h('div', {
+        key, role: 'listitem', className: 'dab-cap-row',
+        'data-available': entry.available ? 'true' : 'false',
+        'data-capability': key,
+      },
+      h('span', { className: 'dab-cap-label' }, dabT(labelKey)),
+      h('span', { className: 'dab-cap-value', 'data-available': entry.available ? 'true' : 'false' }, dabT(entry.labelKey)),
+      entry.reasonKey === null && entry.reason === null
+        ? null
+        : h('span', { className: 'dab-cap-reason' }, h('span', { className: 'dab-cap-reason-label' }, `${dabT('supervisionCapabilityReason')} : `), entry.reason ?? dabT(entry.reasonKey)))
+    }))
+}
+
+/**
+ * The supervision band (host supervision layer). Collapsed by default when a
+ * single project exists: the caller owns the persisted open state.
+ */
+function DabSupervisionBand({ workspace, totals, projects, open, onToggle }) {
+  const h = React.createElement
+  const mode = dabModeLabel(workspace.mode)
+  const counters = [
+    dabCounter(h, 'projects', 'idle', totals.projects, dabCountNounText(totals.projects, 'projectSingular', 'projectPlural')),
+    dabCounter(h, 'agents', 'idle', totals.agents, dabCountNounText(totals.agents, 'agentSingular', 'agentPlural')),
+    dabCounter(h, 'running', 'running', totals.running, dabT('running')),
+    dabCounter(h, 'waiting', 'waiting', totals.waiting, dabT('waiting')),
+    dabCounter(h, 'unread', 'unread', totals.unread, dabCountNounText(totals.unread, 'unreadSingular', 'unreadPlural')),
+    dabCounter(h, 'failed', 'failed', totals.failed, dabT('failed')),
+    dabCounter(h, 'interrupted', 'waiting', totals.interrupted, dabCountNounText(totals.interrupted, 'interruptedSingular', 'interruptedPlural')),
+    dabCounter(h, 'blocked', 'failed', totals.blocked, dabCountNounText(totals.blocked, 'blockedSingular', 'blockedPlural')),
+  ].filter(Boolean)
+  const header = h('button', {
+    type: 'button',
+    className: 'dab-band-head',
+    'aria-expanded': open,
+    'aria-controls': DAB_SUPERVISION_BODY_ID,
+    title: open ? dabT('supervisionCollapse') : dabT('supervisionExpand'),
+    onClick: onToggle,
+  },
+  h('span', { className: 'dab-band-mascot', 'aria-hidden': 'true' },
+    dabMascot(h, {
+      role: 'super_orchestrator', emblem: workspace.emblem, name: dabT('superOrchestrator'),
+      // The supervision layer has no agent status: the dot stays neutral and
+      // the real layer status is the separate chip below.
+      status: 'unknown', size: 34, variant: 'compact', decorative: true,
+    })),
+  h('span', { className: 'dab-band-ident' },
+    h('span', { className: 'dab-band-title' }, dabT('supervision'), workspace.synthetic ? h('span', { className: 'dab-tag' }, dabT('supervisionLayer')) : null),
+    h('span', { className: 'dab-band-sub' }, mode === null ? null : h('span', { className: 'dab-tag' }, `${dabT('supervisionMode')} : ${mode}`), dabWorkspaceStatusChip(h, workspace))),
+  h('span', { className: 'dab-band-counters' }, counters),
+  h('span', { className: 'dab-caret', 'aria-hidden': 'true' }, open ? '▾' : '▸'))
+
+  // The body is ALWAYS rendered (hidden when collapsed): `aria-controls` must
+  // never point at a missing element, and the hidden attribute is enough.
+  const body = h('div', { className: 'dab-band-body', id: DAB_SUPERVISION_BODY_ID, hidden: !open },
+    workspace.available ? null : h('div', { className: 'dab-band-notice' }, dabT('supervisionUnavailable')),
+    // A Task Board that cannot be read is REPORTED here, not silently missing.
+    workspace.taskboard !== null && workspace.taskboard !== undefined && workspace.taskboard.available === false
+      ? h('div', { className: 'dab-band-notice', title: String(workspace.taskboard.reason ?? '') },
+        `${dabT('taskboardUnavailable')}${workspace.taskboard.reason ? ` — ${String(workspace.taskboard.reason)}` : ''}`)
+      : null,
+    h('div', { className: 'dab-muted' }, dabT('supervisionSynthetic')),
+    workspace.agent !== null && workspace.agent !== undefined
+      ? h('div', { className: 'dab-band-agent' },
+        h('span', { className: 'dab-label' }, `${dabT('superOrchestrator')} : `),
+        h('span', null, String(workspace.agent.name ?? workspace.agent.id ?? '')),
+        workspace.agent.status ? h('span', { className: 'dab-tag' }, dabStatusLabel(workspace.agent.status)) : null)
+      : null,
+    workspace.delegation === null || workspace.delegation === undefined
+      ? null
+      : h('div', { className: 'dab-muted' }, dabT('supervisionDelegation', {
+        inFlight: Number(workspace.delegation.inFlight) || 0,
+        depth: workspace.delegation.depthLimit ?? '?',
+        concurrent: workspace.delegation.concurrentLimit ?? '?',
+        hourly: workspace.delegation.hourlyLimit ?? '?',
+      })),
+    h('div', { className: 'dab-band-section' },
+      h('div', { className: 'dab-label' }, `${dabT('supervisionRecommendations')} (${Array.isArray(workspace.recommendations) ? workspace.recommendations.length : 0})`),
+      dabRecommendationList(h, workspace.recommendations, projects)),
+    h('div', { className: 'dab-band-section' },
+      h('div', { className: 'dab-label' }, `${dabT('supervisionBlocks')} (${Array.isArray(workspace.blocks) ? workspace.blocks.length : 0})`),
+      dabBlockList(h, workspace.blocks)),
+    h('div', { className: 'dab-band-section' },
+      h('div', { className: 'dab-label' }, `${dabT('supervisionDependencies')} (${Number(totals.dependencies) || 0})`),
+      dabDependencyList(h, workspace.crossProjectDependencies, projects)),
+    h('div', { className: 'dab-band-section' },
+      h('div', { className: 'dab-label' }, dabT('supervisionCapabilities')),
+      dabCapabilityMatrix(h, workspace.capabilities, workspace.capabilityReasons)))
+
+  return h('section', {
+    className: 'dab-band',
+    'data-available': workspace.available ? 'true' : 'false',
+    'data-status': workspace.status,
+    'aria-label': dabT('supervision'),
+  }, header, body)
+}
+
+/** Project head counters: the REAL counts, not the visible-card count. */
+function dabProjectCounters(h, counts) {
+  return h('span', { className: 'dab-hier-counts' },
+    dabCounter(h, 'r', 'running', counts.running, dabT('running')),
+    dabCounter(h, 'w', 'waiting', counts.waiting, dabT('waiting')),
+    dabCounter(h, 'u', 'unread', counts.unread, dabCountNounText(counts.unread, 'unreadSingular', 'unreadPlural')),
+    dabCounter(h, 'f', 'failed', counts.failed, dabT('failed')),
+    dabCounter(h, 'i', 'waiting', counts.interrupted, dabCountNounText(counts.interrupted, 'interruptedSingular', 'interruptedPlural')))
+}
+
+function dabHierarchyCard(h, entry, ctx, compact) {
+  const node = entry.node
+  return h(DabAgentCard, {
+    key: node.id,
+    node,
+    depth: entry.depth,
+    root: false,
+    compact: compact === true,
+    selected: ctx.selectedId === node.id,
+    arbiter: ctx.arbiter,
+    hiddenChildren: entry.hiddenChildren,
+    totalChildren: entry.totalChildren,
+    collapsed: entry.collapsed,
+    expanded: entry.expanded,
+    groupActive: entry.groupActive,
+    onToggleBranch: ctx.onToggleBranch,
+    onRevealHidden: ctx.onRevealHidden,
+    nowBucket: ctx.nowBucket,
+    role: ctx.roles instanceof Map ? ctx.roles.get(node.id) ?? null : null,
+    taskState: node.taskId !== null && node.taskId !== undefined && ctx.taskStates instanceof Map
+      ? ctx.taskStates.get(String(node.taskId)) ?? null
+      : null,
+    groupedProject: true,
+  })
+}
+
+function DabHierarchyTeam({ team, ctx, compact }) {
+  const h = React.createElement
+  const rootIncluded = team.agents.some(node => node.id === team.root.id)
+  const caption = rootIncluded ? null : h('div', { className: 'dab-hier-team-title' }, dabT('hierarchyTeamOf', { name: team.root.title }))
+  return h('div', { className: 'dab-hier-team', 'data-root-id': team.root.id },
+    caption,
+    team.hidden > 0 ? h('div', { className: 'dab-hier-team-note' }, dabT('hierarchyHiddenByFilter', { n: team.hidden })) : null,
+    h('div', { className: 'dab-hier-cards' }, team.entries.map(entry => dabHierarchyCard(h, entry, ctx, compact))))
+}
+
+function DabHierarchyProject({ project, ctx, compact, filtersActive }) {
+  const h = React.createElement
+  const title = project.unassigned ? dabT('unassigned') : project.title
+  const orchestrator = project.orchestrator
+  // Real counts stay real; when the board view displays fewer (attention policy
+  // or filters), the head says both instead of showing one view's number only.
+  const shownAgents = project.teams.reduce((sum, team) => sum + team.agents.length, 0)
+  const countLabel = typeof projectCountLabel === 'function'
+    ? projectCountLabel(project.counts, shownAgents, dabT)
+    : `${dabCountText(project.counts.agents, 'agentSingular', 'agentPlural')}${project.counts.agents === shownAgents ? '' : ` · ${dabCountText(shownAgents, 'shownSingular', 'shownPlural')}`}`
+  return h('section', { className: 'dab-hier-project', 'data-project-id': project.id, 'aria-label': title },
+    h('button', {
+      type: 'button', className: 'dab-hier-project-head', 'aria-expanded': !project.folded,
+      title: project.folded ? dabT('expand') : dabT('collapse'),
+      onClick: () => ctx.onFoldProject(project),
+    },
+    h('span', { className: 'dab-caret', 'aria-hidden': 'true' }, project.folded ? '▸' : '▾'),
+    h('span', { className: 'dab-hier-project-title' }, title),
+    h('span', { className: 'dab-project-count' }, countLabel),
+    orchestrator === null || orchestrator === undefined
+      ? h('span', {
+        className: 'dab-hier-orch',
+        'data-gap': 'true',
+        title: dabT('hierarchyOrchestratorMissingHint'),
+      }, h('span', { className: 'dab-gap-dot', 'aria-hidden': 'true' }), dabT('hierarchyOrchestratorMissing'))
+      : h('span', { className: 'dab-hier-orch', title: `${dabT('orchestratorLabel')} : ${orchestrator.name}` },
+        dabMascot(h, { role: orchestrator.role, name: orchestrator.name, status: orchestrator.status, size: 20, variant: 'compact', decorative: true }),
+        h('span', null, orchestrator.name)),
+    dabProjectCounters(h, project.counts)),
+    project.folded ? null : h('div', { className: 'dab-hier-body' },
+      project.teams.length === 0
+        ? h('div', { className: 'dab-muted' }, filtersActive ? dabT('hierarchyEmpty') : dabT('hierarchyNoAgents'))
+        : project.teams.map(team => h(DabHierarchyTeam, { key: team.root.id, team, ctx, compact })),
+      project.blocks.length > 0
+        ? h('div', { className: 'dab-hier-notes' },
+          h('div', { className: 'dab-label' }, `${dabT('supervisionBlocks')} (${project.blocks.length})`),
+          dabBlockList(h, project.blocks))
+        : null,
+      project.crossProjectDependencies.length > 0
+        ? h('div', { className: 'dab-hier-notes' },
+          h('div', { className: 'dab-label' }, `${dabT('supervisionDependencies')} (${project.crossProjectDependencies.length})`),
+          dabDependencyList(h, project.crossProjectDependencies, [] ))
+        : null))
+}
+
+/**
+ * Workspace -> project -> orchestrator -> agents. No full-width connector line,
+ * no auto-created agent, no HTML sink.
+ */
+function DabHierarchyView({ hierarchy, ctx, compact }) {
+  const h = React.createElement
+  const workspace = hierarchy.workspace
+  const mode = dabModeLabel(workspace.mode)
+  const filters = hierarchy.filters ?? {}
+  const filtersActive = (filters.role ?? null) !== null || (filters.status ?? null) !== null || (filters.taskState ?? null) !== null
+  const workspaceHead = h('section', { className: 'dab-hier-ws', 'aria-label': dabT('supervisionWorkspace') },
+    h('div', { className: 'dab-hier-ws-head' },
+      h('span', { className: 'dab-hier-ws-mascot', 'aria-hidden': 'true' },
+        dabMascot(h, { role: 'super_orchestrator', emblem: workspace.emblem, name: dabT('superOrchestrator'), status: 'unknown', size: 40, variant: 'compact', decorative: true })),
+      h('div', { className: 'dab-hier-ws-text' },
+        h('div', { className: 'dab-hier-ws-title' }, dabT('supervisionWorkspace'),
+          h('span', { className: 'dab-tag' }, dabT('supervisionLayer')),
+          mode === null ? null : h('span', { className: 'dab-tag' }, `${dabT('supervisionMode')} : ${mode}`),
+          dabWorkspaceStatusChip(h, workspace)),
+        h('div', { className: 'dab-hier-ws-sub' },
+          h('span', null, `${dabCountText(hierarchy.totals.agents, 'agentSingular', 'agentPlural')} · ${dabCountText(hierarchy.totals.projects, 'projectSingular', 'projectPlural')}`),
+          h('span', { className: 'dab-hier-counts' },
+            dabCounter(h, 'r', 'running', hierarchy.totals.running, dabT('running')),
+            dabCounter(h, 'w', 'waiting', hierarchy.totals.waiting, dabT('waiting')),
+            dabCounter(h, 'u', 'unread', hierarchy.totals.unread, dabCountNounText(hierarchy.totals.unread, 'unreadSingular', 'unreadPlural')),
+            dabCounter(h, 'f', 'failed', hierarchy.totals.failed, dabT('failed')))))),
+    workspace.available ? null : h('div', { className: 'dab-band-notice' }, dabT('supervisionUnavailable')))
+
+  const empty = hierarchy.projects.length === 0
+    ? h('div', { className: 'dab-empty' }, filtersActive ? dabT('hierarchyEmpty') : dabT('hierarchyNoAgents'))
+    : null
+
+  return h('div', { className: 'dab-hier', 'data-compact': compact ? 'true' : 'false' },
+    workspaceHead,
+    empty,
+    empty === null
+      ? h('div', { className: 'dab-hier-projects' }, hierarchy.projects.map(project => h(DabHierarchyProject, { key: project.id, project, ctx, compact, filtersActive })))
+      : null)
+}
 
 
 // ---- src/client/ui/tree.js ----
@@ -2785,6 +5626,17 @@ const DabAgentCard = React.memo(DabAgentCardImpl, (a, b) => dabCardSignature(a) 
  *
  * @module dsh-agent-board/client/ui/tree
  */
+
+function dabEntryRole(ctx, node) {
+  if (ctx.roles instanceof Map) return ctx.roles.get(node.id) ?? null
+  return null
+}
+
+function dabEntryTaskState(ctx, node) {
+  if (node.taskId === null || node.taskId === undefined) return null
+  if (ctx.taskStates instanceof Map) return ctx.taskStates.get(String(node.taskId)) ?? null
+  return null
+}
 
 function DabTreeBranch({ entry, ctx }) {
   const h = React.createElement
@@ -2805,6 +5657,9 @@ function DabTreeBranch({ entry, ctx }) {
       onToggleBranch: ctx.onToggleBranch,
       onRevealHidden: ctx.onRevealHidden,
       nowBucket: ctx.nowBucket,
+      role: dabEntryRole(ctx, node),
+      taskState: dabEntryTaskState(ctx, node),
+      groupedProject: true,
     }),
     entry.children.length > 0
       ? h('ul', { className: 'dab-kids', role: 'group' }, entry.children.map(child => h(DabTreeBranch, { key: child.node.id, entry: child, ctx })))
@@ -2929,6 +5784,9 @@ function DabCompactProject({ project, ctx, trees }) {
         onToggleBranch: ctx.onToggleBranch,
         onRevealHidden: ctx.onRevealHidden,
         nowBucket: ctx.nowBucket,
+        role: dabEntryRole(ctx, entry.node),
+        taskState: dabEntryTaskState(ctx, entry.node),
+        groupedProject: true,
       }))))
   }))
 }
@@ -2942,11 +5800,24 @@ function DabProjectGroup({ project, ctx, folded, onFold, treeLimit, onMoreTrees,
   if (project.summary.running > 0) summary.push(h('span', { key: 'r', className: 'dab-counter' }, h('span', { className: 'dab-dot', 'data-tone': 'running' }), project.summary.running))
   if (project.summary.waiting > 0) summary.push(h('span', { key: 'w', className: 'dab-counter' }, h('span', { className: 'dab-dot', 'data-tone': 'waiting' }), project.summary.waiting))
   if (project.summary.unread > 0) summary.push(h('span', { key: 'u', className: 'dab-counter' }, h('span', { className: 'dab-dot', 'data-tone': 'unread' }), project.summary.unread))
+  // The declared project orchestrator, when the hierarchy projection found one.
+  // A missing orchestrator is NOT rendered here as a fake node or a warning;
+  // the hierarchy view owns the explicit gap.
+  const orchestrator = project.orchestrator
+  const orchestratorChip = orchestrator === null || orchestrator === undefined
+    ? null
+    : h('span', {
+      className: 'dab-project-orch',
+      title: `${dabT('orchestratorLabel')} : ${orchestrator.name}${orchestrator.role ? ` (${orchestrator.role})` : ''}`,
+    },
+    dabMascot(h, { role: orchestrator.role, name: orchestrator.name, status: orchestrator.status, size: 18, variant: 'compact', decorative: true }),
+    h('span', { className: 'dab-project-orch-name' }, orchestrator.name))
   return h('section', { className: 'dab-project', 'data-project-id': project.id, 'aria-label': title },
     h('button', { type: 'button', className: 'dab-project-head', 'aria-expanded': !folded, onClick: () => onFold(project.id) },
       h('span', { className: 'dab-caret', 'aria-hidden': 'true' }, folded ? '▸' : '▾'),
       h('span', null, title),
       h('span', { className: 'dab-project-count' }, `${project.visibleAgents} agent${project.visibleAgents > 1 ? 's' : ''}`),
+      orchestratorChip,
       summary),
     folded
       ? null
@@ -2969,11 +5840,15 @@ function DabProjectGroup({ project, ctx, folded, onFold, treeLimit, onMoreTrees,
  * @module dsh-agent-board/client/ui/preview
  */
 
-function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, onDismiss, dismissed }) {
+function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, onDismiss, dismissed, role, taskState }) {
   const h = React.createElement
   const [more, setMore] = React.useState(false)
   React.useEffect(() => { setMore(false) }, [node?.id])
   if (node === null || node === undefined) return null
+  const resolvedRole = role ?? (typeof dabResolveAgentRole === 'function' ? dabResolveAgentRole(node.role) : { roleId: null, roleLabel: null, family: null, source: 'generic', raw: node.role ?? null })
+  const roleText = resolvedRole?.roleLabel ?? (typeof node.role === 'string' && node.role !== '' ? node.role : null)
+  const roleFamily = typeof dabFamilyLabel === 'function' ? dabFamilyLabel(resolvedRole?.family) : null
+  const taskLabel = typeof dabTaskStateLabel === 'function' && typeof taskState === 'string' ? dabTaskStateLabel(taskState) : null
   const preview = node.preview ?? { text: '', final: false }
   const hasFinal = preview.final === true && typeof preview.text === 'string' && preview.text !== ''
   const line = hasFinal ? lastUsefulLine(preview.text) : ''
@@ -2983,6 +5858,8 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
     facts.push(h('dt', { key: `${key}-t` }, label), h('dd', { key: `${key}-d`, className: mono ? 'dab-mono' : undefined }, value))
   }
   fact('project', dabT('project'), node.projectId === 'unassigned' ? dabT('unassigned') : node.projectTitle)
+  fact('role', dabT('role'), roleText === null ? null : `${roleText}${roleFamily ? ` · ${roleFamily}` : ''}${resolvedRole?.source === 'alias' ? ` (${dabT('roleDeclaredAlias')})` : ''}`)
+  fact('taskState', dabT('taskStateTitle'), taskLabel)
   fact('provider', dabT('provider'), node.model?.provider, true)
   fact('model', dabT('model'), dabModelChipText(node.model), true)
   fact('modelSource', dabT('modelSource'), node.model?.source === 'unknown' ? null : (node.model.source === 'assignment' ? dabT('modelAssignment') : dabT('modelNative')))
@@ -2998,7 +5875,7 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
   } else if (node.parentContested) {
     fact('parent', dabT('parent'), `${dabT('contest')} (${(node.parentCandidates ?? []).join(', ')})`, true)
   }
-  if (node.activity) fact('activity', dabT('activity'), `${node.activity.turns} ${dabT('turns')} · ${node.activity.steps} ${dabT('steps')}`)
+  if (node.activity) fact('activity', dabT('activity'), dabTurnStepLabel(node.activity.turns, node.activity.steps))
   fact('cwd', dabT('directory'), node.cwd, true)
   fact('session', dabT('session'), node.id, true)
   // A route switch must stay visible: never show only the LAST provider.
@@ -3032,7 +5909,24 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
         'data-source': typeof node.model?.source === 'string' ? node.model.source : 'unknown',
         title: dabModelTitle(node.model),
       }, dabModelChipText(node.model) ?? dabT('noModel')),
-      node.role ? h('span', { className: 'dab-tag' }, node.role) : null,
+      roleText !== null
+        ? h('span', {
+          className: 'dab-role-chip',
+          'data-resolution': resolvedRole?.source ?? 'generic',
+          title: [dabT('role'), roleText, roleFamily].filter(Boolean).join(' · '),
+        }, roleText)
+        : null,
+      roleFamily !== null
+        ? h('span', { className: 'dab-family-chip', title: `${dabT('roleFamilyLabel')} : ${roleFamily}` }, roleFamily)
+        : null,
+      taskLabel !== null
+        ? h('span', {
+          className: 'dab-task-chip',
+          'data-state': taskState,
+          'data-tone': typeof AGENT_TASK_STATE_TONE === 'object' ? AGENT_TASK_STATE_TONE[taskState] ?? 'idle' : 'idle',
+          title: `${dabT('taskStateTitle')} — ${taskLabel}`,
+        }, h('span', { className: 'dab-task-dot', 'aria-hidden': 'true' }), taskLabel)
+        : null,
       node.origin === 'subagent' ? h('span', { className: 'dab-tag' }, dabT('subagent')) : null),
     node.status === 'waiting_user'
       ? h('div', { className: 'dab-wait', style: { whiteSpace: 'normal' } }, node.waitingDetail ?? dabWaitingLabel(node.expectedAction))
@@ -3045,7 +5939,7 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
       ? h('button', { type: 'button', className: 'dab-linkish', 'aria-expanded': more, onClick: () => setMore(value => !value) }, more ? dabT('seeLess') : dabT('seeMore'))
       : null,
     !hasFinal && node.activity
-      ? h('div', { className: 'dab-muted' }, `${dabT('activity')} : ${node.activity.turns} ${dabT('turns')} · ${node.activity.steps} ${dabT('steps')}`)
+      ? h('div', { className: 'dab-muted' }, `${dabT('activity')} : ${dabTurnStepLabel(node.activity.turns, node.activity.steps)}`)
       : null,
     h('div', { className: 'dab-actions' },
       h('button', { type: 'button', className: 'dab-btn', 'aria-pressed': 'false', onClick: () => onOpen(node.id), 'data-testid': 'dab-open' }, `↗ ${dabT('openSession')}`),
@@ -3070,7 +5964,7 @@ function DabAgentPreview({ node, parent, onOpen, onSelect, onClose, openError, o
 
 const DAB_HISTORY_PAGE = 30
 
-function DabHistoryDrawer({ projection, project, selectedId, arbiter, onClose }) {
+function DabHistoryDrawer({ projection, project, selectedId, arbiter, onClose, roles, taskStates }) {
   const h = React.createElement
   const [query, setQuery] = React.useState('')
   const [limit, setLimit] = React.useState(DAB_HISTORY_PAGE)
@@ -3079,6 +5973,15 @@ function DabHistoryDrawer({ projection, project, selectedId, arbiter, onClose })
   React.useEffect(() => { setLimit(DAB_HISTORY_PAGE) }, [query, project])
   const page = React.useMemo(() => historyPage(projection, { query, project, offset: 0, limit }), [projection, query, project, limit])
   const onKey = event => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }
+  const roleOf = node => {
+    const resolved = roles instanceof Map ? roles.get(node.id) : null
+    const text = resolved?.roleLabel ?? (typeof node.role === 'string' && node.role !== '' ? node.role : null)
+    return text
+  }
+  const taskStateOf = node => {
+    if (node.taskId === null || node.taskId === undefined || !(taskStates instanceof Map)) return null
+    return typeof dabTaskStateLabel === 'function' ? dabTaskStateLabel(taskStates.get(String(node.taskId))) : null
+  }
   return h('div', { className: 'dab-drawer', role: 'dialog', 'aria-modal': 'false', 'aria-label': dabT('historyTitle'), onKeyDown: onKey },
     h('div', { className: 'dab-drawer-head' },
       h('div', { className: 'dab-bar' },
@@ -3092,7 +5995,7 @@ function DabHistoryDrawer({ projection, project, selectedId, arbiter, onClose })
       page.items.map(node => h('li', {
         key: node.id, className: 'dab-hist', tabIndex: 0, role: 'button', 'data-node-id': node.id,
         'data-selected': selectedId === node.id ? 'true' : 'false',
-        'aria-label': `${node.title} — ${dabStatusLabel(node.status)}`,
+        'aria-label': [node.title, dabStatusLabel(node.status), roleOf(node)].filter(Boolean).join(' — '),
         onClick: event => arbiter.click(node.id, event.detail),
         onDoubleClick: () => arbiter.doubleClick(node.id),
         onKeyDown: event => { if (event.target === event.currentTarget && arbiter.key(node.id, event.key)) event.preventDefault() },
@@ -3102,6 +6005,8 @@ function DabHistoryDrawer({ projection, project, selectedId, arbiter, onClose })
         h('span', { className: 'dab-hist-title', title: node.title }, node.title),
         h('span', { className: 'dab-muted' }, [
           node.projectId === 'unassigned' ? dabT('unassigned') : node.projectTitle,
+          roleOf(node),
+          taskStateOf(node),
           node.children.length > 0 ? `${node.children.length} ${dabT('children')}` : null,
           node.archived ? dabT('archived') : null,
           dabFormatAge(node.updatedAt),
@@ -3129,6 +6034,32 @@ const DAB_ICONS = {
   more: ['M5 12h.01', 'M12 12h.01', 'M19 12h.01'],
   stop: ['M7 7h10v10H7z'],
   play: ['M8 5l11 7-11 7z'],
+}
+
+/** Existing agent statuses offered by the additive status filter. */
+const DAB_FILTER_STATUSES = Object.freeze([
+  'running', 'waiting_user', 'recovering', 'interrupted', 'provider_unavailable',
+  'finished_unread', 'finished_read', 'failed', 'idle', 'unknown', 'unavailable',
+])
+
+/** Task Board workflow states (a SEPARATE vocabulary from agent statuses). */
+const DAB_FILTER_TASK_STATES = Object.freeze(['todo', 'in_progress', 'in_review', 'blocked', 'done', 'canceled', 'archived'])
+
+const DAB_GENERIC_ROLE_FILTER = typeof GENERIC_ROLE_FILTER === 'string' ? GENERIC_ROLE_FILTER : 'generic'
+
+function dabRoleFilterOptions() {
+  const options = [['', dabT('roleAll')]]
+  if (typeof AGENT_ROLES === 'object' && AGENT_ROLES !== null && typeof AGENT_ROLE_IDS !== 'undefined') {
+    for (const roleId of AGENT_ROLE_IDS) options.push([roleId, AGENT_ROLES[roleId]?.label ?? roleId])
+  }
+  options.push([DAB_GENERIC_ROLE_FILTER, dabT('roleGeneric')])
+  return options
+}
+
+function dabHierarchyFiltersActive(ui) {
+  return (typeof ui.roleFilter === 'string' && ui.roleFilter !== '')
+    || (typeof ui.statusFilter === 'string' && ui.statusFilter !== '')
+    || (typeof ui.taskStateFilter === 'string' && ui.taskStateFilter !== '')
 }
 
 function dabIcon(name) {
@@ -3179,7 +6110,7 @@ function DabSelect({ label, value, options, onChange, title, disabled, style }) 
 
 function DabToolbar(props) {
   const h = React.createElement
-  const { counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh, ui, setUi, projects, onHistory, narrow } = props
+  const { counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh, ui, setUi, projects, onHistory, narrow, taskStateAvailable, taskStateUnavailableReason } = props
   const counter = (tone, value, label) => value > 0
     ? h('span', { className: 'dab-counter', key: tone, title: `${value} ${label}`, 'aria-label': `${value} ${label}` }, h('span', { className: 'dab-dot', 'data-tone': tone }), h('b', null, value))
     : null
@@ -3194,7 +6125,7 @@ function DabToolbar(props) {
   const counters = h('span', { className: 'dab-counters' },
     counter('running', counts.running, dabT('running')),
     counter('waiting', counts.waiting, dabT('waiting')),
-    counter('unread', counts.unread, dabT('unread')),
+    counter('unread', counts.unread, dabCountNoun(counts.unread, 'unreadSingular', 'unreadPlural')),
     counter('failed', counts.failed, dabT('failed')),
     narrow ? null : h('span', { className: 'dab-muted', title: `${visibleCount} ${dabT('shown')} ${dabT('of')} ${counts.total}` }, `${visibleCount}/${counts.total}`))
 
@@ -3205,6 +6136,31 @@ function DabToolbar(props) {
     [['attention', dabT('filterAttention')], ['recent', dabT('filterRecent')], ['all', dabT('filterAll')]], value => setUi({ filter: value }))
   const viewSelect = select(dabT('viewLabel'), ui.compact ? 'compact' : 'tree',
     [['tree', dabT('treeView')], ['compact', dabT('compact')]], value => setUi({ compact: value === 'compact' }))
+  // Additive filters (GOAL 4): role, agent status, view mode and — only when the
+  // Task Board integration reports it available — the linked Task Board state.
+  const viewModeSelect = select(dabT('viewModeLabel'), ui.viewMode === 'hierarchy' ? 'hierarchy' : 'projects',
+    [['projects', dabT('viewProjects')], ['hierarchy', dabT('viewHierarchy')]], value => setUi({ viewMode: value }))
+  const roleSelect = select(dabT('role'), typeof ui.roleFilter === 'string' ? ui.roleFilter : '',
+    dabRoleFilterOptions(), value => setUi({ roleFilter: value === '' ? null : value }))
+  const statusSelect = select(dabT('statusFilterLabel'), typeof ui.statusFilter === 'string' ? ui.statusFilter : '',
+    [['', dabT('statusAll')], ...DAB_FILTER_STATUSES.map(status => [status, dabStatusLabel(status)])],
+    value => setUi({ statusFilter: value === '' ? null : value }))
+  // The Task Board state filter is shown only when the integration reports it
+  // available. When it is not, the control stays visible but DISABLED with the
+  // real reason: a reachable ledger that has not been read yet must not look
+  // like an absent feature.
+  const taskStateSelect = taskStateAvailable === true
+    ? select(dabT('taskStateFilterLabel'), typeof ui.taskStateFilter === 'string' ? ui.taskStateFilter : '',
+      [['', dabT('taskStateAll')], ...DAB_FILTER_TASK_STATES.map(state => [state, dabTaskStateLabel(state) ?? state])],
+      value => setUi({ taskStateFilter: value === '' ? null : value }))
+    : select(dabT('taskStateFilterLabel'), '', [['', dabT('taskStateUnavailable')]], () => {},
+      { disabled: true, title: taskStateUnavailableReason ?? dabT('taskStateUnavailable') })
+  const clearFilters = dabHierarchyFiltersActive(ui)
+    ? h('button', {
+      type: 'button', className: 'dab-btn', 'data-variant': 'ghost',
+      onClick: () => setUi({ roleFilter: null, statusFilter: null, taskStateFilter: null }),
+    }, dabT('clearFilters'))
+    : null
   const modeSelect = select(dabT('orchestratorLabel'), mode,
     ['off', 'supervised', 'autonomous'].map(value => [value, `${dabT('orchestratorLabel')} : ${dabT(value)}`]), onMode,
     { disabled: busy || hostDown || secondary, title: hostDown ? dabT('orchestratorDown') : notice })
@@ -3229,7 +6185,9 @@ function DabToolbar(props) {
       h('div', { className: 'dab-bar', style: { flexWrap: 'nowrap' } }, search),
       menuOpen
         ? h('div', { className: 'dab-mobile-menu' },
-          h('div', { className: 'dab-bar' }, filterSelect, viewSelect),
+          h('div', { className: 'dab-bar' }, viewModeSelect, filterSelect),
+          h('div', { className: 'dab-bar' }, roleSelect, statusSelect),
+          h('div', { className: 'dab-bar' }, viewSelect, taskStateSelect, clearFilters),
           h('div', { className: 'dab-bar' }, modeSelect, stopOrResume, h('span', { className: 'dab-grow' }), state),
           h('div', { className: alert ? 'dab-alert' : 'dab-notice' }, hostDown ? dabT('orchestratorDown') : notice))
         : null,
@@ -3240,9 +6198,11 @@ function DabToolbar(props) {
     h('div', { className: 'dab-bar', style: { flexWrap: 'nowrap' } },
       counters,
       h('div', { className: 'dab-search-wrap' }, search),
-      projectSelect, filterSelect, viewSelect,
+      projectSelect, filterSelect,
       h('span', { className: 'dab-grow' }),
       alertDot, modeSelect, stopOrResume, state, history, refresh),
+    h('div', { className: 'dab-bar' },
+      viewModeSelect, roleSelect, statusSelect, taskStateSelect, viewSelect, clearFilters),
   )
 }
 function DabExecutionList({ host, onApprove, onReject }) {
@@ -3329,7 +6289,12 @@ const DAB_UI_KEY = 'dsh-agent-board:ui:v2'
 const DAB_MEMORY = { scrollTop: 0, selectedId: null }
 
 function dabDefaultUi() {
-  return { filter: 'attention', query: '', project: null, compact: false, folded: [], expanded: [], collapsed: [], dismissed: [], treeLimit: {} }
+  return {
+    filter: 'attention', query: '', project: null, compact: false,
+    folded: [], expanded: [], collapsed: [], dismissed: [], treeLimit: {},
+    // GOAL 4 additive preferences (validated and bounded on read).
+    viewMode: 'projects', roleFilter: null, statusFilter: null, taskStateFilter: null, supervisionOpen: null,
+  }
 }
 
 function dabReadUi() {
@@ -3338,6 +6303,13 @@ function dabReadUi() {
     const raw = globalThis.localStorage?.getItem(DAB_UI_KEY)
     if (!raw) return base
     const parsed = JSON.parse(raw)
+    // Role/status/task filters are re-validated by the pure hierarchy module: an
+    // unknown persisted value can never select an invisible pseudo-status.
+    const filters = normalizeHierarchyFilters({
+      role: parsed.roleFilter,
+      status: parsed.statusFilter,
+      taskState: parsed.taskStateFilter,
+    })
     return {
       ...base,
       filter: VIEW_FILTERS.includes(parsed.filter) ? parsed.filter : base.filter,
@@ -3347,6 +6319,11 @@ function dabReadUi() {
       expanded: Array.isArray(parsed.expanded) ? parsed.expanded.slice(0, 200) : [],
       collapsed: Array.isArray(parsed.collapsed) ? parsed.collapsed.slice(0, 200) : [],
       dismissed: Array.isArray(parsed.dismissed) ? parsed.dismissed.slice(-500) : [],
+      viewMode: parsed.viewMode === 'hierarchy' ? 'hierarchy' : 'projects',
+      roleFilter: filters.role,
+      statusFilter: filters.status,
+      taskStateFilter: filters.taskState,
+      supervisionOpen: typeof parsed.supervisionOpen === 'boolean' ? parsed.supervisionOpen : null,
     }
   } catch {
     return base
@@ -3427,8 +6404,53 @@ function dabMakePage(store, ctx) {
     const counts = React.useMemo(() => boardCounts(projection), [projection])
     const projectList = React.useMemo(() => projectOptions(projection), [projection])
 
+    const mode = typeof host.mode === 'string' ? host.mode : 'off'
+    // The host publishes the supervision payload (GOAL 4). A missing/foreign
+    // value is `null`: the hierarchy then renders structure and real counts only.
+    const supervision = host.supervision !== null && typeof host.supervision === 'object' && !Array.isArray(host.supervision)
+      ? host.supervision
+      : null
+    const taskStates = React.useMemo(() => (typeof taskStateIndex === 'function' ? taskStateIndex(supervision) : null), [supervision])
+    const filters = React.useMemo(() => normalizeHierarchyFilters({
+      role: ui.roleFilter, status: ui.statusFilter, taskState: ui.taskStateFilter,
+    }), [ui.roleFilter, ui.statusFilter, ui.taskStateFilter])
+    const filtersActive = filters.role !== null || filters.status !== null || filters.taskState !== null
+
+    // Fold state of the rendered projects (computed identically for the board
+    // and the hierarchy, so a fold is never out of sync between views).
+    const foldedProjects = React.useMemo(() => {
+      const set = new Set()
+      for (const project of view.projects) {
+        const folded = project.unassigned
+          ? !foldedSet.has(`open:${project.id}`) && ui.query === '' && ui.project !== project.id
+          : foldedSet.has(project.id)
+        if (folded) set.add(project.id)
+      }
+      return set
+    }, [view.projects, foldedSet, ui.query, ui.project])
+
+    // Existing view, narrowed by the explicit agent filters. buildBoardView
+    // still owns visibility, attention and ordering; this only removes entries
+    // the operator filtered out.
+    const filteredView = React.useMemo(() => filterBoardViewByAgent(view, filters, { projection, taskStates }),
+      [view, projection, filters, taskStates])
+
+    // The hierarchy is rebuilt only when its real inputs change: a compact-mode
+    // toggle or a selection never rebuilds it.
+    const hierarchy = React.useMemo(() => buildHierarchyView(projection, view, supervision, {
+      filters, taskStates, foldedProjects, mode,
+    }), [projection, view, supervision, filters, taskStates, foldedProjects, mode])
+
     // Every width keeps the overview: all projects, each foldable.
-    const shownProjects = view.projects
+    const shownProjects = React.useMemo(() => {
+      if (ui.viewMode === 'hierarchy') return []
+      return filteredView.projects.map(project => {
+        const entry = hierarchy.projectsById.get(project.id)
+        return entry === undefined
+          ? project
+          : { ...project, orchestrator: entry.orchestrator, hierarchyCounts: entry.counts }
+      })
+    }, [filteredView, hierarchy, ui.viewMode])
 
     const selectedNode = selectedId !== null ? projection.byId.get(selectedId) ?? null : null
     const parentNode = selectedNode && selectedNode.parentId && !selectedNode.orphan && !selectedNode.parentCycle
@@ -3543,21 +6565,37 @@ function dabMakePage(store, ctx) {
       }
     }
 
-    const mode = typeof host.mode === 'string' ? host.mode : 'off'
     const hostDown = snapshot.hostError !== null && snapshot.hostError !== undefined && host.sync === null
     const canStop = (host.assignments ?? []).some(assignment => assignment.status === 'running' || assignment.status === 'starting')
-    const ctxValue = { selectedId, arbiter, onToggleBranch, onRevealHidden, nowBucket }
+    const ctxValue = {
+      selectedId, arbiter, onToggleBranch, onRevealHidden, nowBucket,
+      roles: hierarchy.roles,
+      taskStates,
+      onFoldProject: project => onFold(project.unassigned ? `open:${project.id}` : project.id),
+    }
+    // Collapsed by default when a single project exists; the operator's explicit
+    // choice (persisted) always wins.
+    const supervisionOpen = ui.supervisionOpen === null || ui.supervisionOpen === undefined
+      ? hierarchy.projects.length !== 1
+      : ui.supervisionOpen === true
 
-    const empty = shownProjects.length === 0
+    const empty = shownProjects.length === 0 && ui.viewMode !== 'hierarchy'
       ? h('div', { className: 'dab-empty' },
-        h('div', null, ui.query !== '' ? dabT('emptySearch') : dabT('emptyAttention')),
-        ui.query === '' ? h('div', { className: 'dab-muted' }, dabT('emptyHint')) : null,
-        ui.query === '' ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setHistoryOpen(true) }, dabIcon('history'), ` ${dabT('history')}`) : null)
+        h('div', null, ui.query !== '' ? dabT('emptySearch') : (filtersActive ? dabT('emptyFiltered') : dabT('emptyAttention'))),
+        ui.query === '' && !filtersActive ? h('div', { className: 'dab-muted' }, dabT('emptyHint')) : null,
+        filtersActive
+          ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setUi({ roleFilter: null, statusFilter: null, taskStateFilter: null }) }, dabT('clearFilters'))
+          : null,
+        ui.query === '' && !filtersActive ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setHistoryOpen(true) }, dabIcon('history'), ` ${dabT('history')}`) : null)
       : null
 
     return h('div', { className: 'dab-root', ref: rootRef, 'data-dsh-agent-board': '', 'data-narrow': narrow ? 'true' : 'false' },
       h(DabToolbar, {
-        counts, visibleCount: view.visibleCount, mode, busy, hostDown, canStop, ui, setUi, projects: projectList, narrow,
+        counts, visibleCount: filteredView.visibleCount, mode, busy, hostDown, canStop, ui, setUi, projects: projectList, narrow,
+        taskStateAvailable: hierarchy.totals.taskStateAvailable,
+        taskStateUnavailableReason: hierarchy.workspace.taskboard !== null && hierarchy.workspace.taskboard !== undefined && hierarchy.workspace.taskboard.available === false
+          ? (typeof hierarchy.workspace.taskboard.reason === 'string' ? hierarchy.workspace.taskboard.reason : null)
+          : null,
         stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
         secondary: host.instance?.primary === false,
         onMode: value => act('mode', () => store.setMode(value)),
@@ -3570,23 +6608,38 @@ function dabMakePage(store, ctx) {
       h('div', { className: 'dab-main' },
         h('div', { className: 'dab-scroll', ref: scrollRef, onScroll: event => { DAB_MEMORY.scrollTop = event.currentTarget.scrollTop } },
           notice !== '' ? h('div', { className: 'dab-alert', role: 'status', style: { marginBottom: '8px' } }, notice) : null,
+          h(DabSupervisionBand, {
+            workspace: hierarchy.workspace,
+            totals: hierarchy.totals,
+            projects: hierarchy.projects,
+            open: supervisionOpen,
+            onToggle: () => setUi({ supervisionOpen: !supervisionOpen }),
+          }),
           h(DabExecutionList, { host, onApprove: id => act('approve', () => store.decide(id, true)), onReject: id => act('reject', () => store.decide(id, false)) }),
           empty,
-          h('div', { className: 'dab-projects' }, shownProjects.map(project => h(DabProjectGroup, {
-            key: project.id, project, ctx: ctxValue, compact: ui.compact,
-            // "Unassigned" starts folded (opt-in), every real project starts open.
-            folded: project.unassigned
-              ? !foldedSet.has(`open:${project.id}`) && ui.query === '' && ui.project !== project.id
-              : foldedSet.has(project.id),
-            onFold: id => onFold(project.unassigned ? `open:${id}` : id),
-            treeLimit: ui.treeLimit[project.id] ?? DEFAULT_TREE_LIMIT,
-            onMoreTrees,
-          })))),
+          ui.viewMode === 'hierarchy'
+            ? h(DabHierarchyView, { hierarchy, ctx: ctxValue, compact: ui.compact })
+            : h('div', { className: 'dab-projects' }, shownProjects.map(project => h(DabProjectGroup, {
+              key: project.id, project, ctx: ctxValue, compact: ui.compact,
+              // "Unassigned" starts folded (opt-in), every real project starts open.
+              folded: project.unassigned
+                ? !foldedSet.has(`open:${project.id}`) && ui.query === '' && ui.project !== project.id
+                : foldedSet.has(project.id),
+              onFold: id => onFold(project.unassigned ? `open:${id}` : id),
+              treeLimit: ui.treeLimit[project.id] ?? DEFAULT_TREE_LIMIT,
+              onMoreTrees,
+            })))),
         selectedNode !== null
-          ? h(DabAgentPreview, { node: selectedNode, parent: parentNode, onOpen: openSession, onSelect: selectNode, onClose: () => setSelectedId(null), openError, onDismiss, dismissed: dismissedSet.has(selectedNode.id) })
+          ? h(DabAgentPreview, {
+            node: selectedNode, parent: parentNode, onOpen: openSession, onSelect: selectNode, onClose: () => setSelectedId(null), openError, onDismiss, dismissed: dismissedSet.has(selectedNode.id),
+            role: hierarchy.roles.get(selectedNode.id) ?? null,
+            taskState: selectedNode.taskId !== null && selectedNode.taskId !== undefined && taskStates instanceof Map
+              ? taskStates.get(String(selectedNode.taskId)) ?? null
+              : null,
+          })
           : null),
       historyOpen
-        ? h(DabHistoryDrawer, { projection, project: ui.project, selectedId, arbiter, onClose: () => setHistoryOpen(false) })
+        ? h(DabHistoryDrawer, { projection, project: ui.project, selectedId, arbiter, onClose: () => setHistoryOpen(false), roles: hierarchy.roles, taskStates })
         : null,
     )
   }

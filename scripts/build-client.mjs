@@ -22,13 +22,24 @@ import { fileURLToPath } from 'node:url'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PARTS = [
   'src/contracts/model.js',
+  // Role identity (15 mascot roles, declared-name aliases, status tones). Pure
+  // and shared with the host; every UI module below may use it.
+  'src/contracts/agent-roles.js',
   'src/supervisor/projection.js',
+  // The Super Orchestrator is a pure projection of real host facts: the panel
+  // renders it from the same function the host publishes in `/state`.
+  'src/supervisor/super-orchestrator.js',
   'src/board/view.js',
+  'src/board/hierarchy.js',
   'src/board/interaction.js',
   'src/client/core.js',
   'src/client/ui/strings.js',
   'src/client/ui/styles.js',
+  // Mascot data URIs must precede the avatar component that looks them up.
+  'src/client/ui/agent-bots-assets.js',
+  'src/client/ui/avatar.js',
   'src/client/ui/card.js',
+  'src/client/ui/hierarchy.js',
   'src/client/ui/tree.js',
   'src/client/ui/preview.js',
   'src/client/ui/history.js',
