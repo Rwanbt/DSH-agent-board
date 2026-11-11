@@ -42,7 +42,8 @@ never labelled live.
 | 30 | **The GOAL 5 evidence host is simulated at the edges.** The isolated host used a scripted OpenAI-compatible provider and a simulated Task Board; the DSH host, the plugin, the sessions, the projection and the UI are real. A real provider outage or a real ledger was not exercised in this round. | The UI contract is proven; a real-integration behaviour difference is not excluded. | **P2** |
 | 31 | **`Historique` opens the drawer, not a filter**, because the drawer keeps search/filtering/pagination and does not flood the cockpit with ended sessions. | One deviation from the mockup's chip semantics. | non-issue |
 | 32 | **The status dot sits bottom-left** on the mascot, not bottom-right as drawn in the mockup, because the kit's role pictogram is bottom-right (product correction of 2026-11-11). Attention cards also state the status in words. | Deliberate visual deviation, documented. | non-issue |
-| 33 | **The mobile band hides the mini orchestrator avatars** (they stay in the expandable details and on desktop) to keep the band at 57 px, as the mockup does. | One deviation, documented. | non-issue |
+| 33 | **No sub-agent in the GOAL 5 visual evidence.** The isolated host was populated with 21 real top-level sessions; the scripted provider never spawns a sub-agent, so the descendant badge and the sub-agent rows are verified by tests and the GOAL 4 evidence, not by a cockpit screenshot. | One visual case is not reproduced live. | **P3** |
+| 34 | **The mobile band hides the mini orchestrator avatars** (they stay in the expandable details and on desktop) to keep the band at 57 px, as the mockup does. | One deviation, documented. | non-issue |
 
 ## Non-goals kept as non-goals
 
