@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title-verifier">
+<title id="title-verifier">Verifier — Teste et valide</title>
+<defs><linearGradient id="gradient-verifier" x1="19%" y1="0%" x2="77%" y2="100%"><stop offset="0%" stop-color="#FEDB3B"/><stop offset="53%" stop-color="#FEBF0D"/><stop offset="100%" stop-color="#FEAE02"/></linearGradient></defs>
+<path d="M 119.20 51.00 C 115.25 52.19 111.69 52.58 102.94 60.41 C 94.20 68.24 57.67 104.66 50.13 112.84 C 42.58 121.01 44.38 122.04 43.35 124.93 C 42.33 127.83 40.97 131.77 42.00 135.69 C 43.03 139.60 45.82 149.04 51.48 155.85 C 57.14 162.66 79.14 182.82 86.69 189.46 C 94.24 196.10 105.58 205.21 111.07 208.28 C 116.56 211.34 125.74 213.66 130.03 213.66 C 134.32 213.66 140.98 210.49 144.93 208.28 C 148.87 206.07 153.29 203.33 161.18 196.18 C 169.07 189.03 200.71 158.80 207.23 151.82 C 213.75 144.84 211.96 144.13 212.65 141.07 C 213.33 138.00 213.67 131.20 212.65 127.62 C 211.62 124.05 212.75 121.69 204.52 112.84 C 196.29 103.98 156.56 65.55 147.64 57.72 C 138.72 49.89 137.70 51.85 134.09 51.00 C 130.49 50.15 123.14 49.81 119.20 51.00 Z" fill="url(#gradient-verifier)"/>
+<g fill="white"><ellipse cx="93" cy="114" rx="8" ry="13.0"/><ellipse cx="130" cy="114" rx="8" ry="13.0"/></g>
+<g transform="translate(139 138) scale(1.04)"><path d="M5 26 19 39 46 10" fill="none" stroke="#fff" stroke-width="7.3" stroke-linecap="round" stroke-linejoin="round"/></g>
+</svg>

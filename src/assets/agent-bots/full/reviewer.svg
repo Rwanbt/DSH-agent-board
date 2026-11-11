@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title-reviewer">
+<title id="title-reviewer">Reviewer — Relit et évalue</title>
+<defs><linearGradient id="gradient-reviewer" x1="19%" y1="0%" x2="77%" y2="100%"><stop offset="0%" stop-color="#FEA838"/><stop offset="53%" stop-color="#FB8819"/><stop offset="100%" stop-color="#EC7003"/></linearGradient></defs>
+<ellipse cx="128" cy="230" rx="81" ry="9" fill="#FB8819" opacity="0.16"/>
+<g fill="none" stroke="#FB8819" stroke-width="9.5" stroke-linecap="round"><path d="M 196 49 L 205 29"/>
+<path d="M 212 55 L 228 47"/></g>
+<path d="M 109.64 48.35 C 101.37 50.06 85.25 57.06 78.36 61.85 C 71.47 66.63 59.55 79.64 55.24 86.14 C 50.93 92.63 45.74 105.27 44.36 113.13 C 42.98 120.99 42.81 140.18 44.36 148.22 C 45.91 156.25 52.29 170.24 56.60 176.56 C 60.91 182.89 71.81 193.88 78.36 198.15 C 84.91 202.43 99.67 208.76 108.28 210.30 C 116.89 211.84 139.30 210.98 146.36 210.30 C 153.42 209.62 159.22 207.12 164.04 204.90 C 168.86 202.68 179.62 197.03 184.44 192.76 C 189.26 188.48 198.67 177.49 202.12 171.16 C 205.57 164.84 210.61 150.17 211.64 142.82 C 212.67 135.47 212.52 121.16 210.28 113.13 C 208.04 105.10 198.96 86.23 193.96 79.39 C 188.96 72.55 177.21 63.08 170.84 59.15 C 164.47 55.21 151.39 49.72 143.64 48.35 C 135.89 46.98 117.91 46.64 109.64 48.35 Z" fill="url(#gradient-reviewer)"/>
+<g fill="white"><ellipse cx="91" cy="107" rx="8" ry="13.0"/><ellipse cx="128" cy="107" rx="8" ry="13.0"/></g>
+<g transform="translate(132 134) scale(1.02)"><g fill="none" stroke="#fff" stroke-width="6.7" stroke-linecap="round"><circle cx="20" cy="20" r="14"/><path d="M31 31 L46 46"/></g></g>
+</svg>

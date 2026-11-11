@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title-integrator">
+<title id="title-integrator">Integrator — Assemble et consolide</title>
+<defs><linearGradient id="gradient-integrator" x1="19%" y1="0%" x2="77%" y2="100%"><stop offset="0%" stop-color="#36D0A5"/><stop offset="53%" stop-color="#12AD86"/><stop offset="100%" stop-color="#049271"/></linearGradient></defs>
+<ellipse cx="128" cy="230" rx="81" ry="9" fill="#12AD86" opacity="0.16"/>
+<g fill="none" stroke="#12AD86" stroke-width="9.5" stroke-linecap="round"><path d="M 200 60 L 209 37"/>
+<path d="M 215 68 L 227 54"/>
+<path d="M 226 77 L 241 68"/></g>
+<path d="M 29.00 151.53 C 28.32 156.61 28.31 168.66 30.33 174.25 C 32.36 179.83 41.79 192.07 45.00 195.63 C 48.21 199.18 52.12 200.79 55.67 202.31 C 59.21 203.83 65.91 206.47 73.00 207.65 C 80.09 208.84 100.01 211.33 111.67 211.66 C 123.32 212.00 154.36 211.68 165.00 210.33 C 175.64 208.97 189.42 204.36 195.67 200.97 C 201.92 197.59 211.12 187.66 214.33 183.60 C 217.54 179.54 219.82 172.63 221.00 168.90 C 222.18 165.18 224.00 159.28 223.67 154.20 C 223.33 149.13 221.20 134.74 218.33 128.81 C 215.46 122.89 204.88 110.99 201.00 107.43 C 197.12 103.88 191.21 101.77 187.67 100.75 C 184.12 99.74 176.38 101.95 173.00 99.42 C 169.62 96.88 163.70 84.09 161.00 80.71 C 158.30 77.32 154.37 74.55 151.67 72.69 C 148.96 70.83 143.21 67.36 139.67 66.01 C 136.12 64.65 128.23 62.34 123.67 62.00 C 119.11 61.66 109.41 61.47 103.67 63.34 C 97.92 65.20 83.40 72.30 78.33 76.70 C 73.27 81.10 66.03 93.00 63.67 98.08 C 61.30 103.16 61.86 113.57 59.67 116.79 C 57.47 120.00 49.37 121.27 46.33 123.47 C 43.29 125.67 37.86 130.60 35.67 134.16 C 33.47 137.71 29.68 146.45 29.00 151.53 Z" fill="url(#gradient-integrator)"/>
+<g fill="white"><ellipse cx="91" cy="125" rx="8" ry="13.0"/><ellipse cx="127" cy="125" rx="8" ry="13.0"/></g>
+<g transform="translate(146 144) scale(1.14)"><g stroke="#fff" fill="none" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round"><path d="M25 5 45 15 25 26 5 15 Z" fill="#fff" stroke="none"/><path d="M5 26 25 37 45 26 M5 36 25 47 45 36"/></g></g>
+</svg>

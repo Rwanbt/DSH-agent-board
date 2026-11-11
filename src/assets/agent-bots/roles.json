@@ -1,0 +1,317 @@
+{
+  "schemaVersion": 3,
+  "description": "Approved 14-role set plus workspace-level Super Orchestrator; six reference-traced vector silhouettes, role colors independent of runtime status",
+  "roles": [
+    {
+      "id": "super_orchestrator",
+      "label": "Super Orchestrator",
+      "category": "governance",
+      "shape": "triangle",
+      "icon": "network",
+      "primary": false,
+      "scope": "workspace",
+      "level": "workspace",
+      "overseesRoles": [
+        "orchestrator"
+      ],
+      "emblem": "crown",
+      "alternativeEmblemSvg": "full/super_orchestrator_bolt.svg",
+      "alternativeCompactSvg": "compact/super_orchestrator_bolt.svg",
+      "features": [
+        "coordinate_project_orchestrators",
+        "aggregate_project_status",
+        "cross_project_dependencies",
+        "prioritize_and_dispatch",
+        "taskboard_kanban_sync"
+      ],
+      "headwear": "crown",
+      "description": "Coordonne plusieurs projets et leurs orchestrateurs",
+      "color": "#7043DB",
+      "gradient": [
+        "#A77CF7",
+        "#7043DB",
+        "#5324B4"
+      ],
+      "svg": "full/super_orchestrator.svg",
+      "compactSvg": "compact/super_orchestrator.svg"
+    },
+    {
+      "id": "orchestrator",
+      "label": "Orchestrator",
+      "category": "governance",
+      "shape": "triangle",
+      "icon": "network",
+      "primary": true,
+      "description": "Coordonne et pilote",
+      "color": "#8D55EA",
+      "gradient": [
+        "#B47CFA",
+        "#8D55EA",
+        "#7643D7"
+      ],
+      "svg": "full/orchestrator.svg",
+      "compactSvg": "compact/orchestrator.svg"
+    },
+    {
+      "id": "architect",
+      "label": "Architect",
+      "category": "governance",
+      "shape": "triangle",
+      "icon": "layers",
+      "primary": false,
+      "description": "Conçoit et structure",
+      "color": "#895AED",
+      "gradient": [
+        "#A575F9",
+        "#895AED",
+        "#7346D7"
+      ],
+      "svg": "full/architect.svg",
+      "compactSvg": "compact/architect.svg"
+    },
+    {
+      "id": "knowledge_manager",
+      "label": "Knowledge Manager",
+      "category": "governance",
+      "shape": "triangle",
+      "icon": "book",
+      "primary": false,
+      "description": "Conserve et diffuse",
+      "color": "#A572F3",
+      "gradient": [
+        "#C698FB",
+        "#A572F3",
+        "#8F5DE5"
+      ],
+      "svg": "full/knowledge_manager.svg",
+      "compactSvg": "compact/knowledge_manager.svg"
+    },
+    {
+      "id": "planner",
+      "label": "Planner",
+      "category": "coordination",
+      "shape": "square",
+      "icon": "list",
+      "primary": true,
+      "description": "Planifie et organise",
+      "color": "#228FFD",
+      "gradient": [
+        "#3CB2FD",
+        "#228FFD",
+        "#0F79F3"
+      ],
+      "svg": "full/planner.svg",
+      "compactSvg": "compact/planner.svg"
+    },
+    {
+      "id": "dispatcher",
+      "label": "Dispatcher",
+      "category": "coordination",
+      "shape": "square",
+      "icon": "fork",
+      "primary": false,
+      "description": "Distribue les tâches",
+      "color": "#03B4E2",
+      "gradient": [
+        "#1DD5F2",
+        "#03B4E2",
+        "#0099D0"
+      ],
+      "svg": "full/dispatcher.svg",
+      "compactSvg": "compact/dispatcher.svg"
+    },
+    {
+      "id": "observer",
+      "label": "Observer",
+      "category": "coordination",
+      "shape": "square",
+      "icon": "pulse",
+      "primary": false,
+      "description": "Surveille et alerte",
+      "color": "#5F92C7",
+      "gradient": [
+        "#7EB0DF",
+        "#5F92C7",
+        "#4F7EB0"
+      ],
+      "svg": "full/observer.svg",
+      "compactSvg": "compact/observer.svg"
+    },
+    {
+      "id": "worker",
+      "label": "Worker",
+      "category": "execution",
+      "shape": "cloud",
+      "icon": "wrench",
+      "primary": true,
+      "description": "Exécute et produit",
+      "color": "#36CB5E",
+      "gradient": [
+        "#56E079",
+        "#36CB5E",
+        "#22B94B"
+      ],
+      "svg": "full/worker.svg",
+      "compactSvg": "compact/worker.svg"
+    },
+    {
+      "id": "researcher",
+      "label": "Researcher",
+      "category": "execution",
+      "shape": "cloud",
+      "icon": "search",
+      "primary": false,
+      "description": "Explore et recherche",
+      "color": "#25C5A6",
+      "gradient": [
+        "#4EE0C1",
+        "#25C5A6",
+        "#0EAF8E"
+      ],
+      "svg": "full/researcher.svg",
+      "compactSvg": "compact/researcher.svg"
+    },
+    {
+      "id": "integrator",
+      "label": "Integrator",
+      "category": "execution",
+      "shape": "cloud",
+      "icon": "layers",
+      "primary": false,
+      "description": "Assemble et consolide",
+      "color": "#12AD86",
+      "gradient": [
+        "#36D0A5",
+        "#12AD86",
+        "#049271"
+      ],
+      "svg": "full/integrator.svg",
+      "compactSvg": "compact/integrator.svg"
+    },
+    {
+      "id": "optimizer",
+      "label": "Optimizer",
+      "category": "execution",
+      "shape": "cloud",
+      "icon": "trend",
+      "primary": false,
+      "description": "Améliore et optimise",
+      "color": "#8ECF10",
+      "gradient": [
+        "#A7E039",
+        "#8ECF10",
+        "#7DC000"
+      ],
+      "svg": "full/optimizer.svg",
+      "compactSvg": "compact/optimizer.svg"
+    },
+    {
+      "id": "reviewer",
+      "label": "Reviewer",
+      "category": "quality",
+      "shape": "circle",
+      "icon": "search",
+      "primary": true,
+      "description": "Relit et évalue",
+      "color": "#FB8819",
+      "gradient": [
+        "#FEA838",
+        "#FB8819",
+        "#EC7003"
+      ],
+      "svg": "full/reviewer.svg",
+      "compactSvg": "compact/reviewer.svg"
+    },
+    {
+      "id": "auditor",
+      "label": "Auditor",
+      "category": "quality",
+      "shape": "circle",
+      "icon": "clipboard",
+      "primary": false,
+      "description": "Audite et contrôle",
+      "color": "#EB7E25",
+      "gradient": [
+        "#FDA249",
+        "#EB7E25",
+        "#DD6917"
+      ],
+      "svg": "full/auditor.svg",
+      "compactSvg": "compact/auditor.svg"
+    },
+    {
+      "id": "verifier",
+      "label": "Verifier",
+      "category": "validation",
+      "shape": "diamond",
+      "icon": "check",
+      "primary": true,
+      "description": "Teste et valide",
+      "color": "#FEBF0D",
+      "gradient": [
+        "#FEDB3B",
+        "#FEBF0D",
+        "#FEAE02"
+      ],
+      "svg": "full/verifier.svg",
+      "compactSvg": "compact/verifier.svg"
+    },
+    {
+      "id": "guardian",
+      "label": "Guardian",
+      "category": "protection",
+      "shape": "hexagon",
+      "icon": "shield",
+      "primary": true,
+      "description": "Sécurise et applique les règles",
+      "color": "#FE6560",
+      "gradient": [
+        "#FD8782",
+        "#FE6560",
+        "#F14B49"
+      ],
+      "svg": "full/guardian.svg",
+      "compactSvg": "compact/guardian.svg"
+    }
+  ],
+  "families": {
+    "governance": {
+      "label": "Gouvernance / connaissances",
+      "shape": "triangle"
+    },
+    "coordination": {
+      "label": "Coordination / monitoring",
+      "shape": "square"
+    },
+    "execution": {
+      "label": "Production / optimisation",
+      "shape": "cloud"
+    },
+    "quality": {
+      "label": "Revue / audit",
+      "shape": "circle"
+    },
+    "validation": {
+      "label": "Validation / tests",
+      "shape": "diamond"
+    },
+    "protection": {
+      "label": "Protection / règles",
+      "shape": "hexagon"
+    }
+  },
+  "statusColors": {
+    "active": "#1DC766",
+    "planning": "#258FF5",
+    "waiting": "#F3BE13",
+    "reviewing": "#F48C1A",
+    "blocked": "#F04453",
+    "idle": "#7E8B9C"
+  },
+  "uiHierarchy": {
+    "workspace": "super_orchestrator",
+    "project": "orchestrator",
+    "task": "specialized_agents",
+    "note": "Task Board remains the source of truth for kanban task state."
+  }
+}
