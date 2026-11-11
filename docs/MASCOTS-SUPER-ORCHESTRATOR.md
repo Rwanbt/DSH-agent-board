@@ -94,8 +94,9 @@ launches changes a role either. The original declared string is preserved in
 ## 4. Status is independent from role colour
 
 The mascot colour always means the role. Runtime status is a **separate dot**
-(`.dab-avatar-dot[data-tone]`) plus the existing status mark and text. Mapping
-from the board's real statuses (`src/contracts/model.js`):
+anchored **bottom-left** of the mascot (so it never covers the role pictogram
+the kit draws bottom-right: network, wrench, search, …), plus the existing status
+mark and text. Mapping from the board's real statuses (`src/contracts/model.js`):
 
 | Plugin status | Tone | Meaning |
 |---|---|---|

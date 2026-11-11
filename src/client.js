@@ -5002,8 +5002,10 @@ const DAB_CSS = `
 .dab-avatar-img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .dab-avatar-fallback { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; border-radius: 50%; background: var(--dab-chip-fill); }
 /* Status dot: SEPARATE from the mascot; colour comes from the status tone, the
-   role colour never expresses a status. */
-.dab-avatar-dot { position: absolute; right: 0; bottom: 0; box-sizing: content-box; border-radius: 50%;
+   role colour never expresses a status. Anchored BOTTOM-LEFT: the kit draws the
+   role pictogram (network/wrench/search/…) in the bottom-right of the character,
+   so the dot must not cover identity. */
+.dab-avatar-dot { position: absolute; left: 0; right: auto; bottom: 0; box-sizing: content-box; border-radius: 50%;
   width: max(7px, calc(var(--dab-avatar-size, 40px) * 0.23)); height: max(7px, calc(var(--dab-avatar-size, 40px) * 0.23));
   border: 2px solid var(--dab-card-fill); background: var(--dsw-alias-label-secondary); }
 .dab-avatar-dot[data-tone="active"] { background: var(--dsw-alias-state-success-primary); }
