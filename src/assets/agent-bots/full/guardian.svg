@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title-guardian">
+<title id="title-guardian">Guardian — Sécurise et applique les règles</title>
+<defs><linearGradient id="gradient-guardian" x1="19%" y1="0%" x2="77%" y2="100%"><stop offset="0%" stop-color="#FD8782"/><stop offset="53%" stop-color="#FE6560"/><stop offset="100%" stop-color="#F14B49"/></linearGradient></defs>
+<ellipse cx="128" cy="230" rx="81" ry="9" fill="#FE6560" opacity="0.16"/>
+<g fill="none" stroke="#FE6560" stroke-width="9.5" stroke-linecap="round"><path d="M 194 56 L 203 35"/>
+<path d="M 212 65 L 226 57"/></g>
+<path d="M 76.76 65.70 C 73.00 71.63 54.57 100.24 49.79 108.55 C 45.01 116.86 40.20 126.39 39.00 131.31 C 37.80 136.23 36.42 138.90 40.35 147.38 C 44.28 155.86 65.06 190.64 70.02 198.27 C 74.97 205.90 77.06 205.95 79.45 207.64 C 81.85 209.34 77.62 211.15 88.89 211.66 C 100.17 212.17 157.35 212.17 168.45 211.66 C 179.56 211.15 172.28 213.07 176.55 207.64 C 180.82 202.22 197.21 177.29 202.17 168.81 C 207.12 160.33 214.11 145.78 215.65 140.69 C 217.19 135.60 218.57 137.29 214.30 128.63 C 210.03 119.98 187.23 80.70 181.94 72.39 C 176.64 64.08 175.23 64.71 172.50 63.02 C 169.77 61.32 170.44 59.51 160.36 59.00 C 150.29 58.49 103.19 58.66 92.94 59.00 C 82.69 59.34 81.50 60.83 79.45 61.68 C 77.40 62.53 80.52 59.76 76.76 65.70 Z" fill="url(#gradient-guardian)"/>
+<g fill="white"><ellipse cx="92" cy="113" rx="8" ry="13.0"/><ellipse cx="127" cy="113" rx="8" ry="13.0"/></g>
+<g transform="translate(137 135) scale(1.04)"><path d="M25 4 C31 9 40 12 44 13 V25 C44 36 36 43 25 48 C14 43 6 36 6 25 V13 C12 12 19 9 25 4 Z" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/></g>
+</svg>

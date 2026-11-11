@@ -45,6 +45,9 @@
   "scripts": {
     "test": "node --test tests/",
     "check": "node --check src/host/index.js && node --check src/client.js && node --test tests/",
+    "assets": "node scripts/build-assets.mjs",
+    "client": "node scripts/build-client.mjs",
+    "gallery": "node scripts/mascot-gallery.mjs",
     "smoke": "node scripts/smoke-host.mjs"
   },
   "license": "MIT",
