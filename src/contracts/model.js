@@ -85,6 +85,31 @@ export const MODES = Object.freeze({
 
 export const MODE_VALUES = Object.freeze(Object.values(MODES))
 
+/**
+ * Super Orchestrator supervision limits (additive policy slice).
+ *
+ * The supervision layer is the host policy engine, NOT a second agent runtime:
+ * it observes real facts, proposes local actions and gates board-owned
+ * delegations. `enabled:false` disables the whole layer (no delegation gate, no
+ * recommendations, capabilities unavailable) while the existing authorization
+ * gates keep working exactly as before.
+ *
+ * `emblem` is a visual variant of the SAME `super_orchestrator` role (crown or
+ * bolt), never a new role.
+ */
+export const SUPERVISION_DEFAULT = Object.freeze({
+  enabled: true,
+  emblem: 'crown',
+  // Board-launched assignments in flight (starting/running/recovering).
+  maxConcurrentDelegations: 2,
+  // Real delegation starts inside the sliding hour.
+  maxDelegationsPerHour: 6,
+  // A delegated launch may not delegate again (depth 0 = a root delegation).
+  maxDelegationDepth: 1,
+  // A subtask in another project/workspace is a cross-project delegation.
+  allowCrossProjectDelegation: false,
+})
+
 /** Default limits. Every one is configurable through the board API. */
 export const DEFAULT_POLICY = Object.freeze({
   mode: MODES.OFF,
@@ -131,6 +156,8 @@ export const DEFAULT_POLICY = Object.freeze({
   // that read fails (network), the default is to suppress the recovery; an
   // operator may opt into the optimistic path explicitly.
   allowUnverifiedHandoff: false,
+  // Super Orchestrator supervision layer (pure policy; see SUPERVISION_DEFAULT).
+  supervision: SUPERVISION_DEFAULT,
 })
 
 const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
@@ -172,6 +199,36 @@ export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     allowUnverifiedHandoff: input.allowUnverifiedHandoff === undefined
       ? fallback.allowUnverifiedHandoff === true
       : input.allowUnverifiedHandoff === true,
+    // Backward compatible: a persisted state.json written before the
+    // supervision layer has no `supervision` key and receives the defaults.
+    supervision: normalizeSupervision(input.supervision, fallback.supervision ?? SUPERVISION_DEFAULT),
+  }
+}
+
+const EMBLEMS = Object.freeze(['crown', 'bolt'])
+
+/**
+ * Normalize the additive supervision policy slice.
+ *
+ * Unknown keys are dropped (never copied into the journal), every numeric limit
+ * is clamped to a documented bound, and a missing value falls back to the
+ * supplied layer (so a partial `POST /policy` keeps the operator's other
+ * choices). A board built before this field reads as the defaults.
+ */
+export function normalizeSupervision(input, fallback = SUPERVISION_DEFAULT) {
+  const source = input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}
+  const previous = fallback !== null && typeof fallback === 'object' && !Array.isArray(fallback)
+    ? fallback
+    : SUPERVISION_DEFAULT
+  return {
+    enabled: source.enabled === undefined ? previous.enabled !== false : source.enabled === true,
+    emblem: EMBLEMS.includes(source.emblem) ? source.emblem : (EMBLEMS.includes(previous.emblem) ? previous.emblem : SUPERVISION_DEFAULT.emblem),
+    maxConcurrentDelegations: clampInt(source.maxConcurrentDelegations, 0, 16, previous.maxConcurrentDelegations ?? SUPERVISION_DEFAULT.maxConcurrentDelegations),
+    maxDelegationsPerHour: clampInt(source.maxDelegationsPerHour, 0, 200, previous.maxDelegationsPerHour ?? SUPERVISION_DEFAULT.maxDelegationsPerHour),
+    maxDelegationDepth: clampInt(source.maxDelegationDepth, 0, 8, previous.maxDelegationDepth ?? SUPERVISION_DEFAULT.maxDelegationDepth),
+    allowCrossProjectDelegation: source.allowCrossProjectDelegation === undefined
+      ? previous.allowCrossProjectDelegation === true
+      : source.allowCrossProjectDelegation === true,
   }
 }
 

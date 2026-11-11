@@ -23,10 +23,11 @@ const TASK = {
   workspaceId: 'w1', dependsOn: [], version: 1,
 }
 
-function makeCtx() {
+function makeCtx(initialSessions = null) {
   const created = []
   const listeners = new Map()
   const routes = new Map()
+  let sessionList = initialSessions ?? { phase: 'ready', ids: [], byId: {}, projectionsBySession: {} }
   const ctx = {
     logger: { warn() {}, info() {}, error() {} },
     webServer: { getOrigin: () => 'http://127.0.0.1:1', register: route => { routes.set(route.path, route); return () => routes.delete(route.path) } },
@@ -50,11 +51,12 @@ function makeCtx() {
     },
     get(name) {
       if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'primary', model: 'big' }) }
+      if (name === 'sessions') return { list: () => sessionList }
       return undefined
     },
     on(event, listener) { listeners.set(event, listener); return () => {} },
   }
-  return { ctx, created, listeners, routes }
+  return { ctx, created, listeners, routes, setSessions: next => { sessionList = next } }
 }
 
 function installFetch(tasks) {
@@ -99,12 +101,12 @@ async function callJson(handler, method, path, body) {
   return { status: res.status, body: res.body === '' ? null : JSON.parse(res.body) }
 }
 
-async function boot(tasks = [structuredClone(TASK)]) {
+async function boot(tasks = [structuredClone(TASK)], initialSessions = null) {
   const home = await mkdtemp(join(tmpdir(), 'dab-gone-'))
   const previousHome = process.env.DSH_HOME
   process.env.DSH_HOME = home
   const restore = installFetch(tasks)
-  const harness = makeCtx()
+  const harness = makeCtx(initialSessions)
   const dispose = apply(harness.ctx, {})
   const handler = () => harness.routes.get('/dsh-agent-board/api/v2').handler
   const state = async () => (await callJson(handler(), 'GET', '/state')).body.value
@@ -184,6 +186,26 @@ test('the gone map is bounded: a long history cannot grow the state document', a
     // The most recent removals survive, the oldest are evicted.
     assert.ok(keys.includes('session-gone-599'))
     assert.equal(keys.includes('session-gone-0'), false)
+  } finally {
+    await host.close()
+  }
+})
+
+test('supervision is built eagerly: /state reports the real agents before any 15 s timer', async () => {
+  const sessions = {
+    phase: 'ready',
+    ids: ['s-live'],
+    byId: { 's-live': { id: 's-live', displayTitle: 'Live agent', running: true, updatedAt: Date.now() } },
+    projectionsBySession: {},
+  }
+  const host = await boot([structuredClone(TASK)], sessions)
+  try {
+    const view = await host.state()
+    assert.ok(view.supervision, 'the supervision payload must be part of /state')
+    assert.equal(view.supervision.workspace.counts.agents, 1, 'the eager projection must count the live agent')
+    assert.equal(view.supervision.workspace.status, 'idle', 'mode off observes, never active')
+    assert.ok(Array.isArray(view.supervision.projects))
+    assert.ok(view.supervision.capabilities && view.supervision.capabilities.observe === true)
   } finally {
     await host.close()
   }
