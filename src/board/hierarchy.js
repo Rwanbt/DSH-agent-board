@@ -367,10 +367,28 @@ export function buildHierarchyView(projection, view, supervision, options = {}) 
     available,
   }
 
+  // Every project that REALLY has a declared (or deduced) orchestrator, even when
+  // the current filter or the fold state hides that project. The cockpit band
+  // counts and shows these; the view filter must not change the supervision
+  // picture.
+  const orchestrators = []
+  for (const [projectId, projectNodes] of nodesByProject) {
+    const orchestrator = findProjectOrchestrator(projectNodes, roles)
+    if (orchestrator === null) continue
+    orchestrators.push({
+      projectId,
+      projectTitle: projectNodes[0]?.projectTitle ?? String(projectId),
+      unassigned: projectId === 'unassigned',
+      orchestrator,
+    })
+  }
+  orchestrators.sort((a, b) => String(a.projectTitle).localeCompare(String(b.projectTitle)))
+
   return {
     workspace,
     projects,
     projectsById: new Map(projects.map(project => [project.id, project])),
+    orchestrators,
     // Per-node resolved role (declared role -> approved role, or generic).
     // Additive to the contract shape so the renderer does not re-resolve it.
     roles,

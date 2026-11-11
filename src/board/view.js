@@ -9,6 +9,10 @@
  *   - finished-and-not-consulted results; unseen failures;
  *   - everything else (idle, read, archived) is history: hidden by default,
  *     reachable through the "recent" filter, the search, or the History drawer.
+ * The additive "action" filter narrows the same view to the interventions that
+ * actually need the operator (`isActionRequired`): waiting_user,
+ * provider_unavailable, and unseen failed/interrupted launches. It is the data
+ * source of the cockpit "À traiter" control.
  * Age is used only to scope the optional "recent" filter, never to set a status.
  *
  * @module dsh-agent-board/board/view
@@ -16,7 +20,7 @@
 
 import { STATUS, STATUS_RANK } from '../contracts/model.js'
 
-export const VIEW_FILTERS = Object.freeze(['attention', 'recent', 'all'])
+export const VIEW_FILTERS = Object.freeze(['attention', 'action', 'recent', 'all'])
 export const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000
 export const DEFAULT_CHILD_LIMIT = 4
 export const DEFAULT_TREE_LIMIT = 8
@@ -39,6 +43,26 @@ export function isAttention(node) {
   if (node.status === STATUS.PROVIDER_UNAVAILABLE) return true
   if (node.status === STATUS.FINISHED_UNREAD) return true
   if (node.status === STATUS.FAILED && node.seen !== true) return true
+  return false
+}
+
+/**
+ * Is this node an intervention the operator must act on right now?
+ *
+ * Strictly narrower than `isAttention()` (which also covers running agents and
+ * unread results): waiting for the user, a provider outage, and a failure or an
+ * interruption the user has not read yet. An archived session is history
+ * whatever its status, exactly like `isAttention()`.
+ *
+ * This predicate never depends on age, role, model or Task Board state.
+ */
+export function isActionRequired(node) {
+  if (node === undefined || node === null) return false
+  if (node.archived === true) return false
+  if (node.status === STATUS.WAITING_USER) return true
+  if (node.status === STATUS.PROVIDER_UNAVAILABLE) return true
+  if (node.status === STATUS.FAILED) return node.seen !== true
+  if (node.status === STATUS.INTERRUPTED) return node.seen !== true
   return false
 }
 
@@ -103,9 +127,9 @@ export function aggregateSubtrees(projection) {
   return agg
 }
 
-function matchesQuery(node, query) {
+function matchesQuery(node, query, taskTitle = null) {
   if (query === '') return true
-  const haystack = [node.title, node.role, node.projectTitle, node.id, node.taskId, node.model?.model, node.model?.provider, node.goal]
+  const haystack = [node.title, node.role, node.projectTitle, node.id, node.taskId, taskTitle, node.model?.model, node.model?.provider, node.goal]
     .filter(value => typeof value === 'string')
     .join(' ')
     .toLowerCase()
@@ -113,9 +137,10 @@ function matchesQuery(node, query) {
 }
 
 /** Is this node itself included by the active filter? */
-export function includedByFilter(node, filter, now, query = '') {
-  if (query !== '') return matchesQuery(node, query)
+export function includedByFilter(node, filter, now, query = '', taskTitle = null) {
+  if (query !== '') return matchesQuery(node, query, taskTitle)
   if (filter === 'all') return node.blank !== true
+  if (filter === 'action') return isActionRequired(node)
   if (isAttention(node)) return true
   if (filter === 'recent') {
     if (node.archived === true || node.blank === true) return false
@@ -129,8 +154,10 @@ export function includedByFilter(node, filter, now, query = '') {
  *
  * @param {object} projection buildProjection() output
  * @param {object} options
- * @param {'attention'|'recent'|'all'} options.filter
+ * @param {'attention'|'action'|'recent'|'all'} options.filter
  * @param {string} options.query       free-text search (overrides filter)
+ * @param {Map<string,string>|null} [options.taskTitles] task id -> Task Board
+ *   task title; when supplied, the query also matches the linked task title
  * @param {string|null} options.project only this project id, or null for all
  * @param {Set<string>} options.expanded node ids whose hidden children are revealed
  * @param {Set<string>} options.collapsed node ids whose branch is folded
@@ -147,6 +174,14 @@ export function buildBoardView(projection, options = {}) {
   const dismissed = options.dismissed ?? new Set()
   const childLimit = Number(options.childLimit) || DEFAULT_CHILD_LIMIT
   const agg = options.aggregates ?? aggregateSubtrees(projection)
+  // Optional, additive: the linked Task Board title is searchable when the ledger
+  // was readable. Without this option the query behaves exactly as before.
+  const taskTitles = options.taskTitles !== null && typeof options.taskTitles === 'object' ? options.taskTitles : null
+  const taskTitleOf = node => {
+    if (taskTitles === null || node.taskId === null || node.taskId === undefined) return null
+    if (typeof taskTitles.get === 'function') return taskTitles.get(String(node.taskId)) ?? null
+    return Object.prototype.hasOwnProperty.call(taskTitles, String(node.taskId)) ? taskTitles[String(node.taskId)] : null
+  }
 
   // A node is kept when it, or anything under it, is included (ancestors of an
   // included node are therefore always kept).
@@ -154,8 +189,11 @@ export function buildBoardView(projection, options = {}) {
   const keeps = node => {
     if (keepMemo.has(node.id)) return keepMemo.get(node.id)
     keepMemo.set(node.id, false) // cycle guard
-    // Dismissed nodes leave the attention/recent views (still searchable, still in "all").
-    let keep = dismissed.has(node.id) && query === '' && filter !== 'all' ? false : includedByFilter(node, filter, now, query)
+    // Dismissed nodes leave the attention/action/recent views (still searchable,
+    // still in "all").
+    let keep = dismissed.has(node.id) && query === '' && filter !== 'all'
+      ? false
+      : includedByFilter(node, filter, now, query, taskTitleOf(node))
     for (const childId of node.children) {
       const child = projection.byId.get(childId)
       if (child !== undefined && keeps(child)) keep = true
