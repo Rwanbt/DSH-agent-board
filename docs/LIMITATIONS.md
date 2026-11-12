@@ -65,3 +65,19 @@ never labelled live.
    engine (Claude Code) from skeleton to declared capabilities.
 3. **P2** — Linux CI run, load test on a populated host, cost metering if a
    provider exposes it, notifications, TypeScript build.
+
+## GOAL 6 update (2026-11-12) — supersedes parts of the table above
+
+These entries are the honest status after the Super Agent work; the historical
+rows stay for audit, but where they conflict this section wins.
+
+| # | Gap | Impact | Priority |
+|---|---|---|---|
+| G1 | **GitHub end-to-end is NOT validated.** No credential and no authorized test repository were available. The forge adapter remains read-only and declares no write capability; the `issue → task → worker → PR/checks → review` path is not proven. | The P3 browser-forge exit criterion is unmet; nothing claims otherwise. | **P0 for a live forge** |
+| G2 | **Task Board public-v1 writes are not live.** Installed 0.12.0 answers `503 public_api_disabled` because `DSH_TASKBOARD_PUBLIC_TOKEN` is not configured on the host. The client and contract are implemented and tested (local server + isolated real build), but no write was observed against the running instance. | Task Board remains the canonical reader; the unified execution backend stays on the negotiated contract. | **P1** |
+| G3 | **The public-v1 execution backend is not wired into the host.** `lease → attach → settle` still uses the legacy negotiated contract. Switching transports without a live token would add a double-write risk. | One transport, not two; documented. | **P1** |
+| G4 | **Assessment strictness.** A model output missing `schemaVersion`/`directiveEcho` is rejected with no effect (`invalid_assessment`); a repair loop is not implemented. | A cycle can be lost safely instead of acting wrongly. | **P1** |
+| G5 | **Directive conflicts are lexical**, not semantic (explicit polarity markers on the same normalized subject). Ambiguous prose never conflicts. | Two contradictory prose directives may coexist; the operator sees both. | **P2** |
+| G6 | **An approval is consumed at authorization time**, not at session creation: a failed `ctx.agents.create` still spends the decision (conservative). | Operator asks again; no duplicate effect. | **P2** |
+| G7 | **Model discovery may be absent.** Without `ctx.llm`, `/superagent/model` refuses (`model_discovery_unavailable`) and the runtime falls back to the host's default model selection. | No invented model is ever used. | **P2** |
+| G8 | **Item 1 above is re-scoped.** Task Board 0.12.0 does publish a versioned public-v1 API, but the legacy `/contract` route is still absent and the public surface is disabled on this install; the simulated contract leg therefore remains the only exercised execution contract. | Same as G2/G3. | — |

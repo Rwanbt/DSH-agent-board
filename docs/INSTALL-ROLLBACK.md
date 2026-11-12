@@ -122,3 +122,47 @@ credentials. See `docs/e2e/GOAL3-E2E.md`.
   `dev`. `main` and the Task Board repository were not modified.
 - Removing the plugin leaves no route registered (the route is disposed through
   `ctx.effect`), so a later re-activation does not collide.
+
+## 8. GOAL 6 — mandat, migration v2, Task Board public-v1, rollback
+
+### 8.1 Première activation (deny by default)
+
+A fresh or migrated install authorizes **nothing**: `scopeMode:'none'`, every
+mutating action `false`, `requiresConfiguration:true`. Configure the mandate in
+the cockpit (Projets / Paramètres) or through the API:
+
+```powershell
+# 1) select the projects (explicit scope)
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:<port>/dsh-agent-board/api/v2/mandate/scope `
+  -ContentType 'application/json' -Body '{"scopeMode":"selected","selectedWorkspaces":["<workspaceId>"]}'
+# 2) pick the ceiling (L0..L4)
+# 3) enable the action classes you accept
+# 4) only if you really mean every project:
+#    {"scopeMode":"all","confirm":"ALL_PROJECTS"}
+```
+
+A restart keeps Stop persisted; `POST /resume` lifts it. `autoResumeOnRestart`
+stays `false` by default.
+
+### 8.2 Task Board public-v1 (optional)
+
+```powershell
+[Environment]::SetEnvironmentVariable('DSH_TASKBOARD_PUBLIC_TOKEN', '<token>', 'User')
+# restart the DSH HOST COMPLETELY (a plugin toggle does not reload the host fiber)
+# then: POST /dsh-agent-board/api/v2/integrations/taskboard/probe
+```
+
+The probe reports `configured/reachable/version/capabilities` and never returns
+the token. Without the variable the Task Board answers `503 public_api_disabled`
+and Agent Board displays exactly that.
+
+### 8.3 Migration and rollback v1 → v2
+
+1. Back up `%USERPROFILE%\.dsh\agent-board\state.json` and `journal.jsonl`.
+2. Start DSH: the v1 document is migrated once (`mandate_migrated` in the audit)
+   and **no launch is possible** until a mandate is confirmed
+   (`requiresConfiguration`).
+3. To roll back: stop DSH, `git checkout <previous-branch-or-sha>`, restore the
+   backed-up `state.json`/`journal.jsonl`, restart. The old build requires schema
+   v1; the v2 document is not silently downgraded (the store preserves an
+   unreadable document instead of overwriting it).

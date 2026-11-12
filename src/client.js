@@ -8585,7 +8585,9 @@ function DabSuperagentDecisions({ superagent, filter = 'decisions', onFilter, on
             }, String(option.label ?? option.id))))
           : dabSaReason(h, 'options_missing'))
       })),
-    h('div', { className: 'dab-muted' }, dabT('superDecisionSilence')))
+    // The caption is already part of the empty state; showing it twice made the
+    // panel look like it had two conflicting messages.
+    list.length === 0 ? null : h('div', { className: 'dab-muted' }, dabT('superDecisionSilence')))
 }
 
 /** Vue d'ensemble: objective, steps, factual result, capabilities, incidents. */
