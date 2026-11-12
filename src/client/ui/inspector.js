@@ -502,7 +502,7 @@ function DabSuperagentDirectives({ superagent, portfolio, busy, onAdd, onRevoke 
 
 /** Paramètres: model/fallback, level, budget, permissions, Stop, connectors. */
 function DabSuperagentSettings({
-  superagent, mandate, host, context, ui, busy, taskboard,
+  superagent, mandate, capabilities, host, context, ui, busy, taskboard,
   onSetLevel, onSetAction, onToggleNotifications, onStop, onResume,
 }) {
   const h = React.createElement
@@ -568,7 +568,16 @@ function DabSuperagentSettings({
     dabSaSection(h, 'permissions', dabT('superSettingsPermissions'),
       h('ul', { className: 'dab-sa-permissions' }, DAB_ACTION_ROWS.map(([action, labelKey]) => {
         const granted = actions[action] === true
-        const reason = dabActionRefusalReason({ action, mandate, context: { ...context, level } })
+        // The host capability is authoritative: an action with no adapter must
+        // never read "Autorisée" just because the mandate grants it.
+        const capability = capabilities !== null && typeof capabilities === 'object' && typeof capabilities[action] === 'object' ? capabilities[action] : null
+        const capabilityRefusal = capability !== null
+          && capability.state !== 'available'
+          && typeof capability.reason === 'string'
+          && capability.reason !== 'allowed'
+          ? capability.reason
+          : null
+        const reason = capabilityRefusal ?? dabActionRefusalReason({ action, mandate, context: { ...context, level } })
         return h('li', { key: action, className: 'dab-sa-permission', 'data-action': action, 'data-granted': granted ? 'true' : 'false' },
           h('label', { className: 'dab-sa-check' },
             h('input', {
@@ -658,7 +667,7 @@ function DabSuperagentInspector(props) {
       ? h(DabSuperagentDirectives, { superagent, portfolio, busy, onAdd: onAddDirective, onRevoke: onRevokeDirective })
       : activeTab === 'settings'
         ? h(DabSuperagentSettings, {
-          superagent, mandate, host, context, ui, busy, taskboard,
+          superagent, mandate, capabilities, host, context, ui, busy, taskboard,
           onSetLevel, onSetAction, onToggleNotifications, onStop, onResume,
         })
         : h(DabSuperagentOverview, {

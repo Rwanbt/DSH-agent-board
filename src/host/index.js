@@ -2402,10 +2402,16 @@ export function apply(ctx, config = {}) {
           return
         }
         // Same mandate as a fresh launch: a revoked scope/pause/level also stops
-        // the automatic retry of an in-flight execution.
+        // the automatic retry of an in-flight execution. The assignment must not
+        // keep a live lease/slot for work that is now forbidden.
         const continuation = continuationGate(assignment)
         if (!continuation.allowed) {
           assignment.retryAt = null
+          assignment.status = LEASE_STATUS.INTERRUPTED
+          assignment.endedAt = Date.now()
+          assignment.error = `retry_suppressed:${continuation.reason}`
+          assignment.lease = null
+          releaseContractLease(assignment, continuation.reason)
           audit({ type: 'retry_suppressed', assignmentId: assignment.id, taskId: assignment.taskId, reason: continuation.reason })
           touch()
           return
@@ -3105,6 +3111,9 @@ export function apply(ctx, config = {}) {
       const projectId = String(task.workspaceId ?? '')
       if (!isProjectSelected(projectId)) continue
       const gate = effectiveFor('launch', { projectId })
+      // The dry-run must answer what a REAL launch would answer: a backend that
+      // cannot create the execution is a refusal, not a green candidate.
+      const backend = backendReadiness()
       const readiness = readinessOf(task, tasksById)
       if (!readiness.ready) {
         if (readiness.reason.startsWith('blocked_by') || readiness.reason.startsWith('unknown_prerequisite')) {
@@ -3118,8 +3127,8 @@ export function apply(ctx, config = {}) {
         title: truncate(String(task.title ?? ''), 120),
         urgency: typeof task.urgency === 'string' ? task.urgency : null,
         permission: typeof task.permission === 'string' ? task.permission : null,
-        allowed: gate.allowed,
-        reason: gate.reason,
+        allowed: gate.allowed === true && backend.ok === true,
+        reason: gate.allowed === true && backend.ok !== true ? backend.reason : gate.reason,
         level: gate.level,
         requiresApproval: gate.requiresApproval,
       })

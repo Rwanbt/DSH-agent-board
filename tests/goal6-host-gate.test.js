@@ -348,8 +348,7 @@ test('the Task Board public token is never published nor logged into the state',
   }
 })
 
-test('model discovery is honest when the host has no llm service', async () => {
-  await withHost({}, async ({ routes }) => {
+test('model discovery is honest when the host has no llm service', async () => {  await withHost({}, async ({ routes }) => {
     const state = (await callJson(routes, 'GET', '/state')).body.value
     assert.equal(state.host.build.schemaVersion, 2)
     assert.equal(state.host.build.features.includes('mandate'), true)
@@ -497,4 +496,22 @@ test('an unknown state schemaVersion is preserved, never overwritten with defaul
     else process.env.DSH_HOME = previousHome
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
+})
+
+test('dry-run and capabilities agree when the execution backend is unavailable', async () => {
+  await withHost({ mandate: TEST_MANDATE }, async ({ routes }) => {
+    // `contract` without a negotiated extension cannot launch: every surface must
+    // say so, including the simulation.
+    await callJson(routes, 'POST', '/policy', { policy: { executionBackend: 'contract' } })
+    await callJson(routes, 'POST', '/mode', { mode: 'autonomous' })
+    const state = (await callJson(routes, 'GET', '/state')).body.value
+    assert.equal(state.capabilities.launch.state, 'unavailable')
+    assert.equal(state.capabilities.launch.reason, 'contract_unavailable')
+    const dry = await callJson(routes, 'GET', '/dry-run')
+    assert.equal(dry.status, 200)
+    assert.equal(dry.body.value.candidateCount, 1)
+    assert.equal(dry.body.value.candidates[0].allowed, false)
+    assert.equal(dry.body.value.candidates[0].reason, 'contract_unavailable')
+    assert.equal(dry.body.value.allowedCount, 0)
+  })
 })

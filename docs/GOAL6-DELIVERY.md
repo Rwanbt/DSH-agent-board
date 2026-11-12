@@ -6,7 +6,7 @@
 - **PR #3** (empilée, non fusionnée) : https://github.com/Rwanbt/DSH-agent-board/pull/3 → base `feat/agent-board-responsive-cockpit`
 - Dépôt Agent Board : `Rwanbt/DSH-agent-board`
 - Dépôt Task Board : `Rwanbt/dsh-taskboard`, branche `feat/universal-sync`, HEAD `e6aaece`, version **0.12.0**
-- Suite Agent Board : **560 / 560 tests passent**, 0 échec (`node --test tests/`)
+- Suite Agent Board : **563 / 563 tests passent**, 0 échec (`node --test tests/`)
 - Bundle client reconstruit : `src/client.js` (603 799 octets, 23 modules)
 - E2E hôte réel : **scénarios 0, a, b, c verts** (`node scripts/e2e/run-e2e.mjs`)
 
@@ -26,6 +26,7 @@ liste ce qui **n'est pas** validé et pourquoi.
 | GitHub bout en bout (issue → tâche → worker → PR/checks) | **NON validé** : aucune écriture n'est implémentée ni annoncée ; **la lecture réelle est validée en live** (3 PR ouvertes listées le 12/11 via l'adaptateur). L'écriture exige un dépôt de test et une décision produit non données. |
 | Cockpit 4 onglets + bandeau Super Agent, desktop/mobile | **Livré, testé** ; captures ci-dessous |
 | Installation / migration / rollback documentés | **Livré** (§9) |
+| Revue indépendante adversariale | **1 P0 + 3 P1 + 2 P2 trouvés, tous corrigés** ; revérification : **0 P0 / 0 P1 connus**, suite verte |
 
 Conclusion : le système est **utilisable quotidiennement en usage personnel** dans les
 limites de la section 10. Il **ne doit pas** être annoncé « GitHub validé en live » ni
@@ -44,6 +45,8 @@ limites de la section 10. Il **ne doit pas** être annoncé « GitHub validé en
 | `cf07f79` | `feat(cockpit)` : bandeau Super Agent, inspecteur 4 onglets, portée projets, boîte de décisions, bundle |
 | `32cc6ed` | `test(e2e)` : scénarios hôte réel (gate mandat, 3 projets) + preuves régénérées |
 | `120748c` | `fix(superagent)` : cycles concurrents coalescés, backoff exponentiel après échec, réveils publiés |
+| `1ec2ddb` | `test(e2e)` : preuves régénérées après les correctifs de robustesse |
+| `e527789` | `fix(goal6)` : correctifs de la revue indépendante (P0 handoff, approbation single-use, capacités, schéma inconnu, équité, cadence, UI, modèle/budget projet) |
 | `f9caab5` | `docs(goal6)` : rapport, limites, installation/rollback, captures |
 | `f5a7193` | `docs(goal6)` : branche poussée, PR #3, preuve de lecture GitHub réelle |
 
@@ -59,7 +62,7 @@ dans `D:\App\dsh-taskboard` (aucun défaut bloquant trouvé côté Task Board).
 | P0-A : décalage hôte/client visible (F0) | `host.build {version, schemaVersion, features[], startedAt, pid, source}` publié ; le client compare et dit « hôte plus ancien » | `tests/goal6-host-gate.test.js` (build/schema/features), E2E 0.7 | Livré |
 | P0-B : `[]` ≠ « tous » (F1) | `scopeMode: 'none'\|'selected'\|'all'`, défaut `none`, `all` exige `allConsent{text:'ALL_PROJECTS',at}` | `tests/mandate.test.js` (20 cas), `goal6-host-gate` (migration + restart + L4), E2E 0a/0f | Livré |
 | P0-B : migration dangereuse | `migrateLegacyPolicy` : ancien autonome + liste vide → `none`, L1, actions `false`, `requiresConfiguration:true`, audit unique | `goal6-host-gate` « v1 migration… » ; E2E 0a | Livré |
-| P0-B : gate central | `effectivePolicyOf` appelé par tick, `/dispatch`, approbation, reprise, failover/handoff, retry, Super Agent | `tests/mandate.test.js`, `goal6-superagent-host`, `goal6-host-gate` (handoff après retrait du projet), 560 tests | Livré |
+| P0-B : gate central | `effectivePolicyOf` appelé par tick, `/dispatch`, approbation, reprise, failover/handoff, retry, Super Agent | `tests/mandate.test.js`, `goal6-superagent-host`, `goal6-host-gate` (handoff après retrait du projet), 563 tests | Livré |
 | P0-C F2 : capacités véridiques | `capabilities.<action> = {state,reason,source}` dérivé de l'état réel ; jamais `available` si refus | `goal6-host-gate` « capabilities are truthful in OFF and after a Stop » | Livré |
 | P0-C F3 : Stop lisible + Reprendre | `stoppedAt` explicite, `POST /resume`, bandeau « Arrêté (observation) » + Reprendre | hôte : test Stop/Resume ; UI : `cockpit-superagent` | Livré |
 | P0-C F4 : recommandations en Arrêt | une seule ligne explicite en OFF/Stop, compteurs conservés | `tests/cockpit-superagent.test.js` | Livré |
@@ -162,7 +165,7 @@ aucune session (prouvé par test).
 ## 6. Preuves exécutées (commandes exactes)
 
 ```powershell
-node --test tests/                       # 560/560, 0 fail
+node --test tests/                       # 563/563, 0 fail
 node --check src/host/index.js           # OK
 node scripts/build-client.mjs            # built 603 799 bytes, 23 modules
 node scripts/e2e/run-e2e.mjs             # 0/a/b/c verts sur un vrai process DSH
@@ -207,7 +210,9 @@ createGithubAdapter({ repository: 'Rwanbt/DSH-agent-board', token: '' }).list()
 ```
 
 Cela prouve la lecture réelle (API GitHub, pagination, normalisation) ; **aucune
-écriture GitHub n'a été exécutée** et l'adaptateur n'en annonce aucune.
+écriture GitHub n'a été exécutée** et l'adaptateur n'en annonce aucune. Cette preuve est
+un contrôle opérateur ponctuel : l'adaptateur continue de déclarer
+`validatedLive:false` (il ne s'auto-déclare pas validé pour un autre dépôt).
 
 ---
 
@@ -315,6 +320,24 @@ côté un document illisible au lieu de l'écraser.
    backend `contract` négocié. Le client public-v1 est prêt mais ne remplace pas encore
    `lease→attach→settle` ; le faire sans validation live ajouterait un risque de double
    écriture.
+
+### Revue indépendante (adversariale)
+
+Un relecteur indépendant a été lancé sur la branche. Constats et suites :
+
+| Constat | Sévérité | Suite |
+|---|---|---|
+| Handoff/retry contournaient le nouveau mandat (legacy `mandateCheck`) | **P0** | Corrigé : `continuationGate` sur les deux chemins, test « retrait du projet ⇒ handoff_suppressed », audit |
+| `usedAt` effacé par la normalisation → approbation réutilisable | **P1** | Corrigé : `usedAt` persisté, test hôte « une approbation = un lancement » + test de normalisation |
+| `state.json` d'une version inconnue écrasé par les défauts | **P1** | Corrigé : mise de côté `.unsupported-<ts>`, test dédié |
+| Matrice de capacités fictive (actions sans adaptateur) | **P1** | Corrigé : `no_adapter_for_action`, `launch` reflète le backend (`contract_unavailable`) |
+| Équité : un projet pouvait prendre tous les slots | P2 | Corrigé : interleave round-robin + test |
+| Cadence Super Agent décorative, budgets non contrôlés | P2 | Corrigé : `nextWakeAt` consommé, budgets cycles/appels appliqués, timeout recycle |
+| Retry supprimé laissait un assignment `running` | P2 | Corrigé : `interrupted` + `endedAt` + lease libéré |
+| `/dry-run` et Settings divergeaient des capacités | P2/P3 | Corrigé : le dry-run inclut la disponibilité du backend, Settings lit le payload `capabilities` |
+
+Verdict de revérification : **0 P0, 0 P1 connus** ; les P2 signalés ont été corrigés
+(le relecteur les a confirmés par probe avant correction).
 
 ### Risques résiduels (ordonnés)
 
