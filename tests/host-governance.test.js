@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
 import { apply } from '../src/host/index.js'
+import { TEST_MANDATE } from './goal6-helpers.js'
 
 const TASK = {
   id: 't-gov-1',
@@ -143,7 +144,7 @@ async function withBoard(tasks, run, options = {}) {
   const tasksRef = { tasks }
   const restoreFetch = installFetch(tasksRef)
   const made = makeCtx(options)
-  const dispose = apply(made.ctx)
+  const dispose = apply(made.ctx, { mandate: TEST_MANDATE })
   try {
     await callJson(made.routeRef.current.handler, 'GET', '/state')
     await run({ ...made, tasksRef, dispose })

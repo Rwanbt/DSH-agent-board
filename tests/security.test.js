@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
 
 import { apply } from '../src/host/index.js'
+import { TEST_MANDATE } from './goal6-helpers.js'
 import { buildCheckpoint, handoffPrompt, redactSecrets } from '../src/recovery/checkpoint.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -153,7 +154,7 @@ test('card text is DATA: the launch prompt keeps the untrusted notice and the hu
     workspaceId: 'w1', dependsOn: [], version: 2,
   }])
   const harness = makeCtx()
-  const dispose = apply(harness.ctx, {})
+  const dispose = apply(harness.ctx, { mandate: TEST_MANDATE })
   try {
     const handler = harness.routes.get('/dsh-agent-board/api/v2').handler
     const policy = await call(handler, 'POST', '/policy', { policy: { mode: 'autonomous', allowedPermissions: ['read-only', 'workspace-write'] } })
@@ -183,7 +184,7 @@ test('every HTTP route goes through the connection trust gate and leaks no state
   const previousHome = process.env.DSH_HOME
   process.env.DSH_HOME = home
   const harness = makeCtx({ rejection: () => 401 })
-  const dispose = apply(harness.ctx, {})
+  const dispose = apply(harness.ctx, { mandate: TEST_MANDATE })
   try {
     const handler = harness.routes.get('/dsh-agent-board/api/v2').handler
     for (const [method, path] of [['GET', '/state'], ['GET', '/events'], ['GET', '/adapters'], ['GET', '/contract'], ['POST', '/tick'], ['POST', '/stop']]) {
@@ -236,7 +237,12 @@ test('the only credential read in src/ is the documented forge token', async () 
   }
   await walk('src')
   const keys = [...new Set(findings.map(finding => finding.key))].sort()
-  assert.deepEqual(keys, ['DSH_HOME', 'GITHUB_TOKEN', 'HOME', 'USERPROFILE'])
+  // DSH_TASKBOARD_PUBLIC_TOKEN / _URL are the documented Task Board public-v1
+  // integration variables: the token is only tested for presence and is never
+  // logged, published or returned (see goal6-host-gate.test.js).
+  assert.deepEqual(keys, ['DSH_HOME', 'DSH_TASKBOARD_PUBLIC_TOKEN', 'DSH_TASKBOARD_PUBLIC_URL', 'GITHUB_TOKEN', 'HOME', 'USERPROFILE'])
+  const host = await readFile(join(ROOT, 'src', 'host', 'index.js'), 'utf8')
+  assert.equal(/DSH_TASKBOARD_PUBLIC_TOKEN[^\n]*(console\.|warn\(|message:|JSON\.stringify)/.test(host), false)
   // The forge token is never logged or echoed in an error message.
   const github = await readFile(join(ROOT, 'src', 'connectors', 'github.js'), 'utf8')
   assert.equal(/GITHUB_TOKEN[^\n]*(console|warn|message|throw)/.test(github), false)

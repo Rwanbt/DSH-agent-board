@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
 import { apply } from '../src/host/index.js'
+import { TEST_MANDATE } from './goal6-helpers.js'
 import { startSimulatedTaskBoard, simulatedTask } from './fixtures/fake-taskboard-server.mjs'
 
 function makeCtx({ createGate = null } = {}) {
@@ -173,7 +174,7 @@ async function boot({ contractMode = 'full', task = simulatedTask({ isolation: '
   const attachProbe = delayAttach > 0 ? installDelayedAttach(delayAttach) : null
   const leaseProbe = delayLease > 0 ? installDelayedLease(delayLease) : null
   const harness = makeCtx({ createGate: gatePromise })
-  const dispose = apply(harness.ctx, { baseUrl: board.url })
+  const dispose = apply(harness.ctx, { baseUrl: board.url, mandate: TEST_MANDATE })
   const handlerOf = () => harness.routes.get('/dsh-agent-board/api/v2').handler
   const state = async () => (await callJson(handlerOf(), 'GET', '/state')).body.value
   const policy = {

@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
 import { apply } from '../src/host/index.js'
+import { TEST_MANDATE } from './goal6-helpers.js'
 
 const TASK = {
   id: 't-test-1',
@@ -127,7 +128,7 @@ test('supervised mode proposes, approval launches a real session, duplicate disp
   const tasksRef = { tasks: [structuredClone(TASK)] }
   const restoreFetch = installFetch(tasksRef)
   const { ctx, created, injected, listeners, routeRef } = makeCtx()
-  const dispose = apply(ctx)
+  const dispose = apply(ctx, { mandate: TEST_MANDATE })
   try {
     assert.equal(routeRef.current.path, '/dsh-agent-board/api/v2')
 
@@ -186,7 +187,7 @@ test('autonomous mode launches; a 503 after work started switches provider with 
   const tasksRef = { tasks: [structuredClone(TASK)] }
   const restoreFetch = installFetch(tasksRef)
   const { ctx, created, cancelled, listeners, routeRef } = makeCtx()
-  const dispose = apply(ctx)
+  const dispose = apply(ctx, { mandate: TEST_MANDATE })
   try {
     await callJson(routeRef.current.handler, 'GET', '/state')
     await callJson(routeRef.current.handler, 'POST', '/policy', {
@@ -259,7 +260,7 @@ test('restart reconciliation exposes an interrupted assignment instead of relaun
   const tasksRef = { tasks: [] }
   const restoreFetch = installFetch(tasksRef)
   const { ctx, created, routeRef } = makeCtx()
-  const dispose = apply(ctx)
+  const dispose = apply(ctx, { mandate: TEST_MANDATE })
   try {
     let value = null
     for (let attempt = 0; attempt < 200; attempt += 1) {
@@ -287,13 +288,13 @@ test('unload disposes the HTTP route so a later activation does not collide', as
   const tasksRef = { tasks: [] }
   const restoreFetch = installFetch(tasksRef)
   const { ctx, routes, effects } = makeCtx()
-  const dispose = apply(ctx)
+  const dispose = apply(ctx, { mandate: TEST_MANDATE })
   try {
     assert.equal(routes.has('/dsh-agent-board/api/v2'), true)
     dispose()
     for (const run of effects) run()
     assert.equal(routes.has('/dsh-agent-board/api/v2'), false, 'the route must be removed on unload')
-    const again = apply(ctx)
+    const again = apply(ctx, { mandate: TEST_MANDATE })
     assert.equal(routes.has('/dsh-agent-board/api/v2'), true, 're-activation registers cleanly')
     again()
   } finally {
