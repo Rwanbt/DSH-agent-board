@@ -621,3 +621,22 @@ export function shouldRunCycle(input = {}) {
   if (inCooldown) return { run: false, reason: 'cooldown' }
   return { run: true, reason: 'scheduled' }
 }
+
+/**
+ * Prompt for the single repair round after an invalid assessment. It only
+ * restates the contract and the validator errors; it never relaxes validation.
+ *
+ * @param {string[]} errors
+ * @param {number} [schemaVersion]
+ * @returns {string}
+ */
+export function buildRepairPrompt(errors, schemaVersion = ASSESSMENT_SCHEMA_VERSION) {
+  const list = (Array.isArray(errors) ? errors : []).slice(0, 10).map(error => `- ${boundedText(error, 120)}`)
+  return [
+    'Your previous answer was rejected by the validator. Nothing was executed.',
+    'Errors:',
+    ...(list.length === 0 ? ['- unknown'] : list),
+    `Return ONLY one JSON object with schemaVersion=${schemaVersion} and the fields: situation (string), findings (array), proposals (array), decisions (array), directiveEcho (array of strings), noopReason (string or null).`,
+    'Use only project ids and actions from the original request. No prose, no code fence.',
+  ].join('\n')
+}

@@ -95,7 +95,7 @@ function makeCtx() {
           followup(message) {
             messages.push({ sessionId: options.sessionId, text: message?.content?.[0]?.text ?? '' })
             setTimeout(() => {
-              emit(options.sessionId, { type: 'assistant/message', time: Date.now(), data: { message: { content: [{ type: 'text', text: control.replyText }] } } })
+              emit(options.sessionId, { type: 'assistant/message', time: Date.now(), data: { message: { content: [{ type: 'text', text: control.replies?.length ? control.replies.shift() : control.replyText }] } } })
               emit(options.sessionId, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed' } } })
             }, 5)
           },
@@ -340,6 +340,36 @@ test('Super Agent: an invalid LLM answer has no effect at all', async () => {
     assert.equal(state.assignments.length, 0)
     assert.equal(state.superagent.lastCycle.outcome, 'invalid_assessment')
     assert.equal(state.superagent.decisions.pending.length, 0)
+  } finally {
+    host.dispose()
+    restoreFetch()
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('Super Agent: one repair round recovers an answer missing schemaVersion, still strictly validated', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dab-superagent-repair-'))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  const restoreFetch = installFetch()
+  const host = await boot({ home })
+  try {
+    await callJson(host.routes, 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(host.routes, 'POST', '/superagent/model', { provider: 'fake-provider', model: 'fake-model' })
+    await callJson(host.routes, 'POST', '/superagent/start')
+    const broken = assessment()
+    delete broken.schemaVersion
+    delete broken.directiveEcho
+    host.control.replies = [JSON.stringify(broken)]
+    const cycle = await callJson(host.routes, 'POST', '/superagent/cycle', { trigger: 'manual' })
+    assert.equal(cycle.status, 200, JSON.stringify(cycle.body))
+    const prompts = host.messages.map(entry => entry.text)
+    assert.ok(prompts.some(text => text.includes('rejected by the validator') && text.includes('schema_version_unsupported')), 'repair prompt names the errors')
+    const state = (await callJson(host.routes, 'GET', '/state')).body.value.superagent
+    assert.notEqual(state.lastCycle.outcome, 'invalid_assessment')
+    assert.equal(state.failureCount ?? 0, 0)
   } finally {
     host.dispose()
     restoreFetch()
