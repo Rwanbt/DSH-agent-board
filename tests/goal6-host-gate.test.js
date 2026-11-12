@@ -515,3 +515,28 @@ test('dry-run and capabilities agree when the execution backend is unavailable',
     assert.equal(dry.body.value.allowedCount, 0)
   })
 })
+test('control: L4 -> L0 and a project switch-off mid-activity stop every NEW launch', async () => {
+  const tasks = [TASK, { ...TASK, id: 't-gate-2', title: 'Second task' }, { ...TASK, id: 't-gate-3', title: 'Third task' }]
+  await withHost({ mandate: TEST_MANDATE, tasks }, async ({ routes, created }) => {
+    await callJson(routes, 'POST', '/policy', { policy: { mode: 'autonomous', maxConcurrent: 1 } })
+    await callJson(routes, 'POST', '/mode', { mode: 'autonomous' })
+    const first = await callJson(routes, 'POST', '/tick', {})
+    assert.equal(first.body.actions.length, 1, JSON.stringify(first.body))
+    assert.equal(created.length, 1)
+
+    const lowered = await callJson(routes, 'POST', '/mandate/level', { level: 'L0' })
+    assert.equal(lowered.status, 200, JSON.stringify(lowered.body))
+    await callJson(routes, 'POST', '/policy', { policy: { maxConcurrent: 3 } })
+    const afterL0 = await callJson(routes, 'POST', '/tick', {})
+    assert.equal((afterL0.body.actions ?? []).filter(action => action.ok === true).length, 0, JSON.stringify(afterL0.body))
+    assert.ok((afterL0.body.actions ?? []).every(action => action.reason === 'level_too_low'))
+    assert.equal(created.length, 1, 'no new session after L4 -> L0')
+
+    await callJson(routes, 'POST', '/mandate/level', { level: 'L4' })
+    const off = await callJson(routes, 'POST', '/mandate/project', { projectId: 'w1', enabled: false })
+    assert.equal(off.status, 200, JSON.stringify(off.body))
+    const afterOff = await callJson(routes, 'POST', '/tick', {})
+    assert.equal((afterOff.body.actions ?? []).filter(action => action.ok === true).length, 0, JSON.stringify(afterOff.body))
+    assert.equal(created.length, 1, 'no new session on a disabled project')
+  })
+})
