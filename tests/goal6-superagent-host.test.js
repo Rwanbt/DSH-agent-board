@@ -283,6 +283,45 @@ test('Super Agent identity, directives and memory survive a host restart', async
   }
 })
 
+test('Super Agent: concurrent cycles coalesce; a failed assessment stops the scheduled loop', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dab-superagent-concurrent-'))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  const restoreFetch = installFetch()
+  const host = await boot({ home })
+  try {
+    await callJson(host.routes, 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(host.routes, 'POST', '/superagent/model', { provider: 'fake-provider', model: 'fake-model' })
+    await callJson(host.routes, 'POST', '/superagent/start')
+
+    const [first, second] = await Promise.all([
+      callJson(host.routes, 'POST', '/superagent/cycle', { trigger: 'manual' }),
+      callJson(host.routes, 'POST', '/superagent/cycle', { trigger: 'manual' }),
+    ])
+    assert.equal(first.status, 200, JSON.stringify(first.body))
+    assert.equal(second.status, 200, JSON.stringify(second.body))
+    assert.deepEqual(first.body.value.executed, second.body.value.executed, 'two wake-ups share ONE cycle result')
+    assert.equal(first.body.value.executed.filter(entry => entry.ok === true).length, 1, 'one task session, not two')
+    assert.equal(host.created.filter(options => String(options.sessionId).startsWith('session-agentboard-')).length, 1)
+
+    host.control.replyText = 'Je vais tout lancer sans JSON.'
+    const failed = await callJson(host.routes, 'POST', '/superagent/cycle', { trigger: 'manual' })
+    assert.equal(failed.status, 409)
+    const state = (await callJson(host.routes, 'GET', '/state')).body.value.superagent
+    assert.equal(state.lastCycle.outcome, 'invalid_assessment')
+    assert.equal(state.dirty, false, 'a failed answer must not keep the scheduled loop awake')
+    assert.equal(state.failureCount, 1)
+    assert.ok(state.nextWakeAt > Date.now(), 'an exponential backoff is scheduled')
+    assert.ok(state.nextWakeAt - Date.now() >= 9 * 60 * 1000)
+  } finally {
+    host.dispose()
+    restoreFetch()
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
 test('Super Agent: an invalid LLM answer has no effect at all', async () => {
   const home = await mkdtemp(join(tmpdir(), 'dab-superagent-invalid-'))
   const previousHome = process.env.DSH_HOME
