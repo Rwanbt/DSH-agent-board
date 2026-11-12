@@ -44,6 +44,8 @@ function dabDefaultUi() {
     folded: [], expanded: [], collapsed: [], dismissed: [], treeLimit: {},
     // GOAL 4 additive preferences (validated and bounded on read).
     roleFilter: null, statusFilter: null, taskStateFilter: null, supervisionOpen: false,
+    // GOAL 6: notification preference (client-side, honest default on).
+    notifications: true,
   }
 }
 
@@ -77,6 +79,7 @@ function dabReadUi() {
       statusFilter: filters.status,
       taskStateFilter: filters.taskState,
       supervisionOpen: typeof parsed.supervisionOpen === 'boolean' ? parsed.supervisionOpen : base.supervisionOpen,
+      notifications: typeof parsed.notifications === 'boolean' ? parsed.notifications : base.notifications,
     }
   } catch {
     return base
@@ -113,6 +116,11 @@ function dabMakePage(store, ctx) {
     const [narrow, setNarrow] = React.useState(false)
     const [iconOnly, setIconOnly] = React.useState(false)
     const [nowBucket, setNowBucket] = React.useState(() => Math.floor(Date.now() / 60000))
+    // Super Agent surfaces (GOAL 6): the 4-tab inspector and a dry-run result
+    // that is rendered WITHOUT touching the shared state (a GET, no write).
+    const [superagentOpen, setSuperagentOpen] = React.useState(false)
+    const [dryRun, setDryRun] = React.useState(null)
+    const [dryRunBusy, setDryRunBusy] = React.useState(false)
     const rootRef = React.useRef(null)
     const scrollRef = React.useRef(null)
 
@@ -169,6 +177,19 @@ function dabMakePage(store, ctx) {
     const projectList = React.useMemo(() => projectOptions(projection), [projection])
 
     const mode = typeof host.mode === 'string' ? host.mode : 'off'
+    // GOAL 6: the Super Agent AI session is a state DISTINCT from the synthetic
+    // supervision layer. Every field is guarded at read time by the pure helpers.
+    const superagent = snapshot.superagent ?? null
+    const mandate = snapshot.mandate ?? null
+    const capabilities = snapshot.capabilities ?? null
+    const portfolio = React.useMemo(() => (typeof dabSuperagentPortfolio === 'function' ? dabSuperagentPortfolio(host, superagent) : []), [host, superagent])
+    const superContext = {
+      mode,
+      stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
+      paused: mandate?.paused === true,
+      scopeMode: typeof mandate?.scopeMode === 'string' ? mandate.scopeMode : null,
+      requiresConfiguration: mandate?.requiresConfiguration === true,
+    }
     // The host publishes the supervision payload (GOAL 4). A missing/foreign
     // value is `null`: the hierarchy then renders structure and real counts only.
     const supervision = host.supervision !== null && typeof host.supervision === 'object' && !Array.isArray(host.supervision)
@@ -349,6 +370,57 @@ function dabMakePage(store, ctx) {
     // compact summary, the details are opt-in.
     const barOpen = ui.supervisionOpen === true
 
+    // A dry-run is a GET: the result is rendered from local state only, so the
+    // shared host state (and every write path) stays untouched.
+    const runDryRun = async () => {
+      if (dryRunBusy) return
+      setDryRunBusy(true)
+      try {
+        const result = await store.dryRun()
+        const value = result?.payload?.ok === true ? result.payload.value : null
+        setDryRun(value ?? {
+          unavailable: result?.payload?.reason ?? result?.payload?.error ?? result?.error ?? `HTTP ${result?.status ?? 0}`,
+        })
+      } catch (error) {
+        setDryRun({ unavailable: String(error?.message ?? error) })
+      } finally {
+        setDryRunBusy(false)
+      }
+    }
+
+    // One band instance shared by both views: the same real facts, never a
+    // second rendering with a different meaning.
+    const superBar = h(DabSuperOrchestratorBar, {
+      workspace: hierarchy.workspace,
+      totals: hierarchy.totals,
+      projects: hierarchy.projects,
+      orchestrators: hierarchy.orchestrators,
+      mode,
+      open: barOpen,
+      compact: narrow,
+      onToggle: () => setUi({ supervisionOpen: !barOpen }),
+      onSelect: selectNode,
+      superagent,
+      mandate,
+      capabilities,
+      stopped: superContext.stopped,
+      busy,
+      onStart: () => act('start', () => store.startSuperagent()),
+      onPause: () => act('pause', () => store.pauseSuperagent()),
+      // Stop is safe by design: stop board executions AND the AI session; the
+      // first success is enough, the second result is reported only if it fails.
+      onStop: () => act('stop', async () => {
+        const executions = await store.stop()
+        const session = await store.stopSuperagent()
+        return executions.ok || session.ok ? { ok: true } : session
+      }),
+      // Reprendre clears the operator Stop (`/resume`) when stoppedAt is set,
+      // and resumes the session lifecycle otherwise.
+      onResume: () => act('resume', () => (superContext.stopped ? store.resume() : store.resumeSuperagent())),
+      onOpenSuperagent: () => setSuperagentOpen(true),
+      onOpenDecisions: () => setSuperagentOpen(true),
+    })
+
     const filtersActiveAll = filtersActive || ui.project !== null || focus !== null
     const empty = h('div', { className: 'dab-empty' },
       h('div', null, ui.query !== '' ? dabT('emptySearch') : (filtersActiveAll ? dabT('emptyFiltered') : dabT('emptyAttention'))),
@@ -362,17 +434,7 @@ function dabMakePage(store, ctx) {
       ui.query === '' && !filtersActiveAll ? h('button', { type: 'button', className: 'dab-btn', onClick: () => setHistoryOpen(true) }, dabIcon('history'), ` ${dabT('history')}`) : null)
 
     const globalView = h('div', { className: 'dab-global' },
-      h(DabSuperOrchestratorBar, {
-        workspace: hierarchy.workspace,
-        totals: hierarchy.totals,
-        projects: hierarchy.projects,
-        orchestrators: hierarchy.orchestrators,
-        mode,
-        open: barOpen,
-        compact: narrow,
-        onToggle: () => setUi({ supervisionOpen: !barOpen }),
-        onSelect: selectNode,
-      }),
+      superBar,
       h(DabOverviewStats, {
         counts: overview.counts,
         focus,
@@ -391,17 +453,7 @@ function dabMakePage(store, ctx) {
       }))
 
     const projectsView = h('div', { className: 'dab-global' },
-      h(DabSuperOrchestratorBar, {
-        workspace: hierarchy.workspace,
-        totals: hierarchy.totals,
-        projects: hierarchy.projects,
-        orchestrators: hierarchy.orchestrators,
-        mode,
-        open: barOpen,
-        compact: narrow,
-        onToggle: () => setUi({ supervisionOpen: !barOpen }),
-        onSelect: selectNode,
-      }),
+      superBar,
       h('div', { className: 'dab-projects' }, shownProjects.map(project => h(DabProjectGroup, {
         key: project.id, project, ctx: ctxValue, compact: ui.compact,
         // "Unassigned" starts folded (opt-in), every real project starts open.
@@ -453,6 +505,43 @@ function dabMakePage(store, ctx) {
         : null),
     historyOpen
       ? h(DabHistoryDrawer, { projection, project: ui.project, selectedId, arbiter, onClose: () => setHistoryOpen(false), roles: hierarchy.roles, taskStates })
+      : null,
+    // Super Agent inspector: 4 real tabs (overview / projects / directives /
+    // settings). It opens from the band and never replaces the agent inspector.
+    superagentOpen
+      ? h(DabSuperagentInspector, {
+        superagent,
+        mandate,
+        capabilities,
+        portfolio,
+        host,
+        context: superContext,
+        dryRun,
+        dryRunBusy,
+        busy,
+        narrow,
+        taskboard: host.taskboardPublic ?? null,
+        ui,
+        onClose: () => setSuperagentOpen(false),
+        onOpenDetail: () => setSuperagentOpen(true),
+        onDryRun: runDryRun,
+        onToggleProject: (projectId, enabled) => act('project', () => store.setProject(projectId, { enabled })),
+        onSetProjectLevel: (projectId, level) => act('project-level', () => store.setProject(projectId, { level })),
+        onSetProjectPriority: (projectId, priority) => act('project-priority', () => store.setProject(projectId, { priority })),
+        onConfirmAllProjects: confirm => act('scope', () => store.setScope('all', undefined, confirm)),
+        onAddDirective: input => act('directive', () => store.addDirective(input)),
+        onRevokeDirective: id => act('revoke', () => store.revokeDirective(id)),
+        onAnswerDecision: (id, optionId) => act('decision', () => store.answerDecision(id, optionId)),
+        onSetLevel: level => act('level', () => store.setLevel(level)),
+        onSetAction: (action, enabled) => act('action', () => store.setAction(action, enabled)),
+        onToggleNotifications: value => setUi({ notifications: value === true }),
+        onStop: () => act('stop', async () => {
+          const executions = await store.stop()
+          const session = await store.stopSuperagent()
+          return executions.ok || session.ok ? { ok: true } : session
+        }),
+        onResume: () => act('resume', () => (superContext.stopped ? store.resume() : store.resumeSuperagent())),
+      })
       : null,
     )
   }

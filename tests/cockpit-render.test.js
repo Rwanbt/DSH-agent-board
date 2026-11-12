@@ -82,6 +82,12 @@ return {
   setLang: value => { DAB_LANG = value },
   DabToolbar, DabOverviewStats, DabGlobalOverview, DabGlobalCard, DabSuperOrchestratorBar,
   DabInspector, DabAgentPreview,
+  // GOAL 6 Super Agent surfaces (same bundle scope, no second module).
+  DabSuperagentInspector, DabSuperagentOverview, DabSuperagentProjects,
+  DabSuperagentDirectives, DabSuperagentSettings, DabSuperagentDecisions, DabAllProjectsConfirm,
+  dabSuperagentFacts, dabProjectPolicyRows, dabEffectiveCapabilities, dabCapabilityEntry,
+  dabActionRefusalReason, dabSuperagentPortfolio, dabDecisionGroups, dabAllProjectsConfirmValid,
+  dabSaBound,
 }`
 
 const cockpit = new Function('React', CODE)(React)
@@ -532,6 +538,56 @@ test('super bar: expanding shows the shared supervision body and mini avatars se
     assert.equal(selected.length, 1)
     assert.equal(typeof selected[0], 'string')
   }
+})
+
+test('super bar: the AI session is a state distinct from the supervision layer', () => {
+  const projection = projectionFixture()
+  const { hierarchy } = cockpitModel(projection)
+  const superagent = {
+    identity: { level: 'L2', status: 'idle', model: { provider: 'deepseek', model: 'v4' } },
+    session: { active: false, sessionId: null },
+    decisions: [],
+    directives: [],
+    activity: [],
+    budget: {},
+  }
+  const mandate = {
+    scopeMode: 'selected', selectedWorkspaces: ['ws:w-ravum'], level: 'L2', paused: false,
+    projects: { 'ws:w-ravum': { enabled: true, level: 'L1' }, 'ws:w-dw': { enabled: false, level: 'L0' } },
+  }
+  const tree = render(cockpit.DabSuperOrchestratorBar({
+    workspace: hierarchy.workspace, totals: hierarchy.totals, projects: hierarchy.projects, orchestrators: hierarchy.orchestrators,
+    mode: 'supervised', open: false, onToggle: () => {}, onSelect: () => {}, compact: false,
+    superagent, mandate, capabilities: null, stopped: false, busy: false,
+    onStart: () => {}, onPause: () => {}, onStop: () => {}, onResume: () => {},
+  }))
+  // The layer keeps its own marker; the AI session has its own chip.
+  assert.equal(byClass(tree, 'dab-super-layer').length, 1)
+  const session = byClass(tree, 'dab-super-ai')
+  assert.equal(session.length, 1)
+  assert.equal(session[0].props['data-session-active'], 'false')
+  assert.equal(session[0].props['data-session-state'], 'notStarted')
+  assert.match(textOf(byClass(tree, 'dab-super-ai-state')[0]), /session not started/)
+  // Real AI facts: model, level, enabled/total projects.
+  assert.match(textOf(byClass(tree, 'dab-super-model')[0]), /deepseek\/v4/)
+  assert.match(textOf(byClass(tree, 'dab-super-level')[0]), /Level L2/)
+  assert.match(textOf(byClass(tree, 'dab-super-enabled')[0]), /1\/2 projects enabled/)
+  // No decision counter without a real pending decision.
+  assert.equal(byClass(tree, 'dab-super-decisions').length, 0)
+  // Stop/Pause are reachable siblings of the collapsible body.
+  const stop = collect(tree, node => node.props?.['data-action'] === 'stop')
+  assert.equal(stop.length, 1)
+  assert.equal(walkHas(byClass(tree, 'dab-band-body')[0], stop[0]), false, 'controls live in the band, not in the collapsed body')
+})
+
+test('cockpit CSS: Super Agent surfaces keep a visible focus ring and mobile controls', () => {
+  const css = cockpit.DAB_CSS
+  assert.match(css, /\.dab-super-ctrl:focus-visible/)
+  assert.match(css, /\.dab-sa-tab-btn:focus-visible/)
+  assert.match(css, /\.dab-sa-panel \{ width: min\(560px/)
+  assert.match(css, /\.dab-super-controls \{ order: 3; flex: 1 1 100%; \}/)
+  assert.match(css, /\.dab-super-ctrl \{ min-height: 34px; flex: 1 1 auto; \}/)
+  assert.match(css, /\.dab-sa-panel, \.dab-super-ctrl \{ transition: none; \}/)
 })
 
 // ---------------------------------------------------------------- inspector

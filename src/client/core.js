@@ -36,7 +36,47 @@ export function emptyHostState() {
     adapters: { adapters: [], executors: [] },
     audit: [],
     reconcileNotes: [],
+    // GOAL 6 payload additions. Every one may be absent on an older host: the
+    // client degrades to an explicit "non disponible" instead of inventing.
+    mandate: null,
+    capabilities: null,
+    superagent: null,
+    dryRun: null,
   }
+}
+
+/** A plain object or null (tolerates arrays, primitives, foreign frames). */
+function plainObjectOrNull(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null
+}
+
+/**
+ * `state.superagent` of a host payload (GOAL 6), or null for an older host.
+ * Nullable at every level: the caller must render "non disponible" rather than
+ * assume a session, an identity or a decision inbox.
+ */
+export function superagentOf(host) {
+  return plainObjectOrNull(host?.superagent)
+}
+
+/** `state.mandate` of a host payload, or null when the host does not publish it. */
+export function mandateOf(host) {
+  return plainObjectOrNull(host?.mandate)
+}
+
+/** `state.capabilities` matrix, or null (never assume a capability). */
+export function capabilitiesOf(host) {
+  return plainObjectOrNull(host?.capabilities)
+}
+
+/** Real pending decisions only: an answered/expired/superseded one is not pending. */
+export function pendingDecisionsOf(superagent) {
+  const list = Array.isArray(superagent?.decisions) ? superagent.decisions : []
+  return list.filter(decision => plainObjectOrNull(decision) !== null && decision.status === 'pending')
+}
+
+export function pendingDecisionCountOf(superagent) {
+  return pendingDecisionsOf(superagent).length
 }
 
 function isPlainObject(value) {
@@ -45,6 +85,10 @@ function isPlainObject(value) {
 
 const HOST_STATE_OBJECT_KEYS = ['acks', 'previews', 'turnEnd', 'health', 'gone', 'policy', 'instance', 'sync', 'adapters']
 const HOST_STATE_ARRAY_KEYS = ['assignments', 'proposals', 'routeEvents', 'audit', 'reconcileNotes']
+// GOAL 6 additive fields. They are recognised as a host-state marker but never
+// type-validated here: a partially populated superagent payload must still
+// reach the UI, which guards every field access itself.
+const HOST_STATE_EXTRA_KEYS = ['mandate', 'capabilities', 'superagent', 'dryRun', 'supervision', 'projects', 'models', 'taskboardPublic', 'build']
 
 /**
  * Is this object a host state frame? The event stream is shared, so a valid
@@ -59,6 +103,7 @@ function looksLikeHostState(value) {
   const known = typeof value.mode === 'string'
     || HOST_STATE_ARRAY_KEYS.some(key => Array.isArray(value[key]))
     || HOST_STATE_OBJECT_KEYS.some(key => isPlainObject(value[key]))
+    || HOST_STATE_EXTRA_KEYS.some(key => value[key] !== undefined && value[key] !== null)
   if (!known) return false
   for (const key of HOST_STATE_ARRAY_KEYS) {
     if (value[key] !== undefined && !Array.isArray(value[key])) return false
@@ -198,6 +243,11 @@ export function createBoardStore(ctx, options = {}) {
       projection,
       aggregates: aggregateSubtrees(projection),
       host,
+      // GOAL 6 views, normalized once so every component receives the same
+      // null-safe shape (an old host yields null and the UI says so).
+      superagent: superagentOf(host),
+      mandate: mandateOf(host),
+      capabilities: capabilitiesOf(host),
       hostError,
       phase: typeof list?.phase === 'string' ? list.phase : 'ready',
       bound,
@@ -272,20 +322,36 @@ export function createBoardStore(ctx, options = {}) {
     }
   }
 
-  async function post(path, body) {
-    if (fetchImpl === null) return { ok: false, error: 'no_fetch' }
+  /**
+   * One raw request. `read()` NEVER refreshes/replaces the host state: a
+   * dry-run is a question, not an action, so it must not mutate the store.
+   */
+  async function request(method, path, body) {
+    if (fetchImpl === null) return { ok: false, status: 0, error: 'no_fetch' }
     try {
-      const response = await fetchImpl(`${apiBase}${path}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify(body ?? {}),
-      })
+      const headers = { accept: 'application/json' }
+      const init = { method, headers }
+      if (body !== undefined && method !== 'GET') {
+        headers['content-type'] = 'application/json'
+        init.body = JSON.stringify(body ?? {})
+      }
+      const response = await fetchImpl(`${apiBase}${path}`, init)
       const payload = await response.json().catch(() => null)
-      if (payload?.ok === true) await refreshHost()
-      return { ok: payload?.ok === true, status: response.status, payload }
+      return { ok: payload?.ok === true && response.ok, status: response.status, payload }
     } catch (error) {
-      return { ok: false, error: String(error?.message ?? error) }
+      return { ok: false, status: 0, error: String(error?.message ?? error) }
     }
+  }
+
+  async function read(path) {
+    return request('GET', path)
+  }
+
+  async function post(path, body) {
+    const result = await request('POST', path, body)
+    // A successful MUTATION refreshes the shared state; a read never does.
+    if (result.ok) await refreshHost()
+    return result
   }
 
   const api = {
@@ -302,6 +368,48 @@ export function createBoardStore(ctx, options = {}) {
     tick: () => post('/tick', {}),
     decide: (proposalId, approve) => post(`/proposals/${encodeURIComponent(proposalId)}/decide`, { approve }),
     dispatch: taskId => post('/dispatch', { taskId }),
+
+    // ---- GOAL 6 surfaces. Paths are the contract routes (§6); the UI never
+    // builds them itself, so a payload/route change stays in one place.
+    dryRun: () => read('/dry-run'),
+    setScope: (scopeMode, selectedWorkspaces, confirm) => post('/mandate/scope', {
+      scopeMode,
+      ...(Array.isArray(selectedWorkspaces) ? { selectedWorkspaces } : {}),
+      ...(typeof confirm === 'string' ? { confirm } : {}),
+    }),
+    setLevel: level => post('/mandate/level', { level }),
+    setProject: (projectId, patch = {}) => post('/mandate/project', { projectId, ...patch }),
+    setPause: paused => post('/mandate/pause', { paused: paused === true }),
+    /** Full mandate patch (actions map and/or level), for POST /mandate. */
+    setMandate: patch => post('/mandate', patch ?? {}),
+    setAction: (action, enabled) => {
+      // POST /mandate REPLACES the mandate: send every documented field so a
+      // single permission toggle can never wipe the scope, level or projects.
+      const current = mandateOf(host) ?? {}
+      return post('/mandate', {
+        scopeMode: typeof current.scopeMode === 'string' ? current.scopeMode : 'none',
+        level: typeof current.level === 'string' ? current.level : 'L0',
+        actions: { ...(current.actions ?? {}), [action]: enabled === true },
+        projects: current.projects ?? {},
+        paused: current.paused === true,
+      })
+    },
+    startSuperagent: () => post('/superagent/start', {}),
+    pauseSuperagent: () => post('/superagent/pause', {}),
+    resumeSuperagent: () => post('/superagent/resume', {}),
+    stopSuperagent: () => post('/superagent/stop', {}),
+    cycleSuperagent: trigger => post('/superagent/cycle', { trigger: trigger ?? 'manual' }),
+    setSuperagentModel: model => post('/superagent/model', model ?? {}),
+    addDirective: input => post('/superagent/directives', {
+      text: String(input?.text ?? ''),
+      scope: input?.scope === 'project' ? 'project' : 'global',
+      ...(input?.scope === 'project' && typeof input?.projectId === 'string' ? { projectId: input.projectId } : {}),
+    }),
+    revokeDirective: id => post(`/superagent/directives/${encodeURIComponent(String(id))}/revoke`, {}),
+    answerDecision: (id, optionId, note) => post(`/superagent/decisions/${encodeURIComponent(String(id))}/answer`, {
+      optionId,
+      ...(typeof note === 'string' && note !== '' ? { note } : {}),
+    }),
     getStats: () => ({ ...stats }),
     destroy() {
       destroyed = true
