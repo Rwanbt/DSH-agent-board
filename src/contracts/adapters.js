@@ -34,6 +34,11 @@ export const FORGE_CAPABILITIES = Object.freeze([
   'update',
   'comment',
   'transition',
+  // CI/check-runs read (a forge-native fact, never a task status).
+  'checks',
+  // Open a change request. Merging is deliberately NOT a forge capability: it is
+  // a separate critical human decision and no adapter may claim it implicitly.
+  'open_pr',
 ])
 
 /**

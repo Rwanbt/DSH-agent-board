@@ -348,12 +348,15 @@ Règles : Bearer obligatoire, throw jamais (erreurs normalisées), timeout via
 `capabilitiesOf(meta)` renvoie une carte honnête :
 `{ read: 'available', claim: ..., ... }` avec `reason` si non disponible.
 
-### 4.2 `src/connectors/github.js` (existant, à durcir)
+### 4.2 `src/connectors/github.js`
 
-Lecture (issues/PR/checks) toujours possible si un dépôt est configuré ;
-écriture (`issue.create`, `issue.comment`, `pr.open`) uniquement derrière
-`mandate.actions.open_pr`/`comment` **et** `PolicyEngine`. `merge` reste refusé
-par défaut (capacité `unsupported` si aucun mécanisme de protection vérifié).
+Lecture (issues/PR/checks) toujours possible si un dépôt est configuré. Écritures
+(`createIssue`, `commentIssue`, `openPullRequest`) uniquement derrière **deux murs** :
+`allowGithubWrites: true` **et** `mandate.actions.<action>` pour un projet sélectionné,
+via `PolicyEngine`. Chaque écriture exige un `idempotencyKey`, embarque un marqueur
+`<!-- agent-board:id:... -->` et un cache process-local (la liste GitHub est à cohérence
+différée). **Aucune méthode merge, push de branche protégée ou suppression** : ces
+actions critiques ne sont pas implémentées.
 
 ### 4.3 Autres forges
 
@@ -416,6 +419,10 @@ Lecture : `GET /state`, `GET /events` (SSE, existant), `GET /diagnostics`,
 | `POST /superagent/directives/:id/revoke` | révocation auditée |
 | `POST /superagent/decisions/:id/answer` | `{ optionId, note? }` |
 | `POST /integrations/taskboard/probe` | négociation réelle (état, capacités) |
+| `GET /forge/checks/:ref` | lecture CI (branche/tag/SHA) |
+| `POST /forge/issue` | créer une issue (`{projectId,title,body,labels,idempotencyKey?}`) |
+| `POST /forge/issue/:n/comment` | commenter (`{projectId,body,idempotencyKey?}`) |
+| `POST /forge/pr` | ouvrir une PR (`{projectId,title,body,head,base,idempotencyKey?}`) — jamais de merge |
 
 Toute réponse : `{ ok: true, value }` ou `{ ok: false, error, reason }`.
 

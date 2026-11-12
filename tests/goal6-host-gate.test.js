@@ -281,8 +281,8 @@ test('capabilities are truthful in OFF and after a Stop', async () => {
     // not a temporary mode refusal: nothing pretends they are available.
     assert.equal(off.capabilities.delegate.state, 'unavailable')
     assert.equal(off.capabilities.delegate.reason, 'no_adapter_for_action')
-    assert.equal(off.capabilities.open_pr.reason, 'no_adapter_for_action')
-    assert.equal(off.capabilities.create_task.reason, 'no_adapter_for_action')
+    assert.equal(off.capabilities.open_pr.reason, 'github_not_configured')
+    assert.equal(off.capabilities.create_task.reason, 'github_not_configured')
     assert.equal(off.capabilities.launch.reason, 'mode_off')
 
     await callJson(routes, 'POST', '/mode', { mode: 'autonomous' })
