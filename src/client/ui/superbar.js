@@ -29,13 +29,14 @@ function dabSuperStatusLabel(status, facts) {
 }
 
 function dabSuperControl(h, props) {
-  const { key, action, label, title, disabled, onClick, danger } = props
+  const { key, action, label, title, disabled, onClick, danger, primary } = props
   return h('button', {
     key,
     type: 'button',
     className: 'dab-super-ctrl',
     'data-action': action,
     'data-danger': danger === true ? 'true' : undefined,
+    'data-primary': primary === true ? 'true' : undefined,
     'aria-label': title,
     title,
     disabled: disabled === true,
@@ -45,7 +46,7 @@ function dabSuperControl(h, props) {
 
 function DabSuperOrchestratorBarImpl({
   workspace, totals, projects, orchestrators: orchestratorList, mode, open, onToggle, onSelect, compact,
-  superagent, mandate, capabilities, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions,
+  superagent, mandate, capabilities, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenProjects,
 }) {
   const h = React.createElement
   // Prefer the real, filter-independent orchestrator list from the hierarchy.
@@ -81,11 +82,15 @@ function DabSuperOrchestratorBarImpl({
   const layerTone = stoppedByOperator ? 'waiting' : (workspace?.status === 'active' ? 'running' : workspace?.status === 'blocked' ? 'failed' : 'idle')
 
   const canPause = facts.sessionActive === true && facts.paused !== true
-  const canResume = stoppedByOperator || facts.paused === true || (facts.sessionActive === false && facts.available === true)
-  const modelText = facts.modelText ?? (facts.available ? dabT('superModelUnavailable') : null)
+  const canResume = stoppedByOperator || facts.paused === true
+  const canStart = facts.sessionActive === false && !canResume
+  // No pinned model means the runtime uses the DSH default model (host contract).
+  const modelText = facts.modelText ?? (facts.available ? dabT('superModelHostDefault') : null)
+  const totalProjects = facts.totalProjects > 0 ? facts.totalProjects : projectCount
+  const needsProjects = facts.available && facts.enabledProjects === 0 && totalProjects > 0
   const levelText = facts.level === null ? dabT('superLevelUnavailable') : dabT('superLevel', { level: facts.level })
-  const projectsText = facts.totalProjects > 0
-    ? dabT('superProjectsEnabled', { enabled: facts.enabledProjects, total: facts.totalProjects })
+  const projectsText = totalProjects > 0
+    ? dabT('superProjectsEnabled', { enabled: facts.enabledProjects, total: totalProjects })
     : (facts.available ? dabT('superProjectsUnavailable') : null)
   const activityText = facts.activitySummary !== null
     ? facts.activitySummary
@@ -94,25 +99,28 @@ function DabSuperOrchestratorBarImpl({
   const controls = h('span', { className: 'dab-super-controls', role: 'group', 'aria-label': dabT('superControls') },
     // The start action is explicit when no session runs: the band never fakes
     // an active agent (contract §7).
-    facts.sessionActive === false
+    // Exactly one primary action for the current state: Start, Resume or Pause.
+    canResume
       ? dabSuperControl(h, {
-        key: 'start', action: 'start', label: `▶ ${dabT('superStartShort')}`, title: dabT('superStart'),
+        key: 'resume', action: 'resume', label: `▶ ${dabT('resume')}`, title: dabT('superResume'), primary: true, disabled: busy === true, onClick: onResume,
+      })
+      : null,
+    canStart
+      ? dabSuperControl(h, {
+        key: 'start', action: 'start', label: `▶ ${dabT('superStartShort')}`, title: dabT('superStart'), primary: true,
         disabled: busy === true, onClick: onStart,
       })
       : null,
-    dabSuperControl(h, {
-      key: 'pause', action: 'pause', label: `⏸ ${dabT('superPauseShort')}`, title: canPause ? dabT('superPause') : dabT('superPauseUnavailable'),
-      disabled: busy === true || canPause !== true, onClick: onPause,
-    }),
+    canPause
+      ? dabSuperControl(h, {
+        key: 'pause', action: 'pause', label: `⏸ ${dabT('superPauseShort')}`, title: dabT('superPause'),
+        disabled: busy === true, onClick: onPause,
+      })
+      : null,
     dabSuperControl(h, {
       key: 'stop', action: 'stop', label: `⏹ ${dabT('superStopShort')}`, title: dabT('superStop'), danger: true,
       disabled: busy === true, onClick: onStop,
     }),
-    canResume
-      ? dabSuperControl(h, {
-        key: 'resume', action: 'resume', label: `▶ ${dabT('resume')}`, title: dabT('superResume'), disabled: busy === true, onClick: onResume,
-      })
-      : null,
     onOpenSuperagent !== undefined && onOpenSuperagent !== null
       ? dabSuperControl(h, {
         key: 'details', action: 'details', label: dabT('superDetailsShort'), title: dabT('superDetailsOpen'),
@@ -173,7 +181,7 @@ function DabSuperOrchestratorBarImpl({
     h('span', { className: 'dab-super-ai-name' }, dabT('superAgent')),
     h('span', { className: 'dab-super-ai-sep', 'aria-hidden': 'true' }, ' · '),
     h('span', { className: 'dab-super-ai-state' }, dabT(facts.stateLabelKey))),
-  facts.available ? null : h('span', { className: 'dab-super-ai-reason' }, facts.stateReason ?? dabT('superUnavailableReason'))),
+  facts.available ? null : h('span', { className: 'dab-super-ai-reason', title: facts.stateReason ?? undefined }, facts.stateReason === null ? dabT('superUnavailableReason') : dabReasonText(facts.stateReason))),
 
   facts.available
     ? h('span', { className: 'dab-super-facts' },
@@ -197,6 +205,16 @@ function DabSuperOrchestratorBarImpl({
     : null,
 
   controls,
+
+  needsProjects
+    ? h('button', {
+      type: 'button',
+      className: 'dab-super-cta',
+      'data-cta': 'choose-projects',
+      title: dabT('superChooseProjectsHint'),
+      onClick: () => (onOpenProjects ?? onOpenSuperagent)?.(),
+    }, dabT('superChooseProjects'))
+    : null,
 
   // Mini orchestrator avatars: real agents only. A project without a declared
   // orchestrator is not rendered as a fake avatar.
@@ -242,6 +260,7 @@ const DabSuperOrchestratorBar = React.memo(DabSuperOrchestratorBarImpl, (a, b) =
   && a.onResume === b.onResume
   && a.onOpenSuperagent === b.onOpenSuperagent
   && a.onOpenDecisions === b.onOpenDecisions
+  && a.onOpenProjects === b.onOpenProjects
   && a.superagent === b.superagent
   && a.mandate === b.mandate
   && a.capabilities === b.capabilities

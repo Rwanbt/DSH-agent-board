@@ -125,7 +125,7 @@ function dabSaExtraNode(h, extra) {
 function dabSaReason(h, reason, className = 'dab-sa-unavailable') {
   return h('div', { className, role: 'note' },
     h('span', { className: 'dab-sa-unavailable-label' }, dabT('superNotAvailable')),
-    typeof reason === 'string' && reason !== '' ? h('span', { className: 'dab-sa-unavailable-reason' }, ` — ${reason}`) : null)
+    typeof reason === 'string' && reason !== '' ? h('span', { className: 'dab-sa-unavailable-reason', title: reason }, ` — ${dabReasonText(reason)}`) : null)
 }
 
 function dabSaSection(h, key, title, ...children) {
@@ -235,7 +235,7 @@ function DabSuperagentDecisions({ superagent, filter = 'decisions', onFilter, on
 }
 
 /** Vue d'ensemble: objective, steps, factual result, capabilities, incidents. */
-function DabSuperagentOverview({ superagent, mandate, capabilities, host, context, onOpenDetail, onAnswer, decisionFilter, onDecisionFilter, busy }) {
+function DabSuperagentOverview({ superagent, mandate, capabilities, host, context, workspace, onOpenDetail, onAnswer, decisionFilter, onDecisionFilter, busy }) {
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
   const plan = facts.plan ?? {}
@@ -245,7 +245,9 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
   const steps = dabSaBound([...activity].reverse(), 6)
   const lastCycle = facts.lastCycle
   const incidents = []
-  if (facts.runtime?.available === false && typeof facts.runtime.reason === 'string') incidents.push(`${dabT('superOverviewRuntime')} : ${facts.runtime.reason}`)
+  if (facts.runtime?.available === false && typeof facts.runtime.reason === 'string' && facts.runtime.reason !== 'not_started') {
+    incidents.push(`${dabT('superOverviewRuntime')} : ${dabReasonText(facts.runtime.reason)}`)
+  }
   if (lastCycle !== null && typeof lastCycle.outcome === 'string' && /refus|fail|error|blocked/i.test(lastCycle.outcome)) {
     incidents.push(`${lastCycle.outcome}${typeof lastCycle.reason === 'string' ? ` — ${lastCycle.reason}` : ''}`)
   }
@@ -264,7 +266,7 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
     dabSaSection(h, 'objective', dabT('superOverviewObjective'),
       objectives.length === 0
         ? (typeof plan.idleReason === 'string' && plan.idleReason !== ''
-          ? h('div', { className: 'dab-muted' }, `${dabT('superNoObjective')} — ${plan.idleReason}`)
+          ? h('div', { className: 'dab-muted', title: plan.idleReason }, plan.idleReason === 'not_started' ? dabT('superNoObjectiveYet') : `${dabT('superNoObjective')} — ${dabReasonText(plan.idleReason)}`)
           : dabSaReason(h, facts.available ? 'objective_not_published' : 'superagent_not_published'))
         : h('ul', { className: 'dab-sa-list' }, dabSaBound(objectives, 2).shown.map(objective => h('li', { key: String(objective.id) },
           h('span', { className: 'dab-sa-list-title' }, String(objective.title ?? objective.id)),
@@ -272,7 +274,7 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
           typeof objective.source === 'string' ? h('span', { className: 'dab-muted' }, ` · ${objective.source}`) : null)))),
     dabSaSection(h, 'steps', dabT('superOverviewSteps'),
       steps.shown.length === 0
-        ? dabSaReason(h, facts.available ? 'activity_not_published' : 'superagent_not_published')
+        ? (facts.available ? h('div', { className: 'dab-muted' }, dabReasonText('activity_not_published')) : dabSaReason(h, 'superagent_not_published'))
         : h('ol', { className: 'dab-sa-steps' }, steps.shown.map(entry => h('li', { key: `${entry.at}-${entry.kind}` },
           h('span', { className: 'dab-sa-step-time' }, dabSaMoment(entry.at) ?? ''), h('span', { className: 'dab-grow' }, String(entry.summary ?? entry.kind ?? '?')),
           typeof entry.kind === 'string' ? h('span', { className: 'dab-tag' }, entry.kind) : null))),
@@ -288,7 +290,9 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
           h('dt', null, dabT('superOverviewAt')), h('dd', null, dabSaMoment(lastCycle.at) ?? dabT('superNotAvailable')),
           h('dt', null, dabT('superOverviewDuration')), h('dd', null, `${Number(lastCycle.durationMs) || 0} ms`))),
     dabSaSection(h, 'capabilities', dabT('superOverviewCapabilities'),
-      dabCapabilityMatrix(h, capabilities, null, context)),
+      workspace !== null && workspace !== undefined && workspace.capabilities !== undefined
+        ? dabCapabilityMatrix(h, workspace.capabilities, workspace.capabilityReasons, context)
+        : dabCapabilityMatrix(h, capabilities, null, context)),
     dabSaSection(h, 'incidents', dabT('superOverviewIncidents'),
       incidents.length === 0
         ? h('div', { className: 'dab-muted' }, dabT('superNoIncidents'))
@@ -380,10 +384,12 @@ function DabSuperagentProjects({
             onChange: event => onSetProjectPriority?.(row.id, Number(event?.target?.value)),
           }))),
       h('div', { className: 'dab-sa-project-facts' },
-        h('span', { className: 'dab-sa-model' }, `${dabT('model')} : ${row.model === null ? dabT('superNotAvailable') : `${row.model.provider ?? '?'}/${row.model.model ?? '?'}`}`),
-        h('span', { className: 'dab-sa-budget' }, `${dabT('superProjectBudget')} : ${row.budget === null || row.budget.maxTasksPerHour === undefined ? dabT('superNotAvailable') : `${row.budget.maxTasksPerHour}/h`}`),
-        h('span', { className: 'dab-sa-source' }, `${dabT('superProjectSource')} : ${row.source ?? dabT('superNotAvailable')}`)),
-      row.reason === null ? null : h('div', { className: 'dab-sa-reason' }, `${dabT('superReason')} : ${row.reason}`))),
+        h('span', { className: 'dab-sa-model' }, `${dabT('model')} : ${row.model === null ? dabT('superModelInherited') : `${row.model.provider ?? '?'}/${row.model.model ?? '?'}`}`),
+        h('span', { className: 'dab-sa-budget' }, `${dabT('superProjectBudget')} : ${row.budget === null || row.budget.maxTasksPerHour === undefined ? dabT('superBudgetGlobal') : `${row.budget.maxTasksPerHour}/h`}`),
+        row.source === null || row.source === undefined ? null : h('span', { className: 'dab-sa-source' }, `${dabT('superProjectSource')} : ${row.source}`)),
+      // The "scope_none" reason is already said once by the scope line above;
+      // repeating it on every row was noise.
+      row.reason === null || row.reason === 'scope_none' ? null : h('div', { className: 'dab-sa-reason', title: row.reason }, dabReasonText(row.reason)))),
       dabSaExtraNode(h, bound.extra)),
     h('div', { className: 'dab-sa-dryrun-head' },
       h('button', {
@@ -553,7 +559,7 @@ function DabSuperagentSettings({
           h('dt', null, dabT('superBudgetTokens')), h('dd', null, budget.tokenBudget === null || budget.tokenBudget === undefined ? dabT('superUnavailableMetric') : String(budget.tokenBudget)),
           h('dt', null, dabT('superSettingsDelegation')), h('dd', null, `${Number(budget.concurrentAgents) || 0}/${Number(budget.maxConcurrentAgents) || 0}`))),
     dabSaSection(h, 'wake', dabT('superSettingsWake'),
-      facts.nextWakeAt === null
+      dabSaMoment(facts.nextWakeAt) === null
         ? h('div', { className: 'dab-muted' }, dabT('superWakeNever'))
         : h('div', { className: 'dab-sa-wake' }, `${dabT('superWakeAt')} : ${dabSaMoment(facts.nextWakeAt)}`)),
     dabSaSection(h, 'notifications', dabT('superSettingsNotifications'),
@@ -582,13 +588,13 @@ function DabSuperagentSettings({
           h('label', { className: 'dab-sa-check' },
             h('input', {
               type: 'checkbox', className: 'dab-sa-permission-toggle', checked: granted,
-              'aria-label': `${dabT(labelKey)}${reason === null ? '' : ` — ${reason}`}`,
+              'aria-label': `${dabT(labelKey)}${reason === null ? '' : ` — ${dabReasonText(reason)}`}`,
               onChange: event => onSetAction?.(action, event?.target?.checked === true),
             }),
             h('span', null, dabT(labelKey))),
           reason === null
             ? h('span', { className: 'dab-sa-permission-ok' }, dabT('superActionGranted'))
-            : h('span', { className: 'dab-sa-permission-reason' }, `${dabT('superReason')} : ${reason}`))
+            : h('span', { className: 'dab-sa-permission-reason', title: reason }, dabReasonText(reason)))
       })),
       h('div', { className: 'dab-muted' }, dabT('superPermissionsHint'))),
     dabSaSection(h, 'diagnostics', dabT('superSettingsDiagnostics'),
@@ -598,7 +604,7 @@ function DabSuperagentSettings({
     dabSaSection(h, 'taskboard', dabT('superSettingsTaskboard'),
       h('div', { className: 'dab-sa-connector' },
         h('span', { className: 'dab-sa-connector-state', 'data-reachable': connector?.reachable === true ? 'true' : 'false' }, connectorState),
-        connectorReason === null ? null : h('span', { className: 'dab-sa-connector-reason' }, `${dabT('superReason')} : ${connectorReason}`))),
+        connectorReason === null ? null : h('span', { className: 'dab-sa-connector-reason', title: connectorReason }, dabReasonText(connectorReason)))),
     h('div', { className: 'dab-sa-lifecycle' },
       h('button', { type: 'button', className: 'dab-btn dab-sa-stop', 'data-danger': 'true', disabled: busy === true, onClick: onStop }, dabT('superStop')),
       h('button', { type: 'button', className: 'dab-btn dab-sa-resume', disabled: busy === true, onClick: onResume }, dabT('resume'))))
@@ -608,12 +614,12 @@ function DabSuperagentSettings({
 function DabSuperagentInspector(props) {
   const h = React.createElement
   const {
-    superagent, mandate, capabilities, portfolio, host, context, dryRun, dryRunBusy, busy, narrow, taskboard, ui,
+    superagent, mandate, capabilities, portfolio, host, context, dryRun, dryRunBusy, busy, narrow, taskboard, ui, workspace, initialTab,
     onClose, onOpenDetail, onDryRun, onToggleProject, onSetProjectLevel, onSetProjectPriority, onConfirmAllProjects,
     onAddDirective, onRevokeDirective, onAnswerDecision, onSetLevel, onSetAction, onToggleNotifications, onStop, onResume,
   } = props
   const facts = dabSuperagentFacts(superagent, mandate, context)
-  const [tab, setTab] = React.useState('overview')
+  const [tab, setTab] = React.useState(typeof initialTab === 'string' ? initialTab : 'overview')
   const [decisionFilter, setDecisionFilter] = React.useState('decisions')
   const panelRef = React.useRef(null)
   const activeTab = DAB_SUPER_TABS.some(entry => entry[0] === tab) ? tab : 'overview'
@@ -671,7 +677,7 @@ function DabSuperagentInspector(props) {
           onSetLevel, onSetAction, onToggleNotifications, onStop, onResume,
         })
         : h(DabSuperagentOverview, {
-          superagent, mandate, capabilities, host, context, busy,
+          superagent, mandate, capabilities, host, context, busy, workspace,
           onOpenDetail, onAnswer: onAnswerDecision, decisionFilter, onDecisionFilter: setDecisionFilter,
         })
 
