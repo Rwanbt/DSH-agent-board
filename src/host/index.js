@@ -97,6 +97,7 @@ function defaultSuperAgentState(now = Date.now()) {
     nextWakeAt: null,
     minIntervalMs: 10 * 60 * 1000,
     dirty: false,
+    failureCount: 0,
     runtime: { available: false, reason: 'not_started', modelDiscovery: 'unavailable' },
   }
 }
@@ -127,6 +128,7 @@ function normalizeSuperAgentState(raw, { now = Date.now() } = {}) {
     nextWakeAt: Number.isFinite(Number(source.nextWakeAt)) ? Number(source.nextWakeAt) : null,
     minIntervalMs: Number.isFinite(Number(source.minIntervalMs)) ? Math.max(60_000, Number(source.minIntervalMs)) : defaults.minIntervalMs,
     dirty: source.dirty === true,
+    failureCount: Math.max(0, Math.min(8, Math.trunc(Number(source.failureCount) || 0))),
     runtime: source.runtime !== null && typeof source.runtime === 'object' ? { ...defaults.runtime, ...source.runtime } : defaults.runtime,
   }
 }
@@ -272,6 +274,9 @@ export function apply(ctx, config = {}) {
   let lastDryRun = null
   // One assessment at a time: the Super Agent session's turn/end resolves it.
   const superagentWaiter = { sessionId: null, text: '', resolve: null, startedAt: 0 }
+  // Overlapping wake-ups (timer + operator + event) coalesce into ONE cycle:
+  // two concurrent cycles would race the same waiter and could double-launch.
+  let superagentCycleInFlight = null
   const HOST_BUILD = Object.freeze({
     version: '0.2.0',
     schemaVersion: 2,
@@ -2604,6 +2609,10 @@ export function apply(ctx, config = {}) {
       budget: agent.budget,
       runtime: agent.runtime,
       lastCycle: agent.lastCycle,
+      nextWakeAt: agent.nextWakeAt ?? null,
+      minIntervalMs: agent.minIntervalMs,
+      dirty: agent.dirty === true,
+      failureCount: agent.failureCount ?? 0,
     }
   }
 
@@ -2738,7 +2747,7 @@ export function apply(ctx, config = {}) {
    * One assessment cycle: facts -> prompt -> validated assessment -> gate ->
    * authorized launches -> decisions -> memory. A refused proposal has no effect.
    */
-  async function runSuperAgentCycle(trigger = 'manual') {
+  async function runSuperAgentCycleNow(trigger = 'manual') {
     const agent = ensureSuperAgent()
     const now = Date.now()
     agent.budget = superagentBudgetTick(agent, now)
@@ -2812,6 +2821,7 @@ export function apply(ctx, config = {}) {
     if (!response.ok) {
       agent.identity.status = 'error'
       agent.identity.session.lastError = response.reason
+      noteSuperagentFailure(agent, response.reason)
       agent.lastCycle = { at: startedAt, trigger, outcome: 'error', reason: response.reason, proposals: 0, applied: 0, refused: 0, durationMs: Date.now() - startedAt }
       agent.activity = [...agent.activity, { at: startedAt, kind: 'cycle_error', summary: `cycle failed: ${response.reason}`, refs: [] }].slice(-60)
       audit({ type: 'superagent_cycle_failed', at: startedAt, trigger, reason: response.reason })
@@ -2822,6 +2832,7 @@ export function apply(ctx, config = {}) {
     const parsed = parseAssessment(response.text)
     if (!parsed.ok) {
       agent.identity.status = 'error'
+      noteSuperagentFailure(agent, parsed.reason)
       agent.lastCycle = { at: startedAt, trigger, outcome: 'invalid_assessment', reason: parsed.reason, proposals: 0, applied: 0, refused: 0, durationMs: Date.now() - startedAt }
       audit({ type: 'superagent_invalid_assessment', at: startedAt, reason: parsed.reason })
       touch()
@@ -2832,6 +2843,7 @@ export function apply(ctx, config = {}) {
     const validated = validateAssessment(parsed.assessment, { projectIds, actions: ACTIONS })
     if (!validated.ok) {
       agent.identity.status = 'error'
+      noteSuperagentFailure(agent, validated.errors.join(','))
       agent.lastCycle = { at: startedAt, trigger, outcome: 'invalid_assessment', reason: validated.errors.join(','), proposals: 0, applied: 0, refused: 0, durationMs: Date.now() - startedAt }
       audit({ type: 'superagent_invalid_assessment', at: startedAt, errors: validated.errors.slice(0, 5) })
       touch()
@@ -2954,10 +2966,32 @@ export function apply(ctx, config = {}) {
     }].slice(-60)
     agent.nextWakeAt = Date.now() + (agent.minIntervalMs ?? 10 * 60 * 1000)
     agent.dirty = false
+    agent.failureCount = 0
     audit({ type: 'superagent_cycle', at: startedAt, trigger, proposals: assessment.proposals.length, authorized: authorized.length, refused: refused.length, applied, decisions: created })
     touch()
     broadcast()
     return { ok: true, ran: true, assessment: { situation: assessment.situation, noopReason: assessment.noopReason }, authorized, refused, executed, decisions: created }
+  }
+
+  /** Coalescing wrapper: a cycle already running is returned, never duplicated. */
+  function runSuperAgentCycle(trigger = 'manual') {
+    if (superagentCycleInFlight !== null) return superagentCycleInFlight
+    superagentCycleInFlight = runSuperAgentCycleNow(trigger).finally(() => { superagentCycleInFlight = null })
+    return superagentCycleInFlight
+  }
+
+  /**
+   * A failed or unusable answer must NOT keep the scheduled loop awake forever:
+   * clear the dirty flag and back off exponentially until a new event, directive
+   * or manual request wakes the agent again.
+   */
+  function noteSuperagentFailure(agent, reason) {
+    agent.dirty = false
+    agent.failureCount = Math.min(8, Number(agent.failureCount ?? 0) + 1)
+    const backoff = Math.min(60 * 60 * 1000, 5 * 60 * 1000 * (2 ** agent.failureCount))
+    agent.nextWakeAt = Date.now() + backoff
+    agent.identity.session.lastError = truncate(reason, 200)
+    audit({ type: 'superagent_backoff', at: Date.now(), reason: truncate(reason, 120), failureCount: agent.failureCount, nextWakeAt: agent.nextWakeAt })
   }
 
   /**
