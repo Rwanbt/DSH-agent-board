@@ -226,6 +226,7 @@ export function buildAssessmentPrompt(input = {}) {
   lines.push('OUTPUT')
   lines.push(`Return ONE JSON object with schemaVersion=${ASSESSMENT_SCHEMA_VERSION}.`)
   lines.push('Use noopReason (non-empty) when there is nothing to do; never propose an action outside the mandate.')
+  lines.push('If two operator directives contradict each other in meaning, add directiveConflicts: [{summary, quotes:[two exact excerpts], projectId|null}] and follow the more restrictive one meanwhile.')
 
   const system = [
     'You are the Super Agent assessment engine for the DSH Agent Board.',
@@ -522,9 +523,30 @@ export function validateAssessment(value, options = {}) {
     }
   }
 
+  // Optional, semantic complement to the lexical conflict rule: the model may
+  // flag directives that contradict each other in meaning. It only ever
+  // becomes an arbitration question; it never changes a directive or a right.
+  const directiveConflicts = []
+  if (candidate.directiveConflicts !== undefined && candidate.directiveConflicts !== null) {
+    if (!Array.isArray(candidate.directiveConflicts)) {
+      errors.push('directive_conflicts_invalid')
+    } else {
+      for (const entry of candidate.directiveConflicts.slice(0, 3)) {
+        if (!isRecord(entry)) { errors.push('directive_conflict_invalid'); continue }
+        const summary = boundedText(entry.summary, MAX_SUMMARY)
+        const quotes = normalizeStringArray(entry.quotes, 4, 200)
+        if (summary === '' || quotes.length < 2) { errors.push('directive_conflict_invalid'); continue }
+        const project = validateProject(entry.projectId, projectIds)
+        if (!project.ok) { errors.push('directive_conflict_project_invalid'); continue }
+        directiveConflicts.push({ summary, quotes, projectId: project.projectId })
+      }
+    }
+  }
+
   if (errors.length > 0) return { ok: false, errors }
 
   const assessment = {
+    directiveConflicts,
     schemaVersion: ASSESSMENT_SCHEMA_VERSION,
     situation,
     findings,

@@ -3022,6 +3022,20 @@ export function apply(ctx, config = {}) {
     }
     let inbox = agent.decisions
     let created = 0
+    for (const conflict of assessment.directiveConflicts ?? []) {
+      const result = proposeDecision(inbox, {
+        kind: 'arbitration',
+        projectId: conflict.projectId,
+        title: 'Directives contradictoires',
+        context: `${conflict.summary}
+« ${conflict.quotes.join(' » / « ')} »`,
+        recommendation: "La directive la plus restrictive s'applique en attendant votre choix.",
+        provenance: 'superagent',
+        dedupeKey: `directive-conflict:${conflict.quotes.map(text => text.toLowerCase()).sort().join('|')}`.slice(0, 200),
+      }, { now: Date.now() })
+      inbox = result.inbox
+      if (result.duplicate !== true) created += 1
+    }
     for (const question of assessment.decisions) {
       const result = proposeDecision(inbox, {
         kind: question.kind,

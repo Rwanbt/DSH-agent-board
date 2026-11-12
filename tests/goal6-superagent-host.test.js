@@ -378,3 +378,35 @@ test('Super Agent: one repair round recovers an answer missing schemaVersion, st
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
+
+test('Super Agent: a semantic directive conflict becomes ONE arbitration decision, deduplicated', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dab-superagent-conflict-'))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  const restoreFetch = installFetch()
+  const host = await boot({ home })
+  try {
+    await callJson(host.routes, 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(host.routes, 'POST', '/superagent/model', { provider: 'fake-provider', model: 'fake-model' })
+    await callJson(host.routes, 'POST', '/superagent/start')
+    const reply = JSON.stringify(assessment({
+      proposals: [],
+      noopReason: 'attente arbitrage',
+      directiveConflicts: [{ summary: 'Vitesse contre prudence', quotes: ['Livre vite', 'Teste tout avant chaque PR'], projectId: null }],
+    }))
+    host.control.replyText = reply
+    const first = await callJson(host.routes, 'POST', '/superagent/cycle', { trigger: 'manual' })
+    assert.equal(first.status, 200, JSON.stringify(first.body))
+    await callJson(host.routes, 'POST', '/superagent/cycle', { trigger: 'manual' })
+    const pending = (await callJson(host.routes, 'GET', '/state')).body.value.superagent.decisions.pending
+    const conflicts = pending.filter(entry => entry.kind === 'arbitration' && /contradictoires/.test(entry.title))
+    assert.equal(conflicts.length, 1, JSON.stringify(pending))
+    assert.equal(host.created.filter(options => String(options.sessionId).startsWith('session-agentboard-')).length, 0, 'no effect')
+  } finally {
+    host.dispose()
+    restoreFetch()
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
