@@ -892,3 +892,13 @@ test('the card says when enabled projects cannot launch anything (permission off
   const fine = band({ mandate: granted, projectRows: cockpit.dabProjectPolicyRows(makeHost(), makeInactiveSuperagent(), granted), open: true })
   assert.equal(collect(fine, node => node.props?.['data-warning'] === 'launch').length, 0)
 })
+
+test('settings: reconcile notes are readable and the connector is read where /state publishes it', () => {
+  const nested = { ...makeHost(), taskboardPublic: undefined, reconcileNotes: [{ type: 'stale_lock_taken_over' }, { type: 'lock_lost', error: 'EPERM' }], host: { taskboardPublic: { configured: true, reachable: true, reason: null } } }
+  const tree = render(cockpit.DabSuperagentSettings({ superagent: makeInactiveSuperagent(), mandate: makeMandate(), host: nested, context: {}, ui: {}, taskboard: null }))
+  const text = textOf(tree)
+  assert.doesNotMatch(text, /\[object Object\]/)
+  assert.match(text, /stale lock taken over/)
+  assert.match(text, /lock lost — EPERM/)
+  assert.match(text, /Configured and reachable/)
+})

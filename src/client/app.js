@@ -550,7 +550,7 @@ function dabMakePage(store, ctx) {
         dryRunBusy,
         busy,
         narrow,
-        taskboard: host.taskboardPublic ?? null,
+        taskboard: host.host?.taskboardPublic ?? host.taskboardPublic ?? null,
         ui,
         workspace: hierarchy.workspace,
         initialTab: typeof superagentOpen === 'string' ? superagentOpen : 'overview',
