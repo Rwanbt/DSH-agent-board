@@ -168,10 +168,28 @@ export class StateStore {
       }
       parsed = null
     }
-    if (parsed === null || typeof parsed !== 'object' || !SUPPORTED_SCHEMA_VERSIONS.has(Number(parsed.schemaVersion))) {
+    if (parsed === null || typeof parsed !== 'object') {
       // A fresh document always carries a schema version: the caller's when it
       // declares one (v2 for the mandate), otherwise the legacy 1 — never a
       // silently version-less document that a later build would treat as foreign.
+      const declared = Number(defaults?.schemaVersion)
+      const initial = { ...defaults, schemaVersion: Number.isFinite(declared) && declared > 0 ? declared : 1 }
+      if (write) await this.write(initial)
+      return initial
+    }
+    if (!SUPPORTED_SCHEMA_VERSIONS.has(Number(parsed.schemaVersion))) {
+      // A document from an UNKNOWN version is someone else's data (a newer
+      // build). Never overwrite it with defaults: set it aside as evidence so
+      // the operator can roll back/upgrade deliberately.
+      this.lastFailure = `state.json schemaVersion ${String(parsed.schemaVersion)} unsupported; preserved`
+      if (write) {
+        try {
+          await rename(this.statePath, `${this.statePath}.unsupported-${this.now()}`)
+        } catch {
+          /* the rename is best-effort; the file is still not overwritten below */
+          throw new Error(`state.json schemaVersion ${String(parsed.schemaVersion)} is unsupported (refusing to overwrite)`)
+        }
+      }
       const declared = Number(defaults?.schemaVersion)
       const initial = { ...defaults, schemaVersion: Number.isFinite(declared) && declared > 0 ? declared : 1 }
       if (write) await this.write(initial)

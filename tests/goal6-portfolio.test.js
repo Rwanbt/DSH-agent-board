@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { normalizeMandate } from '../src/contracts/mandate.js'
+import { normalizePolicy, MODES } from '../src/contracts/model.js'
+import { selectDispatchable } from '../src/orchestrator/dag.js'
 import { buildPortfolio, publicPortfolioOf } from '../src/plan/portfolio.js'
 import { fairOrder, nextPlanActions } from '../src/plan/scheduler.js'
 
@@ -142,4 +144,24 @@ test('deterministic: same inputs produce the same plan', () => {
   const first = nextPlanActions({ portfolio, maxActions: 3, maxConcurrent: 3, now: NOW })
   const second = nextPlanActions({ portfolio: structuredClone(portfolio), maxActions: 3, maxConcurrent: 3, now: NOW })
   assert.deepEqual(first, second)
+})
+
+test('dispatch interleaves projects: a high-priority project cannot take every slot', () => {
+  const tasks = [
+    { id: 'a1', workspaceId: 'p1', status: 'todo', urgency: 'urgent' },
+    { id: 'a2', workspaceId: 'p1', status: 'todo', urgency: 'urgent' },
+    { id: 'a3', workspaceId: 'p1', status: 'todo', urgency: 'urgent' },
+    { id: 'a4', workspaceId: 'p1', status: 'todo', urgency: 'urgent' },
+    { id: 'b1', workspaceId: 'p2', status: 'todo', urgency: 'relaxed' },
+  ]
+  const plan = selectDispatchable({
+    tasks,
+    assignments: [],
+    proposals: [],
+    policy: normalizePolicy({ mode: MODES.AUTONOMOUS, maxConcurrent: 2 }),
+    now: NOW,
+    projectOrder: ['p1', 'p2'],
+  })
+  assert.deepEqual(plan.actions.map(action => action.task?.workspaceId), ['p1', 'p2'],
+    'the second slot must go to the next project, not to the same one')
 })

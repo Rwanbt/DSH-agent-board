@@ -628,7 +628,9 @@ const DAB_ACTION_ROWS = Object.freeze([
 ])
 const DAB_CRITICAL_ACTIONS = Object.freeze(['merge', 'protected_branch_write', 'delete_task', 'secrets', 'policy_change'])
 const DAB_ACTION_MIN_LEVEL = Object.freeze({
-  comment: 'L3', create_task: 'L3', update_task: 'L3', launch: 'L3', delegate: 'L4',
+  // `launch` is possible from L2, but only after a valid human approval; the
+  // helper below therefore returns `approval_required` below L3.
+  comment: 'L3', create_task: 'L3', update_task: 'L3', launch: 'L2', delegate: 'L4',
   schedule: 'L3', push_branch: 'L3', open_pr: 'L4', merge: 'L4', protected_branch_write: 'L4',
   delete_task: 'L4', secrets: 'L4', policy_change: 'L4',
 })
@@ -640,12 +642,24 @@ function dabActionRefusalReason({ action, mandate, context = {} }) {
   if (context?.mode === 'off') return 'mode_off'
   if (context?.paused === true) return 'paused_by_operator'
   if (context?.requiresConfiguration === true) return 'requires_configuration'
+  // The scope is a refusal reason of its own: a granted action in `scopeMode:
+  // none` is NOT "Autorisée" (the server would answer scope_none).
+  const scopeMode = typeof mandate?.scopeMode === 'string' ? mandate.scopeMode : 'none'
+  if (scopeMode === 'none') return 'scope_none'
+  const projectId = typeof context?.projectId === 'string' ? context.projectId : null
+  if (scopeMode === 'selected' && projectId !== null) {
+    const selected = Array.isArray(mandate?.selectedWorkspaces) ? mandate.selectedWorkspaces : []
+    if (!selected.includes(projectId)) return 'project_not_selected'
+  }
+  if (context?.projectEnabled === false) return 'project_disabled'
   const rank = value => DAB_AUTONOMY_LEVELS.indexOf(value)
   const required = DAB_ACTION_MIN_LEVEL[action] ?? 'L4'
   if (actions[action] !== true) {
     return DAB_CRITICAL_ACTIONS.includes(action) ? 'critical_action_not_granted' : 'action_disabled'
   }
   if (rank(level) < rank(required)) return 'level_too_low'
+  // L2 executes a prepared action only after a human decision.
+  if (rank(level) < rank('L3')) return 'approval_required'
   return null
 }
 

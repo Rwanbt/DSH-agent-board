@@ -646,8 +646,12 @@ test('settings show model discovery, refusal reasons per action, connector and l
   // Per-action reasons follow the effective mandate, not a static map.
   assert.equal(cockpit.dabActionRefusalReason({ action: 'comment', mandate: makeMandate(), context: { mode: 'supervised', level: 'L1' } }), 'action_disabled')
   assert.equal(cockpit.dabActionRefusalReason({ action: 'merge', mandate: makeMandate(), context: { mode: 'supervised', level: 'L4' } }), 'critical_action_not_granted')
-  assert.equal(cockpit.dabActionRefusalReason({ action: 'launch', mandate: makeMandate({ actions: { launch: true } }), context: { mode: 'supervised', level: 'L2' } }), 'level_too_low')
+  assert.equal(cockpit.dabActionRefusalReason({ action: 'launch', mandate: makeMandate({ actions: { launch: true } }), context: { mode: 'supervised', level: 'L2' } }), 'approval_required')
   assert.equal(cockpit.dabActionRefusalReason({ action: 'launch', mandate: makeMandate({ actions: { launch: true } }), context: { mode: 'supervised', level: 'L3' } }), null)
+  // The scope is part of the refusal: a granted action outside the scope is not authorised.
+  assert.equal(cockpit.dabActionRefusalReason({ action: 'launch', mandate: makeMandate({ actions: { launch: true }, scopeMode: 'none' }), context: { mode: 'supervised', level: 'L3' } }), 'scope_none')
+  assert.equal(cockpit.dabActionRefusalReason({ action: 'launch', mandate: makeMandate({ actions: { launch: true } }), context: { mode: 'supervised', level: 'L3', projectId: 'ws:other' } }), 'project_not_selected')
+  assert.equal(cockpit.dabActionRefusalReason({ action: 'launch', mandate: makeMandate({ actions: { launch: true } }), context: { mode: 'supervised', level: 'L3', projectId: 'ws:a', projectEnabled: false } }), 'project_disabled')
   assert.equal(cockpit.dabActionRefusalReason({ action: 'launch', mandate: makeMandate(), context: { mode: 'off' } }), 'mode_off')
 
   // Task Board connector: unconfigured is explicit, with the host reason.

@@ -9,13 +9,14 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, readdir, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 
 import { apply } from '../src/host/index.js'
+import { StateStore } from '../src/orchestrator/journal.js'
 import { TEST_MANDATE } from './goal6-helpers.js'
 
 const TASK = {
@@ -276,9 +277,13 @@ test('dry-run writes nothing: no session, no tick, no ledger mutation', async ()
 test('capabilities are truthful in OFF and after a Stop', async () => {
   await withHost({ mandate: TEST_MANDATE }, async ({ routes }) => {
     const off = (await callJson(routes, 'GET', '/state')).body.value
+    // No adapter exists for these actions at all, so the reason is structural,
+    // not a temporary mode refusal: nothing pretends they are available.
     assert.equal(off.capabilities.delegate.state, 'unavailable')
-    assert.equal(off.capabilities.delegate.reason, 'mode_off')
-    assert.equal(off.capabilities.open_pr.reason, 'mode_off')
+    assert.equal(off.capabilities.delegate.reason, 'no_adapter_for_action')
+    assert.equal(off.capabilities.open_pr.reason, 'no_adapter_for_action')
+    assert.equal(off.capabilities.create_task.reason, 'no_adapter_for_action')
+    assert.equal(off.capabilities.launch.reason, 'mode_off')
 
     await callJson(routes, 'POST', '/mode', { mode: 'autonomous' })
     const running = (await callJson(routes, 'GET', '/state')).body.value
@@ -352,4 +357,144 @@ test('model discovery is honest when the host has no llm service', async () => {
     assert.equal(state.host.models.reason, 'llm_service_unavailable')
     assert.deepEqual(state.host.models.providers, [])
   })
+})
+
+test('a handoff/retry obeys the NEW mandate: removing the project suppresses it', async () => {
+  await withHost({ mandate: TEST_MANDATE }, async ({ routes, created, listeners }) => {
+    await callJson(routes, 'POST', '/policy', {
+      policy: {
+        mode: 'autonomous',
+        routeChain: [{ provider: 'primary', model: 'big' }, { provider: 'backup', model: 'medium' }],
+        maxRetries: 0,
+        maxSwitches: 2,
+        maxConcurrent: 2,
+      },
+    })
+    await callJson(routes, 'POST', '/mode', { mode: 'autonomous' })
+    const tick = await callJson(routes, 'POST', '/tick', {})
+    assert.equal(tick.body.actions.length, 1, JSON.stringify(tick.body))
+    const sessionId = created[0].sessionId
+    assert.ok(sessionId)
+
+    // The operator removes w1 from the mandate while the run is active.
+    const scoped = await callJson(routes, 'POST', '/mandate/scope', { scopeMode: 'selected', selectedWorkspaces: ['w2'] })
+    assert.equal(scoped.status, 200, JSON.stringify(scoped.body))
+
+    const listener = listeners.get('session/event')
+    listener({ id: sessionId }, { type: 'assistant/message', time: Date.now(), data: { message: { content: [{ type: 'text', text: 'partial' }] } } })
+    listener({ id: sessionId }, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'error', error: { message: '503 service unavailable' } } } })
+    await new Promise(resolve => setTimeout(resolve, 120))
+
+    assert.equal(created.length, 1, 'the handoff must pass through the new mandate gate')
+    const state = (await callJson(routes, 'GET', '/state')).body.value
+    assert.match(state.assignments[0].error, /handoff_suppressed:project_not_selected/, JSON.stringify(state.assignments[0]))
+    assert.ok(state.audit.some(entry => entry.type === 'handoff_suppressed' && entry.reason === 'project_not_selected'))
+  })
+})
+
+test('a decision approval authorizes ONE launch, then is consumed', async () => {
+  const now = Date.now()
+  const approval = {
+    id: 'dec-1',
+    kind: 'approval',
+    projectId: 'w1',
+    title: 'Approuver le lancement de t-gate-1',
+    context: 'La tâche est prête et le mandat est en L2.',
+    action: 'launch',
+    taskIds: ['t-gate-1'],
+    options: [{ id: 'approve', label: 'Approuver', effect: 'approve' }, { id: 'reject', label: 'Refuser', effect: 'reject' }],
+    recommendation: 'Approuver',
+    urgency: 'normal',
+    status: 'answered',
+    createdAt: now - 10_000,
+    answeredAt: now - 5_000,
+    answer: { optionId: 'approve', by: 'operator', at: now - 5_000 },
+    expiresAt: now + 3_600_000,
+    provenance: 'superagent',
+    fingerprint: 'fp-approval-1',
+    dedupeKey: 'fp-approval-1',
+    askedCount: 1,
+  }
+  await withHost({
+    stateDocument: {
+      schemaVersion: 2,
+      mode: 'autonomous',
+      stoppedAt: null,
+      policy: { mode: 'autonomous', maxConcurrent: 2, maxRetries: 0, retryCooldownMs: 0, maxAttemptsPerRevision: 9 },
+      mandate: {
+        version: 2,
+        scopeMode: 'selected',
+        selectedWorkspaces: ['w1'],
+        level: 'L2',
+        actions: { launch: true },
+        projects: { w1: { enabled: true, budget: { maxTasksPerHour: 20 } } },
+        requiresConfiguration: false,
+      },
+      superagent: { identity: { agentId: 'super-agent-test', createdAt: now - 60_000, level: 'L2' }, decisions: [approval] },
+      assignments: [],
+    },
+  }, async ({ routes, created, listeners }) => {
+    await callJson(routes, 'POST', '/resume', {})
+    const first = await callJson(routes, 'POST', '/tick', {})
+    assert.equal(first.body.actions.length, 1, JSON.stringify(first.body))
+    assert.equal(created.length, 1, 'the approval authorizes the first launch')
+
+    // The session ends without moving the card (visible in the real E2E): the
+    // card is still todo, so the next tick would relaunch it — and must NOT,
+    // because the approval was consumed.
+    listeners.get('session/event')({ id: created[0].sessionId }, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed' } } })
+    await new Promise(resolve => setTimeout(resolve, 60))
+
+    const second = await callJson(routes, 'POST', '/tick', {})
+    assert.equal(created.length, 1, 'the SAME approval must not authorize a second launch')
+    assert.equal(second.body.actions.length, 1, JSON.stringify(second.body))
+    assert.equal(second.body.actions[0].ok, false)
+    assert.equal(second.body.actions[0].reason, 'approval_required', JSON.stringify(second.body))
+    const state = (await callJson(routes, 'GET', '/state')).body.value
+    assert.equal(typeof state.superagent.decisions.recent[0].usedAt, 'number', 'the consumed marker survives a cycle/normalization')
+  })
+})
+
+test('project model and hourly budget are effective, not decorative', async () => {
+  const secondTask = { ...TASK, id: 't-gate-2', title: 'Deuxième tâche' }
+  await withHost({
+    mandate: {
+      ...TEST_MANDATE,
+      projects: { w1: { enabled: true, level: 'L4', budget: { maxTasksPerHour: 1 }, model: { provider: 'primary', model: 'project-model' } } },
+    },
+    tasks: [TASK, secondTask],
+  }, async ({ routes, created }) => {
+    await callJson(routes, 'POST', '/mode', { mode: 'autonomous' })
+    const tick = await callJson(routes, 'POST', '/tick', {})
+    assert.equal(created.length, 1, 'the per-project hourly budget allows exactly one launch')
+    assert.equal(tick.body.actions.length, 2)
+    assert.equal(tick.body.actions[0].ok, true)
+    assert.equal(tick.body.actions[1].ok, false)
+    assert.equal(tick.body.actions[1].reason, 'project_budget_exhausted')
+    assert.equal(created[0].agentOptions.model, 'project-model', 'the project model is used for the session')
+    assert.equal(created[0].agentOptions.provider, 'primary')
+  })
+})
+
+test('an unknown state schemaVersion is preserved, never overwritten with defaults', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dab-schema-v3-'))
+  const previousHome = process.env.DSH_HOME
+  try {
+    await mkdir(join(dir, 'agent-board'), { recursive: true })
+    const original = { schemaVersion: 3, sentinel: 'KEEP-ME', mode: 'autonomous' }
+    await writeFile(join(dir, 'agent-board', 'state.json'), JSON.stringify(original), 'utf8')
+    const store = new StateStore({ dir: join(dir, 'agent-board'), now: () => 4242 })
+    const initial = await store.init({ schemaVersion: 2, mode: 'off', mandate: null })
+    assert.equal(initial.mode, 'off', 'the host runs on defaults')
+    const files = await readdir(join(dir, 'agent-board'))
+    const preserved = files.find(name => name.startsWith('state.json.unsupported-'))
+    assert.ok(preserved !== undefined, `the unknown document must be set aside, got ${files.join(',')}`)
+    const kept = JSON.parse(await readFile(join(dir, 'agent-board', preserved), 'utf8'))
+    assert.equal(kept.sentinel, 'KEEP-ME')
+    assert.equal(kept.schemaVersion, 3)
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
 })
