@@ -114,8 +114,13 @@ safely (no effect) — that is a known P1 (see `GOAL6-DELIVERY.md` §10).
 ```powershell
 # stop DSH, then:
 Copy-Item "$env:USERPROFILE\.dsh\agent-board\state.json" "state.backup.json"
-# reinstall the previous version, restore the backup if it is a v1 document,
-# start DSH: a v1 state is migrated again (tested by E2E m0–m3)
+# reinstall the previous version, then RESTORE the v1 document:
+Copy-Item "$env:USERPROFILE\.dsh\agent-board\state.json.v1-backup" `
+          "$env:USERPROFILE\.dsh\agent-board\state.json" -Force
+# start DSH
 ```
 
-The Task Board ledger is never touched by an Agent Board rollback.
+The host wrote `state.json.v1-backup` automatically before migrating. Restoring
+it is **mandatory**: the previous release cannot read schemaVersion 2 and would
+overwrite it with defaults (verified). The Task Board ledger is never touched by
+an Agent Board rollback.

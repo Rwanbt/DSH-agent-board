@@ -1,13 +1,13 @@
 # GOAL 3 E2E — isolated real DSH host + fake OpenAI-compatible provider + fake Task Board
 
 - Date: 2026-11-12
-- Started: 2026-11-12T08:58:00.569Z
-- Verdict: **PASS** (33/33 assertions passed, 4 scenario(s) executed)
+- Started: 2026-11-12T09:07:52.158Z
+- Verdict: **PASS** (34/34 assertions passed, 4 scenario(s) executed)
 - DSH CLI: `C:\Users\barat\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd` (0.2.2-rc.1)
 - Disposable `DSH_HOME`: `C:\Users\barat\AppData\Local\Temp\dsh-e2e-home-goal3`
 - Profile: `e2e` (created from the shipped `web` template, plugin installed with `link:D:/App/DSH-agent-board`)
-- Model provider: **simulated** OpenAI-compatible server on `127.0.0.1` (port 62856 primary, 62857 backup)
-- Task Board: **simulated** ledger on `127.0.0.1:62858` — every response carries `x-simulated-taskboard: true`
+- Model provider: **simulated** OpenAI-compatible server on `127.0.0.1` (port 53115 primary, 53116 backup)
+- Task Board: **simulated** ledger on `127.0.0.1:53117` — every response carries `x-simulated-taskboard: true`
 - Credentials: **none**. The provider route uses an invented environment value; the desktop profile was never read or written.
 
 ## Commands actually run
@@ -45,9 +45,9 @@ GET  /dsh-agent-board/api/v2/events   (SSE)
 
 ### a-contract-model-turn — Autonomous tick leases a canonical execution, runs a real session turn on the fake provider, attaches, settles to in_review
 
-- Contract: `{"version":1,"ok":true,"writes":true,"degraded":false,"absent":false,"simulated":true,"reason":"contract_ok","features":["execution.lease","execution.attach","execution.report","execution.release","execution.settle","execution.fencing","execution.idempotency","execution.reroute"],"missing":[],"missingWrite":[],"at":1794473884356}`
-- Tick: `[{"kind":"launch","taskId":"tb-e2e-contract","ok":true,"assignmentId":"asg-838d0769-b009-4cdc-a1b5-79c60df1ed1c","sessionId":"session-agentboard-925b5e44-68ca-408f-8242-0968ac5ea8ba","executionId":"exec-1","leaseId":"lease-1"}]`
-- Session: `session-agentboard-925b5e44-68ca-408f-8242-0968ac5ea8ba` — `turnEnd`: `{"at":1794473884611,"kind":"completed","error":null}`
+- Contract: `{"version":1,"ok":true,"writes":true,"degraded":false,"absent":false,"simulated":true,"reason":"contract_ok","features":["execution.lease","execution.attach","execution.report","execution.release","execution.settle","execution.fencing","execution.idempotency","execution.reroute"],"missing":[],"missingWrite":[],"at":1794474475951}`
+- Tick: `[{"kind":"launch","taskId":"tb-e2e-contract","ok":true,"assignmentId":"asg-33686cec-643a-4162-bcf9-36dad2f6207b","sessionId":"session-agentboard-8e452308-3b72-45dc-a24f-f59a6e87fef3","executionId":"exec-1","leaseId":"lease-1"}]`
+- Session: `session-agentboard-8e452308-3b72-45dc-a24f-f59a6e87fef3` — `turnEnd`: `{"at":1794474476356,"kind":"completed","error":null}`
 - Fake provider requests: `[{"seq":1,"status":200,"chunks":6,"model":"e2e-fake-gpt"}]`
 - Assignment: `status=done`, `backend=contract`, `leaseId=lease-1`, `executionId=exec-1`
 - Simulated Task Board calls (by the REAL product): `["POST /dsh-taskboard/tasks/tb-e2e-contract/executions/lease","POST /dsh-taskboard/executions/lease-1/attach","POST /dsh-taskboard/executions/lease-1/settle"]`
@@ -61,8 +61,8 @@ data: {"schemaVersion":2,"mode":"autonomous","stoppedAt":null,"policy":{"mode":"
 
 ### b-contract-failover — A scripted 429 on the primary provider makes the board release attempt 1 and lease a SECOND execution with previousExecutionId on the backup route
 
-- Tick: `[{"kind":"launch","taskId":"tb-e2e-failover","ok":true,"assignmentId":"asg-65176586-2749-40bb-9ca5-22ae7b18ccfc","sessionId":"session-agentboard-eb43afff-8cfa-48bd-adb9-d86c5d11504a","executionId":"exec-2","leaseId":"lease-2"}]`
-- `routeEvents`: `[{"at":1794473896442,"taskId":"tb-e2e-failover","assignmentId":"asg-65176586-2749-40bb-9ca5-22ae7b18ccfc","from":"e2e-primary/e2e-fake-gpt","to":"e2e-backup/e2e-fake-backup-gpt","action":"switch","reason":"switch_after_rate_limit","kind":"rate_limit"}]`
+- Tick: `[{"kind":"launch","taskId":"tb-e2e-failover","ok":true,"assignmentId":"asg-86f65ce4-d2ae-41d9-874f-972b95bbfc26","sessionId":"session-agentboard-d37be6e2-b2a5-4219-b255-5dd43d090509","executionId":"exec-2","leaseId":"lease-2"}]`
+- `routeEvents`: `[{"at":1794474488011,"taskId":"tb-e2e-failover","assignmentId":"asg-86f65ce4-d2ae-41d9-874f-972b95bbfc26","from":"e2e-primary/e2e-fake-gpt","to":"e2e-backup/e2e-fake-backup-gpt","action":"switch","reason":"switch_after_rate_limit","kind":"rate_limit"}]`
 - Primary provider: 1 × 429, 0 × 200.
 - Backup provider: 1 × 200.
 - Assignments: `[{"attempt":0,"status":"superseded","provider":"e2e-primary","leaseId":"lease-2","executionId":"exec-2","history":[]},{"attempt":1,"status":"done","provider":"e2e-backup","leaseId":"lease-3","executionId":"exec-3","history":["rate_limit"]}]`
@@ -87,6 +87,7 @@ data: {"schemaVersion":2,"mode":"autonomous","stoppedAt":null,"policy":{"mode":"
 - ✅ **m1. the migrated mandate is restrictive (scope none, L0, unconfirmed)** — 
 - ✅ **m2. the migration is audited as mandate_migrated** — 
 - ✅ **m3. the migrated installation stays inert (mode off, no assignment)** — {"mode":"off","assignments":0}
+- ✅ **m4. the pre-upgrade document is preserved for rollback** — {"exists":true,"schemaVersion":1}
 - ✅ **0. the fake OpenAI-compatible provider answers GET /v1/models** — {"status":200,"models":["e2e-fake-gpt"]}
 - ✅ **0a. an unconfirmed mandate refuses every launch even in autonomous mode** — {"reason":"requires_configuration","actions":[]}
 - ✅ **0b. the refused tick created no session and no assignment** — {"before":0,"after":0}
@@ -96,18 +97,18 @@ data: {"schemaVersion":2,"mode":"autonomous","stoppedAt":null,"policy":{"mode":"
 - ✅ **0f. "all projects" without the explicit confirmation is refused** — {"status":409,"error":"all_scope_requires_confirmation"}
 - ✅ **0g. after the explicit grant the launch capability becomes available** — {"state":"available","reason":"allowed","source":"mandate"}
 - ✅ **0h. the grant is audited and cleared the configuration gate** — {"requiresConfiguration":false}
-- ✅ **a1. the execution contract negotiated with writes=true** — {"version":1,"ok":true,"writes":true,"degraded":false,"absent":false,"simulated":true,"reason":"contract_ok","features":["execution.lease","execution.attach","execution.report","execution.release","execution.settle","execution.fencing","execution.idempotency","execution.reroute"],"missing":[],"missingWrite":[],"at":1794473884356}
-- ✅ **a2. POST /tick launched a real board session on the contract backend** — {"action":{"kind":"launch","taskId":"tb-e2e-contract","ok":true,"assignmentId":"asg-838d0769-b009-4cdc-a1b5-79c60df1ed1c","sessionId":"session-agentboard-925b5e44-68ca-408f-8242-0968ac5ea8ba","executionId":"exec-1","leaseId":"lease-1"},"backend":"contract","sessionId":"session-agentboard-925b5e44-68ca-408f-8242-0968ac5ea8ba"}
-- ✅ **a3. the model turn completed on the fake provider** — {"turnEnd":{"at":1794473884611,"kind":"completed","error":null},"primary":[{"status":200,"chunks":6}]}
+- ✅ **a1. the execution contract negotiated with writes=true** — {"version":1,"ok":true,"writes":true,"degraded":false,"absent":false,"simulated":true,"reason":"contract_ok","features":["execution.lease","execution.attach","execution.report","execution.release","execution.settle","execution.fencing","execution.idempotency","execution.reroute"],"missing":[],"missingWrite":[],"at":1794474475951}
+- ✅ **a2. POST /tick launched a real board session on the contract backend** — {"action":{"kind":"launch","taskId":"tb-e2e-contract","ok":true,"assignmentId":"asg-33686cec-643a-4162-bcf9-36dad2f6207b","sessionId":"session-agentboard-8e452308-3b72-45dc-a24f-f59a6e87fef3","executionId":"exec-1","leaseId":"lease-1"},"backend":"contract","sessionId":"session-agentboard-8e452308-3b72-45dc-a24f-f59a6e87fef3"}
+- ✅ **a3. the model turn completed on the fake provider** — {"turnEnd":{"at":1794474476356,"kind":"completed","error":null},"primary":[{"status":200,"chunks":6}]}
 - ✅ **a4. the simulated Task Board received lease -> attach -> settle** — [{"method":"POST","path":"/dsh-taskboard/tasks/tb-e2e-contract/executions/lease","status":"accepted"},{"method":"POST","path":"/dsh-taskboard/executions/lease-1/attach","status":"accepted"},{"method":"POST","path":"/dsh-taskboard/executions/lease-1/settle","status":"accepted"}]
 - ✅ **a5. the settled execution is in_review with a report and is NEVER done** — {"status":"in_review","executions":[{"id":"exec-1","outcome":"succeeded","hasReport":true,"previousExecutionId":null}]}
 - ✅ **a6. the board audit recorded contract settlement** — ["delegation_allowed","launch","tick","mode_changed","turn_done","contract_settled"]
 - ✅ **a7. SSE /events delivered a named state frame** — {"frames":3,"named":3,"error":null,"sample":"event: state\ndata: {\"schemaVersion\":2,\"mode\":\"autonomous\",\"stoppedAt\":null,\"policy\":{\"mode\":\"autonomous\",\"maxConcurrent\":2,\"maxRetries\":2,\"maxSwitches\":2,\"proposalTtlMs\":1800000,\"leaseTtlMs\":600000,\"retryCooldownMs\":300000,\"max
 - ✅ **b1. the scripted 429 was classified as rate_limit and routed to a switch** — {"primarySaw429":true,"routeEvents":["switch:rate_limit"]}
-- ✅ **b2. the board switched to the backup provider route** — {"at":1794473896442,"taskId":"tb-e2e-failover","assignmentId":"asg-65176586-2749-40bb-9ca5-22ae7b18ccfc","from":"e2e-primary/e2e-fake-gpt","to":"e2e-backup/e2e-fake-backup-gpt","action":"switch","reason":"switch_after_rate_limit","kind":"rate_limit"}
+- ✅ **b2. the board switched to the backup provider route** — {"at":1794474488011,"taskId":"tb-e2e-failover","assignmentId":"asg-86f65ce4-d2ae-41d9-874f-972b95bbfc26","from":"e2e-primary/e2e-fake-gpt","to":"e2e-backup/e2e-fake-backup-gpt","action":"switch","reason":"switch_after_rate_limit","kind":"rate_limit"}
 - ✅ **b3. attempt 1 execution was released and executed on the primary provider** — {"sawRelease":true,"first":{"id":"exec-2","outcome":"cancelled","route":{"provider":"e2e-primary","model":"e2e-fake-gpt"}}}
 - ✅ **b4. a SECOND canonical execution carries previousExecutionId** — {"executions":[{"id":"exec-2","previousExecutionId":null,"outcome":"cancelled","route":"e2e-primary"},{"id":"exec-3","previousExecutionId":"exec-2","outcome":"succeeded","route":"e2e-backup"}]}
-- ✅ **b5. the second session ran on the backup route and completed** — {"backupTurnEnd":{"at":1794473896643,"kind":"completed","error":null},"backup200":true}
+- ✅ **b5. the second session ran on the backup route and completed** — {"backupTurnEnd":{"at":1794474488306,"kind":"completed","error":null},"backup200":true}
 - ✅ **b6. the card ended in_review with the second execution report, never done** — {"status":"in_review","second":{"outcome":"succeeded","hasReport":true}}
 - ✅ **b7. audit recorded release/handoff/settle** — ["launch","route_decision","contract_released","handoff","turn_done","contract_settled"]
 - ✅ **c1. the highest-priority project (A) is served first** — 
@@ -131,11 +132,11 @@ data: {"schemaVersion":2,"mode":"autonomous","stoppedAt":null,"policy":{"mode":"
 
 ```text
 GET  /dsh-taskboard/contract           -> HTTP 200 advertised ["execution.lease","execution.attach","execution.report","execution.release","execution.settle","execution.fencing","execution.idempotency","execution.reroute"]
-POST /tasks/tb-e2e-contract-direct/executions/lease -> HTTP 202 {"leaseId":"lease-4","executionId":"exec-4","taskId":"tb-e2e-contract-direct","taskVersion":2,"route":null,"attempt":1,"fence":4,"expiresAt":1794474020762,"state":"leased"}
+POST /tasks/tb-e2e-contract-direct/executions/lease -> HTTP 202 {"leaseId":"lease-4","executionId":"exec-4","taskId":"tb-e2e-contract-direct","taskVersion":2,"route":null,"attempt":1,"fence":4,"expiresAt":1794474612096,"state":"leased"}
 POST lease replay (same key)           -> HTTP 200 (idempotent, same lease)
 POST lease (different key)             -> HTTP 409 {"code":"lease_conflict","message":"task tb-e2e-contract-direct already has an active lease (lease-4)","leaseId":"lease-4","fence":4}
-POST attach                            -> HTTP 200 {"leaseId":"lease-4","sessionId":"session-e2e-contract","executionId":"exec-4","state":"attached","attachedAt":1794473900764}
-POST report                            -> HTTP 200 {"leaseId":"lease-4","reportRevision":1,"acceptedAt":1794473900765}
+POST attach                            -> HTTP 200 {"leaseId":"lease-4","sessionId":"session-e2e-contract","executionId":"exec-4","state":"attached","attachedAt":1794474492098}
+POST report                            -> HTTP 200 {"leaseId":"lease-4","reportRevision":1,"acceptedAt":1794474492101}
 POST settle                            -> HTTP 200 {"leaseId":"lease-4","executionId":"exec-4","taskId":"tb-e2e-contract-direct","outcome":"succeeded","taskVersion":5,"status":"in_review","reportRevision":2,"simulated":true}
 ```
 
@@ -180,7 +181,7 @@ The Agent Board panel in the isolated instance (same client bundle as the produc
     "goal3-ux-390x844-light.png"
   ],
   "desktopProfileTouched": false,
-  "finishedAt": "2026-11-12T08:58:20.834Z"
+  "finishedAt": "2026-11-12T09:08:12.211Z"
 }
 ```
 

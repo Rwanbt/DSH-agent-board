@@ -1212,6 +1212,9 @@ async function main() {
     assert('m1. the migrated mandate is restrictive (scope none, L0, unconfirmed)', migration.scopeMode === 'none' && migration.level === 'L0' && migration.requiresConfiguration === true)
     assert('m2. the migration is audited as mandate_migrated', migration.migratedAudit === true)
     assert('m3. the migrated installation stays inert (mode off, no assignment)', state.mode === 'off' && (state.assignments ?? []).length === 0, JSON.stringify({ mode: state.mode, assignments: (state.assignments ?? []).length }))
+    const backupPath = join(home, 'agent-board', 'state.json.v1-backup')
+    const backup = existsSync(backupPath) ? JSON.parse(await readFile(backupPath, 'utf8')) : null
+    assert('m4. the pre-upgrade document is preserved for rollback', backup?.schemaVersion === 1 && backup?.mode === 'off', JSON.stringify({ exists: backup !== null, schemaVersion: backup?.schemaVersion ?? null }))
   }
 
   const models = await fetch(`${fakePrimary.baseURL}/models`, { signal: AbortSignal.timeout(5000) }).then(async response => ({ status: response.status, body: await response.json() }))

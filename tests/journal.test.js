@@ -302,3 +302,29 @@ test('audit journal rotates at the cap, keeps one generation and states the trun
     await rm(dir, { recursive: true, force: true })
   }
 })
+test('pre-migration backup preserves the v1 document once and never overwrites it', async () => {
+  const dir = await tempDir()
+  try {
+    const seed = { schemaVersion: 1, mode: 'supervised', savedAt: 1, assignments: [{ id: 'asg-1', taskId: 't1' }] }
+    await writeFile(join(dir, 'state.json'), JSON.stringify(seed), 'utf8')
+    const store = new StateStore({ dir, now: () => 2 })
+    assert.equal(await store.backupBeforeMigration(), true)
+    const backup = JSON.parse(await readFile(join(dir, 'state.json.v1-backup'), 'utf8'))
+    assert.equal(backup.schemaVersion, 1)
+    assert.equal(backup.mode, 'supervised')
+    assert.equal(backup.assignments[0].id, 'asg-1')
+    // The live file becomes v2; a second call must NOT replace the backup.
+    await writeFile(join(dir, 'state.json'), JSON.stringify({ schemaVersion: 2 }), 'utf8')
+    assert.equal(await store.backupBeforeMigration(), false)
+    assert.equal(JSON.parse(await readFile(join(dir, 'state.json.v1-backup'), 'utf8')).schemaVersion, 1)
+    // Fresh directory: nothing to back up.
+    const empty = await tempDir()
+    try {
+      assert.equal(await new StateStore({ dir: empty }).backupBeforeMigration(), false)
+    } finally {
+      await rm(empty, { recursive: true, force: true })
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
