@@ -338,9 +338,16 @@ test('capability matrix is derived from the real payload: a refusal is never gre
   const delegateRow = byClass(body, 'dab-cap-row').find(row => row.props['data-capability'] === 'delegate')
   assert.equal(delegateRow.props['data-available'], 'false')
   assert.equal(delegateRow.props['data-refused'], 'true')
-  assert.match(textOf(delegateRow), /Observe mode: switch to Supervised or Autonomous/)
-  assert.doesNotMatch(textOf(delegateRow), /mode_off/)
-  assert.equal(collect(delegateRow, node => node.props?.title === 'mode_off').length, 1, 'raw code kept as a tooltip')
+  // The mode line states the refusal once; the cell does not repeat it.
+  assert.doesNotMatch(textOf(delegateRow), /mode_off|Observe mode/)
+  // A reason that is NOT the mode itself is still shown, as a sentence, code in the tooltip.
+  const tbBody = render(cockpit.DabSupervisionBody({
+    workspace: { ...WORKSPACE, capabilities: { ...caps, kanbanWrite: { state: 'unavailable', reason: 'taskboard_write_api_unavailable' } }, capabilityReasons: {} },
+    totals: TOTALS, projects: [], hidden: false, context: { mode: 'off' },
+  }))
+  const kanbanRow = byClass(tbBody, 'dab-cap-row').find(row => row.props['data-capability'] === 'kanbanWrite')
+  assert.match(textOf(kanbanRow), /Task Board is read-only for now/)
+  assert.equal(collect(kanbanRow, node => node.props?.title === 'taskboard_write_api_unavailable').length, 1)
   // F4/F9: the real count stays visible, the 50 inapplicable rows do not.
   assert.match(textOf(body), /Recommendations \(50\)/)
   assert.match(textOf(body), /Stop mode — no action possible/)
@@ -637,9 +644,14 @@ test('settings show model discovery, refusal reasons per action, connector and l
   // Stop refuses every action, with the real reason, on every row.
   const permission = byClass(tree, 'dab-sa-permission').find(node => node.props['data-action'] === 'merge')
   assert.equal(permission.props['data-granted'], 'false')
-  assert.match(textOf(permission), /stopped by you: use Resume/)
-  assert.equal(byClass(permission, 'dab-sa-permission-reason')[0].props.title, 'stopped_by_operator')
-  assert.equal(byClass(tree, 'dab-sa-permission-reason').length, 13)
+  // The Stop refusal applies to all 13 actions: stated ONCE above the list,
+  // with the raw code as a tooltip, not repeated on every row.
+  const global = byClass(tree, 'dab-sa-permissions-global')
+  assert.equal(global.length, 1)
+  assert.match(textOf(global[0]), /stopped by you: use Resume/)
+  assert.equal(global[0].props.title, 'stopped_by_operator')
+  assert.equal(byClass(permission, 'dab-sa-permission-reason').length, 0)
+  assert.equal(byClass(tree, 'dab-sa-permission').length, 13)
   assert.equal(byClass(tree, 'dab-sa-stop').length, 1)
   assert.equal(byClass(tree, 'dab-sa-resume').length, 1)
   assert.match(text, /Configured and reachable/)

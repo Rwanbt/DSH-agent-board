@@ -88,7 +88,7 @@ function DabSuperOrchestratorBarImpl({
   const modelText = facts.modelText ?? (facts.available ? dabT('superModelHostDefault') : null)
   const totalProjects = facts.totalProjects > 0 ? facts.totalProjects : projectCount
   const needsProjects = facts.available && facts.enabledProjects === 0 && totalProjects > 0
-  const levelText = facts.level === null ? dabT('superLevelUnavailable') : dabT('superLevel', { level: facts.level })
+  const levelText = facts.level === null ? dabT('superLevelUnavailable') : facts.level
   const projectsText = totalProjects > 0
     ? dabT('superProjectsEnabled', { enabled: facts.enabledProjects, total: totalProjects })
     : (facts.available ? dabT('superProjectsUnavailable') : null)

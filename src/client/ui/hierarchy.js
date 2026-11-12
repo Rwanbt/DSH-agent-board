@@ -195,7 +195,18 @@ function dabCapabilityMatrix(h, capabilities, reasons, context) {
       return { key, labelKey, stateLabelKey: entry.labelKey, available: entry.available, reasonKey: entry.reasonKey, reason: entry.reason }
     })
   return h('div', { className: 'dab-cap-grid', role: 'list', 'aria-label': dabT('supervisionCapabilities') },
-    rows.map(entry => h('div', {
+    rows.map(entry => dabCapabilityRow(h, entry, context)))
+}
+
+/** Codes the band already states once (mode line), hidden from each cell. */
+function dabCapabilityReasonShown(entry, context) {
+  if (entry.reason === 'mode_off' && context?.mode === 'off') return false
+  if (entry.reason === 'stopped_by_operator' && context?.stopped === true) return false
+  return !(entry.reasonKey === null && entry.reason === null)
+}
+
+function dabCapabilityRow(h, entry, context) {
+  return h('div', {
       key: entry.key, role: 'listitem', className: 'dab-cap-row',
       'data-available': entry.available ? 'true' : 'false',
       'data-capability': entry.key,
@@ -203,11 +214,10 @@ function dabCapabilityMatrix(h, capabilities, reasons, context) {
     },
     h('span', { className: 'dab-cap-label' }, dabT(entry.labelKey)),
     h('span', { className: 'dab-cap-value', 'data-available': entry.available ? 'true' : 'false' }, dabT(entry.stateLabelKey)),
-    entry.reasonKey === null && entry.reason === null
+    !dabCapabilityReasonShown(entry, context)
       ? null
       : h('span', { className: 'dab-cap-reason', title: entry.reason ?? undefined },
-        h('span', { className: 'dab-cap-reason-label' }, `${dabT('supervisionCapabilityReason')} : `),
-        entry.reason === null ? dabT(entry.reasonKey) : dabReasonText(entry.reason)))))
+        entry.reason === null ? dabT(entry.reasonKey) : dabReasonText(entry.reason)))
 }
 
 /**
@@ -223,6 +233,11 @@ function DabSupervisionBody({ workspace, totals, projects, id = DAB_SUPERVISION_
   // are noise. The real count stays visible, the list becomes ONE explicit line.
   const modeBlocked = context !== null && context !== undefined && (context.stopped === true || context.mode === 'off')
   const recommendationCount = Array.isArray(workspace.recommendations) ? workspace.recommendations.length : 0
+  const blockCount = Array.isArray(workspace.blocks) ? workspace.blocks.length : 0
+  const dependencyCount = Number(totals.dependencies) || 0
+  // Nothing to show in the three lists: one line says so (and why, when the
+  // mode blocks every action) instead of three empty "(0)" sections.
+  const quietBody = recommendationCount === 0 && blockCount === 0 && dependencyCount === 0
   return h('div', { className: 'dab-band-body', id, hidden },
     workspace.available ? null : h('div', { className: 'dab-band-notice' }, dabT('supervisionUnavailable')),
     // A Task Board that cannot be read is REPORTED here, not silently missing.
@@ -245,17 +260,22 @@ function DabSupervisionBody({ workspace, totals, projects, id = DAB_SUPERVISION_
         concurrent: workspace.delegation.concurrentLimit ?? '?',
         hourly: workspace.delegation.hourlyLimit ?? '?',
       })),
-    h('div', { className: 'dab-band-section' },
+    quietBody
+      ? h('div', { className: 'dab-band-quiet', role: 'note' }, modeBlocked
+        ? (context.stopped === true ? dabReasonText('stopped_by_operator') : dabT('supervisionStopNoAction'))
+        : dabT('supervisionNothingToReport'))
+      : null,
+    quietBody ? null : h('div', { className: 'dab-band-section' },
       h('div', { className: 'dab-label' }, `${dabT('supervisionRecommendations')} (${recommendationCount})`),
       modeBlocked
         ? h('div', { className: 'dab-band-notice', 'data-refused': 'true', role: 'note' },
           context.stopped === true ? dabReasonText('stopped_by_operator') : dabT('supervisionStopNoAction'))
         : dabRecommendationList(h, workspace.recommendations, projects)),
-    h('div', { className: 'dab-band-section' },
-      h('div', { className: 'dab-label' }, `${dabT('supervisionBlocks')} (${Array.isArray(workspace.blocks) ? workspace.blocks.length : 0})`),
+    quietBody ? null : h('div', { className: 'dab-band-section' },
+      h('div', { className: 'dab-label' }, `${dabT('supervisionBlocks')} (${blockCount})`),
       dabBlockList(h, workspace.blocks)),
-    h('div', { className: 'dab-band-section' },
-      h('div', { className: 'dab-label' }, `${dabT('supervisionDependencies')} (${Number(totals.dependencies) || 0})`),
+    quietBody ? null : h('div', { className: 'dab-band-section' },
+      h('div', { className: 'dab-label' }, `${dabT('supervisionDependencies')} (${dependencyCount})`),
       dabDependencyList(h, workspace.crossProjectDependencies, projects)),
     h('div', { className: 'dab-band-section' },
       h('div', { className: 'dab-label' }, dabT('supervisionCapabilities')),
