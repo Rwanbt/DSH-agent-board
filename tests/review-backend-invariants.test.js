@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
 import { apply } from '../src/host/index.js'
+import { TEST_MANDATE } from './goal6-helpers.js'
 import { compactState } from '../src/orchestrator/journal.js'
 
 // CLEAN: the journal bound keeps every live assignment unconditionally.
@@ -149,7 +150,7 @@ test('CLEAN: a refused launch consumes no budget; a durable launch consumes exac
     return { ok: false, status: 404, json: async () => ({}) }
   }
   const harness = makeCtx()
-  const dispose = apply(harness.ctx)
+  const dispose = apply(harness.ctx, { mandate: TEST_MANDATE })
   const handler = () => harness.routes.get('/dsh-agent-board/api/v2').handler
   try {
     await callJson(handler(), 'GET', '/state')

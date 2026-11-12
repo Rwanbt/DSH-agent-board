@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
 import { apply } from '../src/host/index.js'
+import { TEST_MANDATE } from './goal6-helpers.js'
 import { buildProjection } from '../src/supervisor/projection.js'
 
 const TASK = {
@@ -107,7 +108,7 @@ async function boot(tasks = [structuredClone(TASK)], initialSessions = null) {
   process.env.DSH_HOME = home
   const restore = installFetch(tasks)
   const harness = makeCtx(initialSessions)
-  const dispose = apply(harness.ctx, {})
+  const dispose = apply(harness.ctx, { mandate: TEST_MANDATE })
   const handler = () => harness.routes.get('/dsh-agent-board/api/v2').handler
   const state = async () => (await callJson(handler(), 'GET', '/state')).body.value
   return {

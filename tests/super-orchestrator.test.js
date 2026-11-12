@@ -25,6 +25,7 @@ import {
 } from '../src/supervisor/super-orchestrator.js'
 import { readinessOf } from '../src/orchestrator/dag.js'
 import { apply } from '../src/host/index.js'
+import { TEST_MANDATE } from './goal6-helpers.js'
 
 const NOW = 1_000_000
 
@@ -540,7 +541,7 @@ test('host publishes supervision and bounded events; a disabled supervision gate
     await waitFor(() => res.body !== '')
     return { status: res.status, body: res.body === '' ? null : JSON.parse(res.body) }
   }
-  const dispose = apply(ctx)
+  const dispose = apply(ctx, { mandate: TEST_MANDATE })
   try {
     const first = await callJson('GET', '/state')
     assert.equal(first.status, 200)

@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
 import { apply } from '../src/host/index.js'
+import { TEST_MANDATE } from './goal6-helpers.js'
 
 const TASK = {
   id: 't-res-1',
@@ -149,7 +150,7 @@ test('a turn/end that lands while the session is still being created settles the
   const tasksRef = { tasks: [structuredClone(TASK)] }
   const restoreFetch = installFetch(tasksRef)
   const made = makeCtx({ createGate: gate })
-  const dispose = apply(made.ctx)
+  const dispose = apply(made.ctx, { mandate: TEST_MANDATE })
   try {
     const handler = () => made.routeRef.current.handler
     await callJson(handler(), 'GET', '/state')
@@ -182,7 +183,7 @@ test('duplicate turn/end events settle once and an unknown session is ignored', 
   const tasksRef = { tasks: [structuredClone(TASK)] }
   const restoreFetch = installFetch(tasksRef)
   const made = makeCtx()
-  const dispose = apply(made.ctx)
+  const dispose = apply(made.ctx, { mandate: TEST_MANDATE })
   try {
     const handler = () => made.routeRef.current.handler
     await callJson(handler(), 'GET', '/state')
@@ -237,7 +238,7 @@ test('the lease watchdog frees a slot when the live agent disappears', async () 
   const restoreFetch = installFetch(tasksRef)
   const liveIds = new Set(['s-live'])
   const made = makeCtx({ liveIds })
-  const dispose = apply(made.ctx)
+  const dispose = apply(made.ctx, { mandate: TEST_MANDATE })
   try {
     const handler = () => made.routeRef.current.handler
     let state = await callJson(handler(), 'GET', '/state')
@@ -276,7 +277,7 @@ test('a restart in autonomous mode requires an explicit resume before delegating
   const tasksRef = { tasks: [structuredClone(TASK)] }
   const restoreFetch = installFetch(tasksRef)
   const made = makeCtx()
-  const dispose = apply(made.ctx)
+  const dispose = apply(made.ctx, { mandate: TEST_MANDATE })
   try {
     const handler = () => made.routeRef.current.handler
     let state = await callJson(handler(), 'GET', '/state')
@@ -305,7 +306,7 @@ test('overlapping ticks coalesce and concurrent dispatches start exactly one ses
   const tasksRef = { tasks: [] }
   const restoreFetch = installFetch(tasksRef, 60)
   const made = makeCtx()
-  const dispose = apply(made.ctx)
+  const dispose = apply(made.ctx, { mandate: TEST_MANDATE })
   try {
     const handler = () => made.routeRef.current.handler
     await callJson(handler(), 'GET', '/state')
@@ -348,7 +349,7 @@ test('a stale lock from a dead process is taken over instead of blocking the boa
   const tasksRef = { tasks: [] }
   const restoreFetch = installFetch(tasksRef)
   const made = makeCtx()
-  const dispose = apply(made.ctx)
+  const dispose = apply(made.ctx, { mandate: TEST_MANDATE })
   try {
     const state = await callJson(made.routeRef.current.handler, 'GET', '/state')
     assert.equal(state.body.value.instance.primary, true)

@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
 import { apply } from '../src/host/index.js'
+import { TEST_MANDATE } from './goal6-helpers.js'
 import { startSimulatedTaskBoard, simulatedTask } from './fixtures/fake-taskboard-server.mjs'
 
 function makeCtx() {
@@ -122,7 +123,7 @@ async function boot({ contractMode = 'full', task = simulatedTask({ isolation: '
     tasks: [task, simulatedTask({ id: 't-contract-other', title: 'Other task', version: 1, isolation: 'none', execution: { mode: 'scheduled' } })],
   })
   const harness = makeCtx()
-  const dispose = apply(harness.ctx, { baseUrl: board.url })
+  const dispose = apply(harness.ctx, { baseUrl: board.url, mandate: TEST_MANDATE })
   const handlerOf = () => {
     const route = harness.routes.get('/dsh-agent-board/api/v2')
     return route.handler
