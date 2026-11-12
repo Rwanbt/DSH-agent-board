@@ -9396,7 +9396,9 @@ function DabSuperagentSettings({
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
   const level = typeof mandate?.level === 'string' ? mandate.level : (facts.level ?? 'L0')
-  const models = dabSaObject(host?.models)
+  // `/state` and the SSE stream publish the catalog under `host.host.models`;
+  // `/diagnostics` puts it at the top level. Read both, never assume one.
+  const models = dabSaObject(host?.host?.models) ?? dabSaObject(host?.models)
   const providers = Array.isArray(models?.providers) ? models.providers.filter(entry => entry !== null && typeof entry === 'object') : []
   const discovered = models?.discovered === true
   const budget = facts.budget
