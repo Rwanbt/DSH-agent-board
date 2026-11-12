@@ -31,6 +31,7 @@ import { buildProjection, normalizeSessions } from '../supervisor/projection.js'
 import { MAX_SUPERVISION_EVENTS, buildSupervision, mergeSupervisionEvents, supervisionEvents } from '../supervisor/super-orchestrator.js'
 import { selectDispatchable, stopPlan, readinessOf, mandateCheck, countRunning } from '../orchestrator/dag.js'
 import { delegationDepthOf, delegationUsageOf, evaluateDelegation, supervisionConfigOf } from '../orchestrator/delegation.js'
+import { taskReadinessOf } from '../orchestrator/readiness.js'
 import { readCoordinationModel } from '../connectors/taskboard-coordination.js'
 import {
   LEASE_STATUS, acquireLease, assignmentKey, checkFencing, createLease, ensureAssignment, nextFencingToken, reconcileAfterRestart,
@@ -299,6 +300,11 @@ export function apply(ctx, config = {}) {
   // Overlapping wake-ups (timer + operator + event) coalesce into ONE cycle:
   // two concurrent cycles would race the same waiter and could double-launch.
   let superagentCycleInFlight = null
+  // A model/effort change applies at the NEXT safe boundary (the start of the
+  // next cycle), never mid-turn. This flag makes that boundary explicit: the
+  // session is recycled before the next assessment instead of silently
+  // reusing the previous model (audit A06).
+  let superagentRecycleRequested = false
   const HOST_BUILD = Object.freeze({
     version: '0.2.0',
     schemaVersion: 2,
@@ -1350,12 +1356,27 @@ export function apply(ctx, config = {}) {
     })
   }
 
-  const CAPABILITY_ACTIONS = Object.freeze(['delegate', 'launch', 'create_task', 'update_task', 'comment', 'open_pr', 'merge', 'push_branch', 'delete_task', 'schedule'])
+  // Every action the UI can grant has a capability entry: an action missing
+  // here silently fell back to the mandate, which could read "granted" while
+  // no executor existed (audit A12).
+  const CAPABILITY_ACTIONS = Object.freeze([
+    'delegate', 'launch', 'create_task', 'update_task', 'comment', 'open_pr', 'merge',
+    'push_branch', 'delete_task', 'schedule', 'protected_branch_write', 'secrets', 'policy_change',
+  ])
   // Only `launch` has an executor in this build. Declaring the others "available"
   // because the mandate allows them was a fiction: the deterministic gate would
   // authorize them and then nothing would happen. They are published as
   // unavailable with an explicit reason until a real adapter exists.
-  const IMPLEMENTED_ACTIONS = Object.freeze(new Set(['launch']))
+  const IMPLEMENTED_ACTIONS = Object.freeze(new Set(['launch', 'create_task', 'update_task', 'comment']))
+  // Board-content actions executed through the Task Board public API. The
+  // execution config, model and preset stay operator-owned; `done` is
+  // unreachable through every one of them.
+  const TASKBOARD_WRITE_ACTIONS = Object.freeze(new Set(['create_task', 'update_task', 'comment']))
+  function taskboardWritesReady() {
+    const adapter = connectors.get('dsh-taskboard')
+    return adapter !== null && adapter !== undefined
+      && typeof adapter.writesReady === 'function' && adapter.writesReady() === true
+  }
   // Forge actions map to an adapter capability. They are available only when the
   // GitHub adapter is configured, writes are explicitly enabled, and the mandate
   // grants the action for a selected project.
@@ -1389,7 +1410,13 @@ export function apply(ctx, config = {}) {
    */
   function capabilityOf(action) {
     const forge = forgeReadiness(action)
-    if (forge.relevant && !forge.ok) return { state: 'unavailable', reason: forge.reason, source: 'integration' }
+    const taskboardWrite = TASKBOARD_WRITE_ACTIONS.has(action) && taskboardWritesReady()
+    if (forge.relevant && !forge.ok && !taskboardWrite) {
+      return { state: 'unavailable', reason: forge.reason, source: 'integration' }
+    }
+    if (TASKBOARD_WRITE_ACTIONS.has(action) && !taskboardWrite && !(forge.relevant && forge.ok)) {
+      return { state: 'unavailable', reason: 'taskboard_writes_unavailable', source: 'integration' }
+    }
     if (!IMPLEMENTED_ACTIONS.has(action) && !forge.relevant) {
       return { state: 'unavailable', reason: 'no_adapter_for_action', source: 'host' }
     }
@@ -1642,6 +1669,20 @@ export function apply(ctx, config = {}) {
       if (task?.activeExecution === true) return { ok: false, reason: 'already_running_in_taskboard' }
       if (typeof task?.claimedBy === 'string' && task.claimedBy !== '') return { ok: false, reason: 'claimed_by_another_session' }
       if (task?.execution?.mode === 'scheduled') return { ok: false, reason: 'owned_by_taskboard_scheduler' }
+      // Readiness is re-checked at the ONE launch gate. The deterministic
+      // scheduler filters candidates, but the Super Agent and a proposal
+      // approval call launchTask directly: a backlog/blocked/waiting card or an
+      // unsatisfied prerequisite must never open a worker session (audit A01).
+      // `dispatch` is an explicit operator gesture and keeps its override.
+      if (source !== 'dispatch') {
+        const tasksById = new Map(
+          (Array.isArray(coordinationModel?.tasks) ? coordinationModel.tasks : [])
+            .filter(entry => entry !== null && typeof entry === 'object' && typeof entry.id === 'string')
+            .map(entry => [entry.id, entry]),
+        )
+        const readiness = taskReadinessOf(task, tasksById)
+        if (!readiness.ready) return { ok: false, reason: readiness.reason, decision: gate }
+      }
       if (backend !== 'taskboard') {
         const routePolicy = effectiveRoutePolicy(task)
         if (routePolicy.providersConflict) return { ok: false, reason: 'route_policy_conflict' }
@@ -2836,21 +2877,36 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  async function ensureSuperAgentSession() {
+  async function ensureSuperAgentSession({ routeOverride = null } = {}) {
     const agent = ensureSuperAgent()
+    // A model/effort change requested during the previous cycle applies HERE:
+    // the old session is closed at this safe boundary instead of being reused
+    // with the previous model (audit A06).
+    if (superagentRecycleRequested === true) {
+      const previous = agent.identity.session
+      if (previous.active === true && typeof previous.sessionId === 'string') {
+        try { ctx.agents.get(previous.sessionId)?.cancel?.({ kind: 'user' }) } catch { /* already gone */ }
+        agent.identity = requestRecycle(agent.identity, 'model_changed')
+        agent.identity.session.active = false
+        agent.identity.session.endedAt = Date.now()
+        audit({ type: 'superagent_session_recycled', at: Date.now(), reason: 'model_changed', sessionId: previous.sessionId })
+      }
+      superagentRecycleRequested = false
+    }
     const current = agent.identity.session
     if (current.active === true && typeof current.sessionId === 'string') {
       let live
       try { live = ctx.agents.get(current.sessionId) } catch { live = undefined }
-      if (live !== undefined) return { ok: true, sessionId: current.sessionId, reused: true }
+      if (live !== undefined) return { ok: true, sessionId: current.sessionId, reused: true, route: agent.identity.model }
       // The runtime removed the session: recycle at a safe boundary, never claim
       // the old one is still usable.
       agent.identity = requestRecycle(agent.identity, 'session_gone')
       agent.identity.session.active = false
       agent.identity.session.endedAt = Date.now()
+      agent.runtime = { ...agent.runtime, activeModel: null }
     }
     if (typeof ctx.agents?.create !== 'function') return { ok: false, reason: 'runtime_unavailable' }
-    const route = superagentModel()
+    const route = routeOverride ?? superagentModel()
     if (route === null || typeof route.provider !== 'string' || typeof route.model !== 'string') {
       return { ok: false, reason: 'model_required' }
     }
@@ -2882,9 +2938,21 @@ export function apply(ctx, config = {}) {
       lastTurnAt: null,
       lastError: null,
     }
-    agent.identity.model = { provider: route.provider, model: route.model, ...(typeof route.reasoningEffort === 'string' ? { reasoningEffort: route.reasoningEffort } : {}) }
+    // Keep the OPERATOR's configured model (and its fallbacks) intact: a
+    // session may run on a fallback route, but that must never rewrite the
+    // primary choice. Only an unconfigured identity adopts the host default.
+    if (agent.identity.model === null || agent.identity.model === undefined) {
+      agent.identity.model = { provider: route.provider, model: route.model, ...(typeof route.reasoningEffort === 'string' ? { reasoningEffort: route.reasoningEffort } : {}) }
+    }
     agent.identity.status = 'idle'
-    agent.runtime = { available: true, reason: null, modelDiscovery: modelSnapshot.discovered ? 'live' : 'unavailable' }
+    // Publish the model the SESSION actually runs on, separately from the
+    // operator's configured choice: a future recycle must not be invisible.
+    agent.runtime = {
+      available: true,
+      reason: null,
+      modelDiscovery: modelSnapshot.discovered ? 'live' : 'unavailable',
+      activeModel: { provider: route.provider, model: route.model, ...(typeof route.reasoningEffort === 'string' ? { reasoningEffort: route.reasoningEffort } : {}) },
+    }
     try {
       const sessions = ctx.get?.('sessions')
       const title = ctx.get?.('sessionTitle')
@@ -2899,10 +2967,10 @@ export function apply(ctx, config = {}) {
         source: { kind: 'dsh-agent-board' },
       })
     } catch { /* optional */ }
-    audit({ type: 'superagent_session_started', sessionId, model: routeKey(agent.identity.model) })
+    audit({ type: 'superagent_session_started', sessionId, model: routeKey(route) })
     touch()
     broadcast()
-    return { ok: true, sessionId, created: true }
+    return { ok: true, sessionId, created: true, route: agent.identity.model }
   }
 
   function superagentFraming() {
@@ -2967,6 +3035,85 @@ export function apply(ctx, config = {}) {
     })
   }
 
+  /**
+   * The hard stops that must be re-checked AFTER every await: the operator can
+   * press Stop/Pause or switch the mandate while the model is thinking. A cycle
+   * that started under "running" must never execute an action under "paused".
+   */
+  function superagentHardStop() {
+    if (state.stoppedAt !== null) return 'stopped_by_operator'
+    if (state.mode === MODES.OFF) return 'mode_off'
+    if (state.mandate?.paused === true) return 'paused_by_operator'
+    const agent = state.superagent
+    if (agent?.identity?.status === 'paused') return 'superagent_paused'
+    if (agent?.identity?.status === 'stopped') return 'superagent_stopped'
+    return null
+  }
+
+  /**
+   * The ordered brain routes: the operator's configured model first, then its
+   * declared fallbacks. A fallback is only ever used for a RETRYABLE runtime
+   * failure; a policy refusal is never retried under another model.
+   */
+  function superagentRoutes() {
+    const configured = superagentModel()
+    const routes = []
+    const push = route => {
+      if (route === null || route === undefined) return
+      if (typeof route.provider !== 'string' || typeof route.model !== 'string') return
+      const effort = typeof route.reasoningEffort === 'string' ? route.reasoningEffort : null
+      if (routes.some(existing => existing.provider === route.provider && existing.model === route.model
+        && (existing.reasoningEffort ?? null) === effort)) return
+      routes.push({ provider: route.provider, model: route.model, ...(effort === null ? {} : { reasoningEffort: effort }) })
+    }
+    push(configured)
+    for (const entry of (Array.isArray(configured?.fallback) ? configured.fallback : [])) push(entry)
+    return routes
+  }
+
+  /**
+   * The task projection the brain sees. Ready cards come first, then the ones
+   * a human paused, then everything else; the truncation is explicit instead
+   * of silently hiding the 26th card (audit A13). Every entry carries its
+   * readiness so the model cannot propose a launch the gate will refuse.
+   */
+  function brainTaskProjection(tasks, tasksById) {
+    const rank = readiness => readiness.ready ? 0
+      : (readiness.reason === 'task_blocked' || readiness.reason === 'task_waiting_for_human') ? 1 : 2
+    const ordered = [...tasks].sort((left, right) => {
+      const delta = rank(taskReadinessOf(left, tasksById)) - rank(taskReadinessOf(right, tasksById))
+      return delta !== 0 ? delta : String(left?.id ?? '').localeCompare(String(right?.id ?? ''))
+    })
+    const selected = ordered.slice(0, 25)
+    return {
+      tasks: selected.map(task => {
+        const readiness = taskReadinessOf(task, tasksById)
+        return {
+          id: task.id,
+          projectId: String(task.workspaceId ?? ''),
+          status: String(task.status ?? 'unknown'),
+          title: task.title,
+          description: typeof task.description === 'string' ? task.description.slice(0, 400) : '',
+          blocked: task.blocked === true,
+          waitingForHuman: task.waitingForHuman === true,
+          dependsOn: Array.isArray(task.dependsOn) ? task.dependsOn.slice(0, 20).map(String) : [],
+          ready: readiness.ready,
+          readinessReason: readiness.reason,
+        }
+      }),
+      truncated: Math.max(0, ordered.length - selected.length),
+      total: ordered.length,
+    }
+  }
+
+  /** Runtime failures a different model may legitimately survive. */
+  const BRAIN_RETRYABLE_FAILURES = Object.freeze(new Set([
+    'timeout', 'session_gone', 'no_session', 'followup_failed', 'session_create_failed',
+  ]))
+  function isRetryableBrainFailure(reason) {
+    return typeof reason === 'string' && BRAIN_RETRYABLE_FAILURES.has(reason)
+  }
+
   function superagentBudgetTick(agent, now) {
     const budget = agent.budget
     const windowMs = 60 * 60 * 1000
@@ -2996,10 +3143,7 @@ export function apply(ctx, config = {}) {
       if (trigger === 'manual') {
         // An explicit operator request runs even in cooldown, but not while
         // stopped/paused: the reason is surfaced, not swallowed.
-        const hardStop = state.stoppedAt !== null ? 'stopped_by_operator'
-          : state.mandate?.paused === true ? 'paused_by_operator'
-            : agent.identity.status === 'paused' ? 'superagent_paused'
-              : state.mode === MODES.OFF ? 'mode_off' : null
+        const hardStop = superagentHardStop()
         if (hardStop !== null) return { ok: false, ran: false, reason: hardStop }
       } else {
         return { ok: true, ran: false, reason: gate.reason }
@@ -3015,7 +3159,18 @@ export function apply(ctx, config = {}) {
       return { ok: false, ran: false, reason: 'model_call_budget_exhausted' }
     }
     const startedAt = Date.now()
-    const started = await ensureSuperAgentSession()
+    const routes = superagentRoutes()
+    let routeIndex = 0
+    let started = await ensureSuperAgentSession({ routeOverride: routes[routeIndex] })
+    // A configured fallback is a real route, not decoration: a retryable
+    // session-creation failure moves to the next route (bounded, audited).
+    while (!started.ok && isRetryableBrainFailure(started.reason) && routeIndex + 1 < routes.length) {
+      const nextIndex = routeIndex + 1
+      audit({ type: 'superagent_fallback', at: Date.now(), from: routeKey(routes[routeIndex]), to: routeKey(routes[nextIndex]), reason: started.reason })
+      routeIndex = nextIndex
+      superagentRecycleRequested = true
+      started = await ensureSuperAgentSession({ routeOverride: routes[routeIndex] })
+    }
     if (!started.ok) {
       agent.lastCycle = { at: startedAt, trigger, outcome: 'refused', reason: started.reason, proposals: 0, applied: 0, refused: 0, durationMs: Date.now() - startedAt }
       touch()
@@ -3039,6 +3194,10 @@ export function apply(ctx, config = {}) {
     const digest = buildDigest(agent.memory, { now })
     if (digest !== null) agent.memory = { ...agent.memory, digest }
 
+    const brainTasks = brainTaskProjection(scopedTasks, new Map(
+      scopedTasks.filter(task => task !== null && typeof task === 'object' && typeof task.id === 'string')
+        .map(task => [task.id, task]),
+    ))
     const prompt = buildAssessmentPrompt({
       identity: agent.identity,
       mandate: state.mandate,
@@ -3046,17 +3205,47 @@ export function apply(ctx, config = {}) {
       memory: agent.memory,
       plan: agent.plan,
       projects: portfolio.projects.map(project => ({ id: project.projectId, name: project.title, enabled: project.enabled })),
-      tasks: scopedTasks.slice(0, 25).map(task => ({
-        id: task.id,
-        projectId: String(task.workspaceId ?? ''),
-        status: String(task.status ?? 'unknown'),
-        title: task.title,
-        description: typeof task.description === 'string' ? task.description.slice(0, 400) : '',
-      })),
+      tasks: brainTasks.tasks,
+      tasksTruncated: brainTasks.truncated,
+      tasksTotal: brainTasks.total,
       external: [],
     })
     agent.budget = { ...agent.budget, cyclesThisHour: Number(agent.budget.cyclesThisHour) + 1, modelCallsThisHour: Number(agent.budget.modelCallsThisHour) + 1 }
-    const response = await askSuperAgent(`Return ONLY the JSON assessment.\n\n${prompt.system}\n\n${prompt.user}`, { timeoutMs: 120_000 })
+    const assessmentRequest = `Return ONLY the JSON assessment.\n\n${prompt.system}\n\n${prompt.user}`
+    let response = await askSuperAgent(assessmentRequest, { timeoutMs: 120_000 })
+    // Bounded brain fallback: a retryable provider/session failure tries the
+    // operator's declared fallback routes, one attempt each. A policy refusal
+    // is never retried under another model, and the hourly model budget still
+    // bounds the whole walk.
+    while (!response.ok && isRetryableBrainFailure(response.reason) && routeIndex + 1 < routes.length) {
+      if (superagentHardStop() !== null) break
+      if (Number(agent.budget.modelCallsThisHour) >= Number(agent.budget.modelCallsPerHour)) break
+      const nextIndex = routeIndex + 1
+      audit({ type: 'superagent_fallback', at: Date.now(), from: routeKey(routes[routeIndex]), to: routeKey(routes[nextIndex]), reason: response.reason })
+      routeIndex = nextIndex
+      superagentRecycleRequested = true
+      const retrySession = await ensureSuperAgentSession({ routeOverride: routes[routeIndex] })
+      if (!retrySession.ok) {
+        response = { ok: false, reason: retrySession.reason }
+        continue
+      }
+      agent.identity.status = 'thinking'
+      agent.budget = { ...agent.budget, modelCallsThisHour: Number(agent.budget.modelCallsThisHour) + 1 }
+      response = await askSuperAgent(assessmentRequest, { timeoutMs: 120_000 })
+      if (response.ok) audit({ type: 'superagent_fallback_succeeded', at: Date.now(), route: routeKey(routes[routeIndex]) })
+    }
+    // The operator may have pressed Stop/Pause while the model was thinking:
+    // re-check AFTER the await, before ANY proposal can become an effect.
+    const stopAfterResponse = superagentHardStop()
+    if (stopAfterResponse !== null) {
+      agent.identity.status = stopAfterResponse === 'superagent_paused' ? 'paused'
+        : stopAfterResponse === 'superagent_stopped' ? 'stopped' : 'idle'
+      agent.lastCycle = { at: startedAt, trigger, outcome: 'refused', reason: stopAfterResponse, proposals: 0, applied: 0, refused: 0, durationMs: Date.now() - startedAt }
+      audit({ type: 'superagent_cycle_refused', at: startedAt, trigger, reason: stopAfterResponse })
+      touch()
+      broadcast()
+      return { ok: false, ran: true, reason: stopAfterResponse }
+    }
     if (!response.ok) {
       agent.identity.status = 'error'
       agent.identity.session.lastError = response.reason
@@ -3087,6 +3276,17 @@ export function apply(ctx, config = {}) {
         if (repaired.ok) validated = { ...repaired, repaired: true }
       }
     }
+    // The repair round is another await: re-check before the execution loop.
+    const stopBeforeExecution = superagentHardStop()
+    if (stopBeforeExecution !== null) {
+      agent.identity.status = stopBeforeExecution === 'superagent_paused' ? 'paused'
+        : stopBeforeExecution === 'superagent_stopped' ? 'stopped' : 'idle'
+      agent.lastCycle = { at: startedAt, trigger, outcome: 'refused', reason: stopBeforeExecution, proposals: 0, applied: 0, refused: 0, durationMs: Date.now() - startedAt }
+      audit({ type: 'superagent_cycle_refused', at: startedAt, trigger, reason: stopBeforeExecution })
+      touch()
+      broadcast()
+      return { ok: false, ran: true, reason: stopBeforeExecution }
+    }
     if (!validated.ok) {
       agent.identity.status = 'error'
       noteSuperagentFailure(agent, validated.reason)
@@ -3100,7 +3300,15 @@ export function apply(ctx, config = {}) {
     const authorized = []
     const refused = []
     const executed = []
+    let stopDuringExecution = null
     for (const proposal of assessment.proposals) {
+      // Each iteration is another chance for the operator to pause: a proposal
+      // is refused, never executed, once a hard stop is active.
+      stopDuringExecution = stopDuringExecution ?? superagentHardStop()
+      if (stopDuringExecution !== null) {
+        refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, taskId: proposal.taskId ?? null, reason: stopDuringExecution })
+        continue
+      }
       const base = effectiveFor(proposal.action, { projectId: proposal.projectId })
       let decision = base
       if (base.requiresApproval) {
@@ -3125,6 +3333,59 @@ export function apply(ctx, config = {}) {
         }
         const launched = await launchTask({ task, source: 'superagent' })
         executed.push({ proposalId: proposal.id, taskId: task.id, ...launched })
+      } else if (TASKBOARD_WRITE_ACTIONS.has(proposal.action)) {
+        // Real board-content writes (audit A03): create / update / comment go
+        // through the Task Board public API, never a second ledger writer.
+        const adapter = connectors.get('dsh-taskboard')
+        const method = proposal.action === 'create_task' ? 'create'
+          : proposal.action === 'update_task' ? 'update' : 'comment'
+        if (adapter === null || adapter === undefined || typeof adapter[method] !== 'function' || taskboardWritesReady() !== true) {
+          executed.push({ proposalId: proposal.id, ok: false, reason: 'no_adapter_for_action', action: proposal.action })
+          continue
+        }
+        const payload = proposal.payload ?? {}
+        try {
+          if (proposal.action === 'create_task') {
+            const title = typeof payload.title === 'string' && payload.title.trim() !== ''
+              ? payload.title.trim()
+              : (typeof proposal.rationale === 'string' ? proposal.rationale.trim().slice(0, 120) : '')
+            if (title === '') throw Object.assign(new Error('payload.title is required'), { code: 'payload_invalid' })
+            const created = await adapter.create({
+              workspaceId: proposal.projectId,
+              title,
+              ...(typeof payload.description === 'string' ? { description: payload.description } : {}),
+              ...(typeof payload.urgency === 'string' ? { urgency: payload.urgency } : {}),
+            })
+            executed.push({ proposalId: proposal.id, ok: true, action: 'create_task', taskId: created?.id ?? null })
+          } else if (proposal.action === 'update_task') {
+            if (typeof proposal.taskId !== 'string' || proposal.taskId === '') {
+              throw Object.assign(new Error('taskId is required for update_task'), { code: 'payload_invalid' })
+            }
+            const patch = {}
+            for (const key of ['title', 'description', 'prompt', 'urgency', 'blocked', 'waitingForHuman', 'waitingReason']) {
+              if (payload[key] !== undefined) patch[key] = payload[key]
+            }
+            if (Object.keys(patch).length === 0) throw Object.assign(new Error('empty update payload'), { code: 'payload_invalid' })
+            const updated = await adapter.update(proposal.taskId, patch)
+            executed.push({ proposalId: proposal.id, ok: true, action: 'update_task', taskId: proposal.taskId, version: updated?.version ?? null })
+          } else {
+            if (typeof proposal.taskId !== 'string' || proposal.taskId === '') {
+              throw Object.assign(new Error('taskId is required for comment'), { code: 'payload_invalid' })
+            }
+            const body = typeof payload.body === 'string' ? payload.body.trim() : ''
+            if (body === '') throw Object.assign(new Error('payload.body is required'), { code: 'payload_invalid' })
+            await adapter.comment(proposal.taskId, body)
+            executed.push({ proposalId: proposal.id, ok: true, action: 'comment', taskId: proposal.taskId })
+          }
+        } catch (error) {
+          executed.push({
+            proposalId: proposal.id,
+            ok: false,
+            action: proposal.action,
+            reason: typeof error?.code === 'string' ? error.code : 'adapter_error',
+            error: truncate(String(error?.message ?? error), 200),
+          })
+        }
       } else if (!['propose', 'analyse', 'read'].includes(proposal.action)) {
         // Authorized in principle, but no real adapter performs it yet: say so
         // explicitly instead of pretending it happened.
@@ -3191,7 +3452,11 @@ export function apply(ctx, config = {}) {
       }, { now: Date.now() })
     }
     agent.identity = markCycle(agent.identity, { at: Date.now(), outcome: applied > 0 ? 'applied' : (authorized.length > 0 ? 'prepared' : 'noop') })
-    agent.identity.status = 'idle'
+    // Never resurrect a paused/stopped identity to idle: a hard stop that
+    // landed during the cycle wins over the cycle's own completion.
+    const lateStop = stopDuringExecution ?? superagentHardStop()
+    agent.identity.status = lateStop === 'superagent_paused' ? 'paused'
+      : lateStop === 'superagent_stopped' ? 'stopped' : 'idle'
     agent.lastCycle = {
       at: startedAt,
       trigger,
@@ -3918,8 +4183,19 @@ export function apply(ctx, config = {}) {
                 ...(Array.isArray(body.fallback) ? { fallback } : (Array.isArray(previous?.fallback) ? { fallback: previous.fallback } : {})),
               }
               // A live session keeps its model; the new choice applies at the
-              // next safe boundary (a recycle), never mid-turn.
-              audit({ type: 'superagent_model_changed', at: Date.now(), from: previous, to: agent.identity.model, appliesAt: 'next_session' })
+              // next safe boundary (the start of the next cycle), never mid-turn.
+              // The flag makes that recycle REAL instead of a silent reuse of the
+              // previous model (audit A06).
+              const routeChanged = previous?.provider !== provider || previous?.model !== model
+                || (previous?.reasoningEffort ?? null) !== reasoningEffort
+              if (routeChanged && agent.identity.session.active === true) superagentRecycleRequested = true
+              audit({
+                type: 'superagent_model_changed',
+                at: Date.now(),
+                from: previous,
+                to: agent.identity.model,
+                appliesAt: routeChanged && agent.identity.session.active === true ? 'next_cycle' : 'immediate',
+              })
               touch()
               return sendJson(res, 200, { ok: true, value: superagentPublicOf() })
             }

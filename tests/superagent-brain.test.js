@@ -165,6 +165,23 @@ test('validateAssessment accepts the exact valid shape and rejects unsafe propos
   assert.equal(validateAssessment(null).ok, false)
 })
 
+test('validateAssessment bounds action payloads (audit A03)', () => {
+  const accepted = validateAssessment(validAssessment({
+    proposals: [{ action: 'update_task', projectId: 'ws1', taskId: 't1', payload: { title: 'New', blocked: true, waitingForHuman: false, secret: 'x', description: 42 } }],
+  }), { projectIds: ['ws1'] })
+  assert.equal(accepted.ok, true)
+  assert.deepEqual(accepted.assessment.proposals[0].payload, { title: 'New', blocked: true, waitingForHuman: false })
+
+  const comment = validateAssessment(validAssessment({
+    proposals: [{ action: 'comment', projectId: 'ws1', taskId: 't1', payload: { body: 'hello', title: 'ignored' } }],
+  }), { projectIds: ['ws1'] })
+  assert.deepEqual(comment.assessment.proposals[0].payload, { body: 'hello' })
+
+  const none = validateAssessment(validAssessment({ proposals: [{ action: 'create_task', projectId: 'ws1' }] }), { projectIds: ['ws1'] })
+  assert.equal(none.ok, true)
+  assert.equal(none.assessment.proposals[0].payload, undefined)
+})
+
 test('validateAssessment truncates oversized lists and records explicit notes', () => {
   const findings = Array.from({ length: 15 }, (_, index) => ({ id: `f${index}`, kind: 'risk', projectId: 'ws1', summary: `finding ${index}` }))
   const proposals = Array.from({ length: 10 }, (_, index) => ({ id: `p${index}`, action: 'comment', projectId: 'ws1', justification: index }))

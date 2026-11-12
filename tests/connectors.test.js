@@ -40,9 +40,9 @@ function fakeFetch(handler) {
   return impl
 }
 
-test('task board adapter normalizes tasks and keeps only read capabilities', async () => {
+test('task board adapter normalizes tasks and declares its real capabilities', async () => {
   const fetchImpl = fakeFetch(async () => ({ ok: true, status: 200, json: async () => stateBody }))
-  const adapter = createTaskboardAdapter({ baseUrl: 'http://127.0.0.1:62337', fetchImpl })
+  const adapter = createTaskboardAdapter({ baseUrl: 'http://127.0.0.1:62337', fetchImpl, token: () => 'test-token' })
   const listed = await adapter.list()
   assert.equal(listed.items.length, 5)
   const first = listed.items[0]
@@ -66,8 +66,14 @@ test('task board adapter normalizes tasks and keeps only read capabilities', asy
   assert.equal(listed.items[4].activeExecution, true)
   assert.equal(listed.items[4].activeExecutionId, 'e1')
   const caps = adapter.describe().capabilities
-  assert.deepEqual(Object.keys(caps).filter(key => caps[key]).sort(), ['get', 'list', 'run'])
+  // Board-content writes are real (public API) when the token resolver answers;
+  // transition/move/delete remain absent: `done` is never an adapter action.
+  assert.deepEqual(Object.keys(caps).filter(key => caps[key]).sort(), ['comment', 'create', 'get', 'list', 'run', 'update'])
   assert.equal(typeof adapter.runTask, 'function')
+  assert.equal(typeof adapter.create, 'function')
+  assert.equal(typeof adapter.update, 'function')
+  assert.equal(typeof adapter.comment, 'function')
+  assert.equal(adapter.writesReady(), true)
   assert.equal(fetchImpl.calls[0].url, 'http://127.0.0.1:62337/dsh-taskboard/state')
 })
 
@@ -92,7 +98,12 @@ test('the adapter matrix never advertises a capability a skeleton does not imple
   const taskboard = byId.get('dsh-taskboard')
   assert.equal(taskboard.capabilities.list, true)
   assert.equal(taskboard.capabilities.get, true)
-  assert.equal(taskboard.capabilities.create, false)
+  // The board-content writes are implemented (public API); whether they are
+  // USABLE depends on the local token and is reported per call.
+  assert.ok(taskboard.declaredCapabilities.includes('create'))
+  assert.ok(taskboard.declaredCapabilities.includes('update'))
+  assert.ok(taskboard.declaredCapabilities.includes('comment'))
+  assert.ok(!taskboard.declaredCapabilities.includes('transition'))
   for (const id of ['gitlab', 'forgejo', 'gitea', 'bitbucket', 'jira', 'linear']) {
     const adapter = byId.get(id)
     assert.equal(adapter.status, 'unavailable', id)

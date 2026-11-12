@@ -10,6 +10,9 @@
  * @module dsh-agent-board/connectors/taskboard
  */
 
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { AdapterError, defineAdapter } from '../contracts/adapters.js'
 import { negotiateContract, TASKBOARD_CONTRACT_ENDPOINTS } from './taskboard-contract.js'
 
@@ -17,6 +20,26 @@ export const TASKBOARD_STATE_PATH = TASKBOARD_CONTRACT_ENDPOINTS.state
 export const TASKBOARD_RUN_PATH = '/dsh-taskboard/tasks'
 /** PROPOSED extension probe. Real 0.10/0.11 Task Boards answer 404 here. */
 export const TASKBOARD_CONTRACT_PATH = TASKBOARD_CONTRACT_ENDPOINTS.contract
+/** Bearer-authenticated board-content API (audit A03). */
+export const TASKBOARD_PUBLIC_PREFIX = '/dsh-taskboard/public/v1'
+
+/**
+ * Resolve the local Task Board public token, mirroring the Task Board's own
+ * resolution order (explicit env, then the 0600 file it creates on first use).
+ * Both plugins run for the same OS user; this is the zero-configuration path.
+ */
+export function resolveTaskboardToken(env = process.env) {
+  const explicit = typeof env.DSH_TASKBOARD_PUBLIC_TOKEN === 'string' ? env.DSH_TASKBOARD_PUBLIC_TOKEN.trim() : ''
+  if (explicit.length > 0) return explicit
+  if (env.DSH_TASKBOARD_PUBLIC_TOKEN_DISABLE_LOCAL === '1') return undefined
+  try {
+    const override = typeof env.DSH_HOME === 'string' && env.DSH_HOME.length > 0 ? env.DSH_HOME : join(homedir(), '.dsh')
+    const text = readFileSync(join(resolve(override), 'taskboard', 'public-api.token'), 'utf8').trim()
+    return text.length >= 32 ? text : undefined
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * Normalize one Task Board `TaskRecord` (schema 0.10.2) into the board's shape.
@@ -104,8 +127,10 @@ function normalizeTask(raw, ledgerRevision) {
  * @param {Function} [options.fetchImpl]
  * @param {number} [options.timeoutMs]
  */
-export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, timeoutMs = 4000 }) {
+export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, timeoutMs = 4000, token = undefined }) {
   if (typeof baseUrl !== 'string' || baseUrl === '') throw new Error('agent-board: taskboard adapter needs a base URL')
+  // Injectable token resolver (tests pin it); default = the same-user local file.
+  const tokenOf = typeof token === 'function' ? token : () => resolveTaskboardToken()
 
   // Last negotiation result (null = never probed) and the last `/state` meta,
   // used only to make a refusal message honest — never to infer write support.
@@ -217,11 +242,53 @@ export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, 
     return envelope.value
   }
 
+  /**
+   * Bearer-authenticated board-content write (create / update / comment).
+   * The token is the local file the Task Board creates for same-user plugins;
+   * without it the methods refuse BEFORE any network call.
+   */
+  async function publicJson(method, path, body = undefined) {
+    const token = tokenOf()
+    if (token === undefined) {
+      throw new AdapterError('Task Board public API token is unavailable', { code: 'taskboard_writes_unavailable', adapterId: 'dsh-taskboard' })
+    }
+    const url = new URL(`${TASKBOARD_PUBLIC_PREFIX}${path}`, baseUrl).toString()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let response
+    try {
+      response = await fetchImpl(url, {
+        method,
+        headers: {
+          accept: 'application/json',
+          authorization: `Bearer ${token}`,
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: controller.signal,
+      })
+    } catch (error) {
+      throw new AdapterError(`task board public API unreachable: ${String(error?.message ?? error)}`, {
+        code: 'unreachable', retryable: true, adapterId: 'dsh-taskboard', cause: error,
+      })
+    } finally {
+      clearTimeout(timer)
+    }
+    let envelope = null
+    try { envelope = await response.json() } catch { envelope = null }
+    if (response.ok !== true || envelope?.ok !== true) {
+      const code = typeof envelope?.error?.code === 'string' ? envelope.error.code : `http_${response.status}`
+      const message = typeof envelope?.error?.message === 'string' ? envelope.error.message : `public API returned HTTP ${response.status}`
+      throw new AdapterError(message, { code, retryable: response.status >= 500, adapterId: 'dsh-taskboard' })
+    }
+    return envelope.value
+  }
+
   const adapter = defineAdapter({
     id: 'dsh-taskboard',
     kind: 'work-source',
     title: 'DSH Task Board',
-    capabilities: ['list', 'get', 'run'],
+    capabilities: ['list', 'get', 'run', 'create', 'update', 'comment'],
     status: 'available',
     validatedLive: false,
     notes: 'Read-only ledger. `run` delegates execution to the Task Board executor (session/execution/worktree created by it); claim/in_review are performed by the session; done stays human-only.',
@@ -268,6 +335,33 @@ export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, 
         sessionId: value.sessionId,
       }
     },
+    /** True when the local public token exists, so board writes can be offered. */
+    writesReady() {
+      return tokenOf() !== undefined
+    },
+    /** Create one card in the Task Board's own ledger. */
+    async create(input) {
+      return publicJson('POST', '/tasks', input)
+    },
+    /**
+     * Edit one card. The Task Board requires `ifVersion`: read the current
+     * version first, then send the patch. A concurrent edit surfaces as
+     * `version_conflict` and the proposal fails (it is re-proposed later).
+     */
+    async update(id, patch = {}) {
+      const taskId = encodeURIComponent(String(id))
+      const view = await publicJson('GET', `/tasks/${taskId}`)
+      const ifVersion = typeof patch.ifVersion === 'number' ? patch.ifVersion : view?.version
+      if (typeof ifVersion !== 'number') {
+        throw new AdapterError('task board did not report a version', { code: 'version_conflict', adapterId: 'dsh-taskboard' })
+      }
+      const { ifVersion: _ignored, ...rest } = patch
+      return publicJson('POST', `/tasks/${taskId}/update`, { ...rest, ifVersion })
+    },
+    /** Append one comment to a card. */
+    async comment(id, body) {
+      return publicJson('POST', `/tasks/${encodeURIComponent(String(id))}/comments`, { body })
+    },
     /**
      * Probe the PROPOSED execution-contract extension. Never throws and never
      * writes: a 404 (every real 0.10/0.11 Task Board) negotiates as absent.
@@ -287,8 +381,14 @@ export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, 
         status: 'available',
         validatedLive: adapter.validatedLive === true,
         capabilities: {
-          list: true, get: true, run: true, subscribe: false, create: false,
-          update: false, comment: false, transition: false,
+          list: true, get: true, run: true, subscribe: false,
+          // Board-content writes use the Task Board's bearer-authenticated
+          // public API; the host reports them unavailable when no local token
+          // exists (never a silent success).
+          create: tokenOf() !== undefined,
+          update: tokenOf() !== undefined,
+          comment: tokenOf() !== undefined,
+          transition: false,
         },
         notes: adapter.notes,
         baseUrl,

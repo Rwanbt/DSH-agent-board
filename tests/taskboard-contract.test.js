@@ -52,7 +52,9 @@ async function withBoard(t, options = {}) {
     baseUrl: server.url,
     stateMeta: { ledgerRevision: 100, tasksTotal: 2 },
   })
-  const adapter = createTaskboardAdapter({ baseUrl: server.url })
+  // The execution-contract tests are independent of the board-content token:
+  // pin it absent so capability assertions stay deterministic.
+  const adapter = createTaskboardAdapter({ baseUrl: server.url, token: () => undefined })
   return { server, client, adapter }
 }
 
