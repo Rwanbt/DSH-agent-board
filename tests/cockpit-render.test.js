@@ -571,7 +571,9 @@ test('super bar: the AI session is a state distinct from the supervision layer',
   // Real AI facts: model, level, enabled/total projects.
   assert.match(textOf(byClass(tree, 'dab-super-model')[0]), /deepseek\/v4/)
   // Label and value only once: never 'Level Level L2'.
-  assert.equal(textOf(byClass(tree, 'dab-super-level')[0]), 'LevelL2 · Supervised')
+  // A coloured dot + the level NAME; the internal code never shows.
+  assert.equal(textOf(byClass(tree, 'dab-super-level')[0]), 'LevelSupervised')
+  assert.equal(byClass(tree, 'dab-level')[0].props['data-level'], 'L2')
   assert.match(textOf(byClass(tree, 'dab-super-enabled')[0]), /1\/2 projects enabled/)
   // No decision counter without a real pending decision.
   assert.equal(byClass(tree, 'dab-super-decisions').length, 0)

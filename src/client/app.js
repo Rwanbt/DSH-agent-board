@@ -122,6 +122,7 @@ function dabMakePage(store, ctx) {
     const [superagentOpen, setSuperagentOpen] = React.useState(false)
     const openSuperagent = React.useCallback(() => setSuperagentOpen('overview'), [])
     const openSuperagentProjects = React.useCallback(() => setSuperagentOpen('projects'), [])
+    const openSuperagentSettings = React.useCallback(() => setSuperagentOpen('settings'), [])
     const [dryRun, setDryRun] = React.useState(null)
     const [dryRunBusy, setDryRunBusy] = React.useState(false)
     const rootRef = React.useRef(null)
@@ -430,6 +431,7 @@ function dabMakePage(store, ctx) {
       onOpenSuperagent: openSuperagent,
       onOpenDecisions: openSuperagent,
       onOpenProjects: openSuperagentProjects,
+      onOpenSettings: openSuperagentSettings,
       projectRows,
       onToggleProject: toggleProject,
       onSetProjectLevel: setProjectLevel,
@@ -549,6 +551,10 @@ function dabMakePage(store, ctx) {
         onRevokeDirective: id => act('revoke', () => store.revokeDirective(id)),
         onAnswerDecision: (id, optionId) => act('decision', () => store.answerDecision(id, optionId)),
         onSetLevel: level => act('level', () => store.setLevel(level)),
+        onSetModel: model => actRef.current('model', () => store.setSuperagentModel(model)),
+        onModelInfo: (provider, model) => store.modelInfo(provider, model),
+        onProbeTaskboard: () => act('taskboard', () => store.probeTaskboard()),
+        onCycle: () => act('cycle', () => store.cycleSuperagent('manual')),
         onSetAction: (action, enabled) => act('action', () => store.setAction(action, enabled)),
         onToggleNotifications: value => setUi({ notifications: value === true }),
         onStop: () => act('stop', async () => {

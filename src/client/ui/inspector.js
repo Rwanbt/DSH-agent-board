@@ -377,7 +377,7 @@ function DabSuperagentProjects({
             className: 'dab-select dab-sa-level', value: row.level,
             'aria-label': `${dabT('superProjectLevel')} : ${row.title}`,
             onChange: event => onSetProjectLevel?.(row.id, event?.target?.value),
-          }, DAB_AUTONOMY_LEVELS.map(level => h('option', { key: level, value: level, title: dabLevelHint(level) }, dabLevelLabel(level))))),
+          }, DAB_AUTONOMY_LEVELS.map(level => h('option', { key: level, value: level, title: dabLevelHint(level) }, dabLevelOption(level))))),
         h('label', { className: 'dab-sa-field dab-sa-field-inline' },
           h('span', { className: 'dab-sa-field-label' }, dabT('superProjectPriority')),
           h('input', {
@@ -514,9 +514,90 @@ function DabSuperagentDirectives({ superagent, portfolio, busy, onAdd, onRevoke 
 }
 
 /** Paramètres: model/fallback, level, budget, permissions, Stop, connectors. */
+/**
+ * Model editor: provider, model, reasoning effort (read from the exact route)
+ * and up to two fallbacks, all from the host's REAL catalog. Nothing is
+ * invented: without discovery the editor says why and stays read-only.
+ */
+function DabSuperagentModelEditor({ facts, models, busy, onSetModel, onModelInfo }) {
+  const h = React.createElement
+  const providers = Array.isArray(models?.providers) ? models.providers.filter(entry => entry !== null && typeof entry === 'object') : []
+  const current = facts.model ?? null
+  const [provider, setProvider] = React.useState(typeof current?.provider === 'string' ? current.provider : '')
+  const [model, setModel] = React.useState(typeof current?.model === 'string' ? current.model : '')
+  const [effort, setEffort] = React.useState(typeof current?.reasoningEffort === 'string' ? current.reasoningEffort : '')
+  const initialFallback = Array.isArray(current?.fallback) ? current.fallback : []
+  const [fallbacks, setFallbacks] = React.useState([0, 1].map(index => (initialFallback[index] ? `${initialFallback[index].provider}/${initialFallback[index].model}` : '')))
+  const [info, setInfo] = React.useState(null)
+  const [saved, setSaved] = React.useState(false)
+  React.useEffect(() => {
+    let live = true
+    setInfo(null)
+    if (provider !== '' && model !== '' && typeof onModelInfo === 'function') {
+      Promise.resolve(onModelInfo(provider, model)).then(result => { if (live) setInfo(result?.ok === true ? (result.payload?.value ?? result.value ?? null) : null) }).catch(() => {})
+    }
+    return () => { live = false }
+  }, [provider, model])
+  const providerModels = providers.find(entry => entry.id === provider)?.models ?? []
+  const allRoutes = providers.flatMap(entry => (Array.isArray(entry.models) ? entry.models : []).map(candidate => ({ value: `${entry.id}/${candidate.id}`, label: `${entry.name ?? entry.id} · ${candidate.name ?? candidate.id}` })))
+  const efforts = Array.isArray(info?.efforts) ? info.efforts : []
+  const field = (label, control) => h('label', { className: 'dab-sa-field dab-sa-model-field' }, h('span', { className: 'dab-sa-field-label' }, label), control)
+  if (models?.discovered !== true) {
+    return h('div', { className: 'dab-sa-model-editor', 'data-discovered': 'false' },
+      h('div', { className: 'dab-sa-model-row' },
+        h('span', { className: 'dab-sa-field-label' }, dabT('superModelPrimary')),
+        h('span', { className: 'dab-sa-model-primary' }, facts.modelText ?? dabT('superModelHostDefault'))),
+      dabSaReason(h, typeof models?.reason === 'string' && models.reason !== '' ? models.reason : 'models_not_discovered'))
+  }
+  const valid = provider !== '' && model !== ''
+  const currentText = facts.modelText === null
+    ? dabT('superModelHostDefault')
+    : `${facts.modelText}${typeof current?.reasoningEffort === 'string' ? ` · ${current.reasoningEffort}` : ''}`
+  return h('form', {
+    className: 'dab-sa-model-editor', 'data-discovered': 'true',
+    onSubmit: event => {
+      event?.preventDefault?.()
+      if (!valid) return
+      const fallback = fallbacks.filter(value => value !== '').map(value => {
+        const cut = value.indexOf('/')
+        return { provider: value.slice(0, cut), model: value.slice(cut + 1) }
+      })
+      Promise.resolve(onSetModel?.({ provider, model, ...(effort !== '' ? { reasoningEffort: effort } : {}), fallback }))
+        .then(result => setSaved(result?.ok !== false)).catch(() => {})
+    },
+  },
+  h('div', { className: 'dab-sa-model-row' },
+    h('span', { className: 'dab-sa-field-label' }, dabT('superModelCurrent')),
+    h('span', { className: 'dab-sa-model-primary' }, currentText)),
+  h('div', { className: 'dab-sa-model-grid' },
+    field(dabT('superModelProvider'), h('select', {
+      className: 'dab-select dab-sa-model-provider', value: provider, 'aria-label': dabT('superModelProvider'),
+      onChange: event => { setProvider(event?.target?.value ?? ''); setModel(''); setEffort(''); setSaved(false) },
+    }, h('option', { value: '' }, dabT('superModelChoose')), providers.map(entry => h('option', { key: entry.id, value: entry.id }, String(entry.name ?? entry.id))))),
+    field(dabT('superModelName'), h('select', {
+      className: 'dab-select dab-sa-model-name', value: model, 'aria-label': dabT('superModelName'), disabled: provider === '',
+      onChange: event => { setModel(event?.target?.value ?? ''); setEffort(''); setSaved(false) },
+    }, h('option', { value: '' }, dabT('superModelChoose')), providerModels.map(entry => h('option', { key: entry.id, value: entry.id }, String(entry.name ?? entry.id))))),
+    field(dabT('superModelEffort'), efforts.length === 0
+      ? h('span', { className: 'dab-muted dab-sa-model-effort-none' }, valid ? dabT('superModelEffortNone') : '—')
+      : h('select', {
+        className: 'dab-select dab-sa-model-effort', value: effort, 'aria-label': dabT('superModelEffort'),
+        onChange: event => { setEffort(event?.target?.value ?? ''); setSaved(false) },
+      }, h('option', { value: '' }, `${dabT('superModelEffortDefault')}${typeof info?.defaultEffort === 'string' ? ` (${efforts.find(entry => entry.id === info.defaultEffort)?.name ?? info.defaultEffort})` : ''}`),
+      efforts.map(entry => h('option', { key: entry.id, value: entry.id, title: entry.description ?? undefined }, String(entry.name ?? entry.id))))),
+    [0, 1].map(index => field(dabT('superModelFallbackN', { n: index + 1 }), h('select', {
+      key: `fb-${index}`, className: 'dab-select dab-sa-model-fallback', value: fallbacks[index], 'aria-label': dabT('superModelFallbackN', { n: index + 1 }),
+      onChange: event => { const next = [...fallbacks]; next[index] = event?.target?.value ?? ''; setFallbacks(next); setSaved(false) },
+    }, h('option', { value: '' }, dabT('superModelFallbackNone')),
+    allRoutes.filter(route => route.value !== `${provider}/${model}`).map(route => h('option', { key: route.value, value: route.value }, route.label)))))),
+  h('div', { className: 'dab-sa-model-actions' },
+    h('span', { className: 'dab-muted' }, saved ? dabT('superModelSaved') : ''),
+    h('button', { type: 'submit', className: 'dab-btn dab-sa-model-save', 'data-primary': 'true', disabled: busy === true || !valid }, dabT('superModelSave'))))
+}
+
 function DabSuperagentSettings({
   superagent, mandate, capabilities, host, context, ui, busy, taskboard,
-  onSetLevel, onSetAction, onToggleNotifications, onStop, onResume,
+  onSetLevel, onSetAction, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle,
 }) {
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
@@ -536,28 +617,14 @@ function DabSuperagentSettings({
 
   return h('div', { className: 'dab-sa-tab dab-sa-settings' },
     dabSaSection(h, 'model', dabT('superSettingsModel'),
-      h('div', { className: 'dab-sa-model-row' },
-        h('span', { className: 'dab-sa-field-label' }, dabT('superModelPrimary')),
-        h('span', { className: 'dab-sa-model-primary' }, facts.modelText ?? (facts.available ? dabT('superModelHostDefault') : dabT('superNotAvailable')))),
-      h('div', { className: 'dab-sa-fallbacks' },
-        h('span', { className: 'dab-sa-field-label' }, dabT('superModelFallbacks')),
-        facts.fallbackModels.length === 0
-          ? h('span', { className: 'dab-muted' }, dabT('superModelNone'))
-          : h('ul', { className: 'dab-sa-list' }, facts.fallbackModels.map((fallback, index) => h('li', { key: `fb-${index}` }, `${fallback.provider ?? '?'}/${fallback.model ?? '?'}`)))),
-      discovered
-        ? h('div', { className: 'dab-sa-models-discovered' },
-          h('span', { className: 'dab-tag' }, dabT('superModelsDiscovered', { n: providers.length })),
-          h('ul', { className: 'dab-sa-list' }, providers.slice(0, 6).map(provider => h('li', { key: String(provider.id) },
-            `${String(provider.id)} · ${(Array.isArray(provider.models) ? provider.models.length : 0)} ${dabT('superModelsCountLabel')}`))),
-          providers.length > 6 ? h('div', { className: 'dab-sa-more' }, `+${providers.length - 6}`) : null)
-        : dabSaReason(h, typeof models?.reason === 'string' && models.reason !== '' ? models.reason : 'models_not_discovered')),
+      h(DabSuperagentModelEditor, { key: `${facts.modelText ?? ''}`, facts, models, busy, onSetModel, onModelInfo })),
     dabSaSection(h, 'level', dabT('superSettingsLevel'),
       h('label', { className: 'dab-sa-field dab-sa-field-inline' },
         h('span', { className: 'dab-sa-field-label' }, dabT('superSettingsGlobalLevel')),
         h('select', {
           className: 'dab-select dab-sa-global-level', value: level, 'aria-label': dabT('superSettingsGlobalLevel'),
           onChange: event => onSetLevel?.(event?.target?.value),
-        }, DAB_AUTONOMY_LEVELS.map(value => h('option', { key: value, value, title: dabLevelHint(value) }, dabLevelLabel(value))))),
+        }, DAB_AUTONOMY_LEVELS.map(value => h('option', { key: value, value, title: dabLevelHint(value) }, dabLevelOption(value))))),
       h('div', { className: 'dab-muted dab-sa-level-hint' }, dabLevelHint(level))),
     dabSaSection(h, 'budget', dabT('superSettingsBudget'),
       budget === null
@@ -620,9 +687,15 @@ function DabSuperagentSettings({
     dabSaSection(h, 'taskboard', dabT('superSettingsTaskboard'),
       h('div', { className: 'dab-sa-connector' },
         h('span', { className: 'dab-sa-connector-state', 'data-reachable': connector?.reachable === true ? 'true' : 'false' }, connectorState),
-        connectorReason === null ? null : h('span', { className: 'dab-sa-connector-reason', title: connectorReason }, dabReasonText(connectorReason)))),
+        connectorReason === null ? null : h('span', { className: 'dab-sa-connector-reason', title: connectorReason }, dabReasonText(connectorReason)),
+        typeof onProbeTaskboard === 'function'
+          ? h('button', { type: 'button', className: 'dab-btn dab-sa-probe', disabled: busy === true, onClick: onProbeTaskboard }, dabT('superTaskboardProbe'))
+          : null)),
     h('div', { className: 'dab-sa-lifecycle' },
-      h('button', { type: 'button', className: 'dab-btn dab-sa-stop', 'data-danger': 'true', disabled: busy === true, onClick: onStop }, dabT('superStop')),
+      typeof onCycle === 'function'
+        ? h('button', { type: 'button', className: 'dab-btn dab-sa-cycle', title: dabT('superCycleNowHint'), disabled: busy === true || facts.sessionActive !== true, onClick: onCycle }, dabT('superCycleNow'))
+        : null,
+      h('button', { type: 'button', className: 'dab-btn dab-sa-stop', disabled: busy === true, onClick: onStop }, dabT('superStop')),
       h('button', { type: 'button', className: 'dab-btn dab-sa-resume', disabled: busy === true, onClick: onResume }, dabT('resume'))))
 }
 
@@ -633,6 +706,7 @@ function DabSuperagentInspector(props) {
     superagent, mandate, capabilities, portfolio, host, context, dryRun, dryRunBusy, busy, narrow, taskboard, ui, workspace, initialTab,
     onClose, onOpenDetail, onDryRun, onToggleProject, onSetProjectLevel, onSetProjectPriority, onConfirmAllProjects,
     onAddDirective, onRevokeDirective, onAnswerDecision, onSetLevel, onSetAction, onToggleNotifications, onStop, onResume,
+    onSetModel, onModelInfo, onProbeTaskboard, onCycle,
   } = props
   const facts = dabSuperagentFacts(superagent, mandate, context)
   const [tab, setTab] = React.useState(typeof initialTab === 'string' ? initialTab : 'overview')
@@ -690,7 +764,7 @@ function DabSuperagentInspector(props) {
       : activeTab === 'settings'
         ? h(DabSuperagentSettings, {
           superagent, mandate, capabilities, host, context, ui, busy, taskboard,
-          onSetLevel, onSetAction, onToggleNotifications, onStop, onResume,
+          onSetLevel, onSetAction, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle,
         })
         : h(DabSuperagentOverview, {
           superagent, mandate, capabilities, host, context, busy, workspace,
@@ -720,7 +794,7 @@ function DabSuperagentInspector(props) {
         h('div', { className: 'dab-sa-sub' },
           h('span', { className: 'dab-sa-state', 'data-session-state': facts.stateKey }, dabT(facts.stateLabelKey)),
           facts.modelText === null ? null : h('span', { className: 'dab-sa-head-model' }, facts.modelText),
-          facts.level === null ? null : h('span', { className: 'dab-tag', title: dabLevelHint(facts.level) }, dabLevelLabel(facts.level)))),
+          facts.level === null ? null : dabLevelBadge(h, facts.level))),
       h('button', {
         type: 'button', className: 'dab-btn', 'data-variant': 'ghost', 'aria-label': dabT('close'), onClick: () => onClose?.(),
       }, '✕')),

@@ -300,6 +300,21 @@ const DAB_STRINGS = {
     levelHint_L3: 'Planifie et lance les tâches autorisées ; vous consulte pour les exceptions.',
     levelHint_L4: 'Gère seul les projets choisis ; ne vous consulte que pour les décisions hors mandat.',
     superProjectsDriven: 'Projets pilotés',
+    superModelProvider: 'Fournisseur',
+    superModelCurrent: 'Modèle actuel',
+    superProjectsCapped: 'Le niveau global « {level} » limite tous les projets : rien ne sera lancé au-delà. Modifier le niveau global →',
+    superModelName: 'Modèle',
+    superModelEffort: 'Effort de raisonnement',
+    superModelEffortDefault: 'Par défaut du modèle',
+    superModelEffortNone: 'Ce modèle n’expose pas de niveau d’effort.',
+    superModelFallbackN: 'Secours {n}',
+    superModelFallbackNone: 'Aucun',
+    superModelSave: 'Enregistrer le modèle',
+    superModelSaved: 'Le changement s’applique à la prochaine session du Super Agent (jamais au milieu d’un tour).',
+    superModelChoose: 'Choisir…',
+    superCycleNow: 'Faire un point maintenant',
+    superCycleNowHint: 'Lance un cycle d’analyse immédiat (compte dans le budget de cycles).',
+    superTaskboardProbe: 'Tester la connexion',
     superProjectsNoneHint: 'Activez un projet pour que le Super Agent puisse agir dessus.',
     superProjectsMore: 'Tous les projets ({n})',
     superProjectLevelOf: 'Niveau d’autonomie : {project}',
@@ -751,6 +766,21 @@ const DAB_STRINGS = {
     levelHint_L3: 'Plans and launches allowed tasks; asks you about exceptions.',
     levelHint_L4: 'Runs the chosen projects on its own; asks only for out-of-mandate decisions.',
     superProjectsDriven: 'Driven projects',
+    superModelProvider: 'Provider',
+    superModelCurrent: 'Current model',
+    superProjectsCapped: 'The global level “{level}” caps every project: nothing runs beyond it. Change the global level →',
+    superModelName: 'Model',
+    superModelEffort: 'Reasoning effort',
+    superModelEffortDefault: 'Model default',
+    superModelEffortNone: 'This model exposes no effort levels.',
+    superModelFallbackN: 'Fallback {n}',
+    superModelFallbackNone: 'None',
+    superModelSave: 'Save model',
+    superModelSaved: 'The change applies to the next Super Agent session (never mid-turn).',
+    superModelChoose: 'Choose…',
+    superCycleNow: 'Run a check now',
+    superCycleNowHint: 'Starts an immediate analysis cycle (counts against the cycle budget).',
+    superTaskboardProbe: 'Test the connection',
     superProjectsNoneHint: 'Enable a project so the Super Agent can act on it.',
     superProjectsMore: 'All projects ({n})',
     superProjectLevelOf: 'Autonomy level: {project}',
@@ -1204,7 +1234,23 @@ const DAB_REASON_TEXT = {
 /** "L2 · Supervisé": the code stays visible (it is what the docs use), the name explains it. */
 function dabLevelLabel(level) {
   if (typeof level !== 'string' || !/^L[0-4]$/.test(level)) return typeof level === 'string' ? level : ''
-  return `${level} · ${dabT(`levelName_${level}`)}`
+  return dabT(`levelName_${level}`)
+}
+
+/** Colour of a level, grey (observe) to violet (maximum autonomy). */
+const DAB_LEVEL_EMOJI = Object.freeze({ L0: '⚪', L1: '🔵', L2: '🟢', L3: '🟠', L4: '🟣' })
+
+/** Native <option> text cannot hold markup: the coloured circle is an emoji. */
+function dabLevelOption(level) {
+  return `${DAB_LEVEL_EMOJI[level] ?? '⚪'} ${dabLevelLabel(level)}`
+}
+
+/** Inline level: coloured dot + name, the hint as tooltip. */
+function dabLevelBadge(h, level, key) {
+  if (typeof level !== 'string' || !/^L[0-4]$/.test(level)) return null
+  return h('span', { key, className: 'dab-level', 'data-level': level, title: dabLevelHint(level) },
+    h('span', { className: 'dab-level-dot', 'aria-hidden': 'true' }),
+    h('span', { className: 'dab-level-name' }, dabLevelLabel(level)))
 }
 
 /** One-sentence description of what a level allows. */
