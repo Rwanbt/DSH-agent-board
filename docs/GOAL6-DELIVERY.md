@@ -437,11 +437,13 @@ Verdict de revérification : **0 P0, 0 P1 connus** ; les P2 signalés ont été 
 
 ### Risques résiduels (ordonnés)
 
-- **P1** : `validateAssessment` strict peut rejeter une sortie LLM sans
-  `schemaVersion`/`directiveEcho` ; conséquence sûre (aucun effet) mais un cycle perdu.
-  Prévoir une boucle de réparation de prompt.
-- **P1** : l'heuristique de conflit de directives est lexicale (polarité explicite),
-  pas sémantique : deux directives ambiguës ne sont pas détectées comme conflictuelles.
+- ~~P1~~ **corrigé** (`77f2bc2`) : une réponse LLM invalide déclenche **une** relance
+  bornée avec la liste des erreurs, comptée dans le budget d'appels et auditée
+  (`superagent_assessment_repair`). La validation stricte est inchangée.
+- ~~P1~~ **atténué** : en plus de la règle lexicale déterministe, le modèle peut signaler
+  un conflit sémantique (`directiveConflicts`), converti en **une** décision
+  d'arbitrage dédupliquée, sans aucun effet ; la plus restrictive s'applique en
+  attendant. Reste P2 : la détection sémantique dépend de la vigilance du modèle.
 - **P2** : la consommation d'une décision est faite au moment de l'autorisation, pas à la
   création effective de la session ; un échec de création consomme l'approbation (comportement conservateur).
 - **P2** : la découverte de modèles dépend de `ctx.llm` ; sans ce service, `/superagent/model`
