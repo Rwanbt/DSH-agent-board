@@ -58,6 +58,8 @@ const DSH_CLI = process.platform === 'win32'
 const PROFILE = 'e2e'
 const BOARD_API = '/dsh-agent-board/api/v2'
 const WORKSPACE_ID = 'ws-e2e-1'
+const PROJECT_B = 'ws-e2e-2'
+const PROJECT_C = 'ws-e2e-3'
 const FAKE_KEY_ENV = 'DSH_E2E_FAKE_KEY'
 const FAKE_KEY_VALUE = `e2e-invented-key-${randomUUID()}`
 
@@ -344,30 +346,31 @@ async function ensureSafeHome() {
 
 async function seedWorkspace() {
   const projectDir = join(home, 'project')
+  const projectBDir = join(home, 'project-b')
+  const projectCDir = join(home, 'project-c')
+  await mkdir(projectBDir, { recursive: true })
+  await mkdir(projectCDir, { recursive: true })
   const now = new Date().toISOString()
+  const workspaceRow = (path, title) => ({ path, title, sessionIds: [], createdAt: now, updatedAt: now })
   const store = {
     unit: { name: 'workspace', version: 2 },
     global: {
       initialized: true,
       defaultWorkspaceId: WORKSPACE_ID,
-      workspaceIds: [WORKSPACE_ID],
+      workspaceIds: [WORKSPACE_ID, PROJECT_B, PROJECT_C],
       archivedSessionIds: [],
       pinnedSessionIds: [],
     },
     tables: {
       workspaces: {
-        [WORKSPACE_ID]: {
-          path: projectDir,
-          title: 'e2e-project',
-          sessionIds: [],
-          createdAt: now,
-          updatedAt: now,
-        },
+        [WORKSPACE_ID]: workspaceRow(projectDir, 'e2e-project-a'),
+        [PROJECT_B]: workspaceRow(projectBDir, 'e2e-project-b'),
+        [PROJECT_C]: workspaceRow(projectCDir, 'e2e-project-c'),
       },
     },
   }
   await writeFile(join(home, 'storages', 'workspace.json'), JSON.stringify(store, null, 2), 'utf8')
-  results.host.workspace = { id: WORKSPACE_ID, path: projectDir, seededStore: 'storages/workspace.json' }
+  results.host.workspace = { id: WORKSPACE_ID, path: projectDir, seededStore: 'storages/workspace.json', extraProjects: [PROJECT_B, PROJECT_C] }
   return projectDir
 }
 
@@ -495,6 +498,179 @@ async function bootHost() {
 }
 
 // --------------------------------------------------------------- scenarios
+async function grantMandate({ level = 'L3', projects = [WORKSPACE_ID], actions } = {}) {
+  // Real operator path: the explicit mandate the new API requires before any
+  // launch. No implicit scope, no "empty means everything".
+  const granted = await httpJson('POST', `${BOARD_API}/mandate`, {
+    mandate: {
+      scopeMode: 'selected',
+      selectedWorkspaces: projects,
+      level,
+      actions: actions ?? {
+        launch: true,
+        comment: true,
+        create_task: true,
+        update_task: true,
+        schedule: true,
+        push_branch: true,
+      },
+      projects: Object.fromEntries(projects.map(projectId => [projectId, { enabled: true }])),
+      requiresConfiguration: false,
+    },
+  }, { expected: 200 })
+  return granted.json?.value ?? null
+}
+
+async function scenarioMandateGate() {
+  const scenario = {
+    id: '0-mandate-gate',
+    title: 'A real host refuses every launch until the operator confirms an explicit mandate; dry-run writes nothing',
+    startedAt: timestamp(),
+    assertions: [],
+    observed: {},
+  }
+  results.scenarios.push(scenario)
+  const record = (name, ok, detail = '') => {
+    const passed = assert(name, ok, detail)
+    scenario.assertions.push({ name, ok: passed, detail })
+    return passed
+  }
+  const mode = await httpJson('POST', `${BOARD_API}/mode`, { mode: 'autonomous' }, { expected: 200 })
+  scenario.observed.mode = mode.json?.value ?? null
+  const before = await boardState()
+  scenario.observed.mandateAtBoot = {
+    scopeMode: before.mandate?.scopeMode,
+    level: before.mandate?.level,
+    requiresConfiguration: before.mandate?.requiresConfiguration,
+    launch: before.capabilities?.launch,
+  }
+  const tick = await httpJson('POST', `${BOARD_API}/tick`, {})
+  const actions = Array.isArray(tick.json?.actions) ? tick.json.actions : []
+  scenario.observed.refusedTick = { status: tick.status, reason: tick.json?.reason ?? null, actions: actions.length }
+  record('0a. an unconfirmed mandate refuses every launch even in autonomous mode',
+    actions.length === 0 && ['scope_none', 'requires_configuration'].includes(tick.json?.reason),
+    JSON.stringify({ reason: tick.json?.reason, actions }))
+  const afterTick = await boardState()
+  record('0b. the refused tick created no session and no assignment',
+    afterTick.assignments.length === before.assignments.length && afterTick.assignments.length === 0,
+    JSON.stringify({ before: before.assignments.length, after: afterTick.assignments.length }))
+  record('0c. the published capability is truthful (unavailable + real reason)',
+    afterTick.capabilities?.launch?.state === 'unavailable'
+      && ['scope_none', 'requires_configuration'].includes(afterTick.capabilities?.launch?.reason),
+    JSON.stringify(afterTick.capabilities?.launch))
+
+  const dry = await httpJson('GET', `${BOARD_API}/dry-run`, undefined, { expected: 200 })
+  scenario.observed.dryRun = { writes: dry.json?.value?.writes, candidateCount: dry.json?.value?.candidateCount, allowedCount: dry.json?.value?.allowedCount }
+  record('0d. dry-run is read-only and reports zero writes',
+    dry.json?.value?.writes === 0 && dry.status === 200, JSON.stringify(scenario.observed.dryRun))
+  const afterDry = await boardState()
+  record('0e. dry-run created no assignment', afterDry.assignments.length === 0)
+
+  const silentAll = await httpJson('POST', `${BOARD_API}/mandate/scope`, { scopeMode: 'all' })
+  scenario.observed.allWithoutConfirmation = { status: silentAll.status, error: silentAll.json?.error ?? null }
+  record('0f. "all projects" without the explicit confirmation is refused',
+    silentAll.status === 409 && silentAll.json?.error === 'all_scope_requires_confirmation',
+    JSON.stringify(scenario.observed.allWithoutConfirmation))
+
+  const mandate = await grantMandate({ level: 'L3' })
+  scenario.observed.granted = {
+    scopeMode: mandate?.scopeMode,
+    level: mandate?.level,
+    requiresConfiguration: mandate?.requiresConfiguration,
+    selected: mandate?.selectedWorkspaces,
+  }
+  const grantedState = await boardState()
+  record('0g. after the explicit grant the launch capability becomes available',
+    grantedState.capabilities?.launch?.state === 'available',
+    JSON.stringify(grantedState.capabilities?.launch))
+  record('0h. the grant is audited and cleared the configuration gate',
+    grantedState.mandate?.requiresConfiguration === false
+      && grantedState.audit.some(entry => entry.type === 'mandate_confirmed' || entry.type === 'mandate_changed'),
+    JSON.stringify({ requiresConfiguration: grantedState.mandate?.requiresConfiguration }))
+}
+
+async function scenarioThreeProjects() {
+  const scenario = {
+    id: 'c-three-projects',
+    title: 'Three projects: A at L4 and priority 1, B at L3, C out of scope — only A then B launch, C is never touched, one slot is shared fairly',
+    startedAt: timestamp(),
+    assertions: [],
+    observed: {},
+  }
+  results.scenarios.push(scenario)
+  const record = (name, ok, detail = '') => {
+    const passed = assert(name, ok, detail)
+    scenario.assertions.push({ name, ok: passed, detail })
+    return passed
+  }
+  await httpJson('POST', `${BOARD_API}/policy`, {
+    policy: {
+      mode: 'autonomous',
+      executionBackend: 'board',
+      routeChain: [primaryRoute],
+      maxRetries: 0,
+      maxSwitches: 0,
+      maxConcurrent: 1,
+      allowedProviders: [],
+      allowedPermissions: ['read-only', 'workspace-write'],
+    },
+  }, { expected: 200 })
+  await httpJson('POST', `${BOARD_API}/mode`, { mode: 'autonomous' }, { expected: 200 })
+  const mandate = await httpJson('POST', `${BOARD_API}/mandate`, {
+    mandate: {
+      scopeMode: 'selected',
+      selectedWorkspaces: [WORKSPACE_ID, PROJECT_B],
+      level: 'L3',
+      actions: { launch: true, comment: true, create_task: true, update_task: true, schedule: true },
+      projects: {
+        [WORKSPACE_ID]: { enabled: true, level: 'L4', priority: 1, budget: { maxTasksPerHour: 20 } },
+        [PROJECT_B]: { enabled: true, level: 'L3', priority: 5, budget: { maxTasksPerHour: 20 } },
+      },
+      requiresConfiguration: false,
+    },
+  }, { expected: 200 })
+  scenario.observed.mandate = {
+    scopeMode: mandate.json?.value?.scopeMode,
+    selected: mandate.json?.value?.selectedWorkspaces,
+    level: mandate.json?.value?.level,
+  }
+  const taskIds = { a: 'tb-mp-a', b: 'tb-mp-b', c: 'tb-mp-c' }
+  await seedTask({ id: taskIds.a, title: 'Projet A — prioritaire', workspaceId: WORKSPACE_ID, isolation: 'none', permission: 'workspace-write', execution: { mode: 'claim' } })
+  await seedTask({ id: taskIds.b, title: 'Projet B — autonome encadré', workspaceId: PROJECT_B, isolation: 'none', permission: 'workspace-write', execution: { mode: 'claim' } })
+  await seedTask({ id: taskIds.c, title: 'Projet C — hors périmètre', workspaceId: PROJECT_C, isolation: 'none', permission: 'workspace-write', execution: { mode: 'claim' } })
+  const callsBefore = fakeTaskBoard.calls.length
+
+  await httpJson('POST', `${BOARD_API}/tick`, {}, { expected: 200 })
+  const launchedA = await poll('project A launch', async () => {
+    const state = await boardState()
+    return state.assignments.find(entry => entry.taskId === taskIds.a) ?? null
+  }, { timeoutMs: 15_000, intervalMs: 250 })
+  scenario.observed.firstLaunch = { taskId: launchedA.taskId, workspaceId: launchedA.workspaceId, sessionId: launchedA.sessionId }
+  record('c1. the highest-priority project (A) is served first', launchedA.workspaceId === WORKSPACE_ID)
+
+  // The slot is busy with A: B must wait, C must never be considered.
+  const launchedB = await poll('project B launch after the slot frees', async () => {
+    const state = await boardState()
+    return state.assignments.find(entry => entry.taskId === taskIds.b) ?? null
+  }, { timeoutMs: 30_000, intervalMs: 400 })
+  scenario.observed.secondLaunch = { taskId: launchedB.taskId, workspaceId: launchedB.workspaceId }
+  record('c2. the second project is served next (no starvation of the lower priority)', launchedB.workspaceId === PROJECT_B)
+
+  const state = await boardState()
+  const cAssignments = state.assignments.filter(entry => entry.taskId === taskIds.c)
+  const cCalls = fakeTaskBoard.calls.slice(callsBefore).filter(entry => String(entry.path).includes(taskIds.c))
+  scenario.observed.projectC = { assignments: cAssignments.length, calls: cCalls.length }
+  record('c3. the out-of-scope project C is never launched, never claimed, never written', cAssignments.length === 0 && cCalls.length === 0)
+  const portfolio = state.superagent?.portfolio ?? []
+  scenario.observed.portfolio = portfolio.map(project => ({ projectId: project.projectId, selected: project.selected, enabled: project.enabled, level: project.level, reason: project.canLaunchReason }))
+  const projectC = portfolio.find(project => project.projectId === PROJECT_C)
+  record('c4. the published portfolio says C is not selected', projectC !== undefined && projectC.selected === false)
+  const projectA = portfolio.find(project => project.projectId === WORKSPACE_ID)
+  record('c5. the published portfolio exposes the effective level of A (L4)', projectA !== undefined && projectA.level === 'L4')
+  record('c6. the two launches are distinct sessions and distinct projects',
+    launchedA.sessionId !== launchedB.sessionId && launchedA.workspaceId !== launchedB.workspaceId)
+}
+
 async function configureBoard({ chain, maxRetries = 0, maxSwitches = 1, executionBackend = 'contract' }) {
   const policy = await httpJson('POST', `${BOARD_API}/policy`, {
     policy: {
@@ -509,13 +685,14 @@ async function configureBoard({ chain, maxRetries = 0, maxSwitches = 1, executio
     },
   }, { expected: 200 })
   const mode = await httpJson('POST', `${BOARD_API}/mode`, { mode: 'autonomous' }, { expected: 200 })
+  const mandate = await grantMandate({ level: 'L3' })
   // `executionBackend: contract` triggers a capability negotiation; wait for the
   // outcome the board itself broadcasts before any tick can be meaningful.
   const negotiation = await poll('execution contract negotiation', async () => {
     const { json } = await httpJson('GET', `${BOARD_API}/contract`, undefined, { expected: 200 })
     return json.value?.writes === true ? json.value : null
   }, { timeoutMs: 20_000, intervalMs: 250 })
-  return { policy: policy.json?.value, mode: mode.json?.value, contract: negotiation }
+  return { policy: policy.json?.value, mode: mode.json?.value, mandate, contract: negotiation }
 }
 
 const primaryRoute = { provider: 'e2e-primary', model: 'e2e-fake-gpt', locality: 'local' }
@@ -1001,6 +1178,12 @@ async function main() {
   assert('0. the fake OpenAI-compatible provider answers GET /v1/models', models.status === 200 && Array.isArray(models.body?.data) && models.body.data[0]?.id === 'e2e-fake-gpt', JSON.stringify({ status: models.status, models: (models.body?.data ?? []).map(model => model.id) }))
 
   try {
+    await scenarioMandateGate()
+  } catch (error) {
+    assert('0. scenario mandate gate ran to completion', false, String(error?.message ?? error))
+    results.gaps.push(`Scenario 0 could not complete: ${String(error?.message ?? error)}`)
+  }
+  try {
     await scenarioModelTurn()
   } catch (error) {
     assert('a0. scenario a ran to completion', false, String(error?.message ?? error))
@@ -1011,6 +1194,12 @@ async function main() {
   } catch (error) {
     assert('b0. scenario b ran to completion', false, String(error?.message ?? error))
     results.gaps.push(`Scenario b could not complete: ${String(error?.message ?? error)}`)
+  }
+  try {
+    await scenarioThreeProjects()
+  } catch (error) {
+    assert('c0. scenario c ran to completion', false, String(error?.message ?? error))
+    results.gaps.push(`Scenario c could not complete: ${String(error?.message ?? error)}`)
   }
 
   try {
