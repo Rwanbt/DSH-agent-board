@@ -183,6 +183,11 @@ export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     executionBackend: EXECUTION_BACKENDS.includes(input.executionBackend)
       ? input.executionBackend
       : (fallback.executionBackend ?? 'board'),
+    // 'operator' once a /policy call named a backend; 'auto' lets the host
+    // promote the default 'board' to the canonical Task Board contract.
+    executionBackendSource: ['auto', 'operator'].includes(input.executionBackendSource)
+      ? input.executionBackendSource
+      : (fallback.executionBackendSource ?? 'auto'),
     allowCloudFallback: input.allowCloudFallback === true,
     autoResumeOnRestart: input.autoResumeOnRestart === true,
     serializeSameWorkspace: input.serializeSameWorkspace === true,

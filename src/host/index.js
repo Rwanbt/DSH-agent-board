@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { createPublicContractAdapter } from '../connectors/taskboard-public-contract.js'
 /**
  * Agent Board host plugin.
  *
@@ -811,6 +812,21 @@ export function apply(ctx, config = {}) {
     const restoredContract = state.assignments.some(entry => entry?.backend === 'contract'
       && typeof entry.leaseId === 'string'
       && !Number.isFinite(Number(entry.settledAt)))
+    // Zero-config: when nobody chose a backend and the installed Task Board
+    // answers public-v1 with writes, executions are recorded in its ledger.
+    if (isPrimary && state.policy.executionBackend === 'board' && state.policy.executionBackendSource !== 'operator'
+      && countRunning(state.assignments) === 0 && publicTaskBoardToken() !== '') {
+      try {
+        const negotiated = await ensureContract({ force: true })
+        if (negotiated?.writes === true) {
+          state.policy = { ...state.policy, executionBackend: 'contract' }
+          audit({ type: 'execution_backend_auto', at: Date.now(), from: 'board', to: 'contract', reason: negotiated.reason })
+          touch()
+        }
+      } catch (error) {
+        warn(`automatic contract negotiation failed: ${String(error)}`)
+      }
+    }
     if (isPrimary && (state.policy.executionBackend === 'contract' || restoredContract)) {
       try {
         await ensureContract()
@@ -862,10 +878,49 @@ export function apply(ctx, config = {}) {
   // lease -> attach session -> (failover attempt) -> report -> settle. When the
   // extension is absent the board stays on its built-in backends and reports the
   // refusal instead of emulating an execution it does not own.
-  const contractClient = createTaskBoardContractClient({
+  const legacyContractClient = createTaskBoardContractClient({
     baseUrl: configuredOrigin(),
     timeoutMs: 4000,
   })
+  // When the proposed `/contract` extension is absent (installed 0.12.x) but
+  // the public-v1 API answers with the local token, the SAME host execution
+  // path drives the canonical ledger through it. Chosen at negotiation time.
+  let activeContractClient = legacyContractClient
+  function publicContractAdapter() {
+    const baseUrl = typeof process.env.DSH_TASKBOARD_PUBLIC_URL === 'string' && process.env.DSH_TASKBOARD_PUBLIC_URL !== ''
+      ? process.env.DSH_TASKBOARD_PUBLIC_URL
+      : `${configuredOrigin()}/dsh-taskboard/public/v1`
+    return createPublicContractAdapter(createPublicTaskBoardClient({ baseUrl, token: publicTaskBoardToken() }))
+  }
+  const contractClient = {
+    get baseUrl() { return activeContractClient.baseUrl },
+    negotiation: () => activeContractClient.negotiation(),
+    supports: feature => activeContractClient.supports(feature),
+    async contract() {
+      const legacy = await legacyContractClient.contract()
+      if (legacy?.ok === true && legacy.writes === true) {
+        activeContractClient = legacyContractClient
+        return legacy
+      }
+      if (publicTaskBoardToken() === '') {
+        activeContractClient = legacyContractClient
+        return legacy
+      }
+      const adapter = publicContractAdapter()
+      const negotiated = await adapter.contract()
+      if (negotiated?.ok === true && negotiated.writes === true) {
+        activeContractClient = adapter
+        return negotiated
+      }
+      activeContractClient = legacyContractClient
+      return legacy
+    },
+    leaseExecution: (...args) => activeContractClient.leaseExecution(...args),
+    attachSession: (...args) => activeContractClient.attachSession(...args),
+    submitReport: (...args) => activeContractClient.submitReport(...args),
+    releaseLease: (...args) => activeContractClient.releaseLease(...args),
+    settleExecution: (...args) => activeContractClient.settleExecution(...args),
+  }
   let contractProbe = null
   let contractInFlight = null
 
@@ -3923,6 +3978,8 @@ export function apply(ctx, config = {}) {
             }
             if (route === '/policy') {
               const incoming = { ...state.policy, ...(body.policy ?? {}) }
+              if (Object.hasOwn(body.policy ?? {}, 'executionBackend')) incoming.executionBackendSource = 'operator'
+              else incoming.executionBackendSource = state.policy.executionBackendSource
               if (!isMode(body.policy?.mode)) incoming.mode = state.mode
               const previousBackend = state.policy.executionBackend
               const merged = normalizePolicy(incoming, state.policy)
