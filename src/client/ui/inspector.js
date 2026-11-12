@@ -129,7 +129,12 @@ function dabSaReason(h, reason, className = 'dab-sa-unavailable') {
 }
 
 function dabSaSection(h, key, title, ...children) {
-  return h('section', { key, className: 'dab-sa-section', 'data-section': key },
+  return dabSaSectionQ(h, key, title, false, ...children)
+}
+
+/** Same section; `quiet` renders an empty state as one compact row instead of a card. */
+function dabSaSectionQ(h, key, title, quiet, ...children) {
+  return h('section', { key, className: 'dab-sa-section', 'data-section': key, 'data-quiet': quiet === true ? 'true' : undefined },
     h('h3', { className: 'dab-sa-section-title' }, title),
     ...children.filter(child => child !== null && child !== undefined && child !== false))
 }
@@ -263,7 +268,7 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
   const journal = dabSaBound(activity.slice(-20), 4)
 
   return h('div', { className: 'dab-sa-tab dab-sa-overview' },
-    dabSaSection(h, 'objective', dabT('superOverviewObjective'),
+    dabSaSectionQ(h, 'objective', dabT('superOverviewObjective'), objectives.length === 0,
       objectives.length === 0
         ? (typeof plan.idleReason === 'string' && plan.idleReason !== ''
           ? h('div', { className: 'dab-muted', title: plan.idleReason }, plan.idleReason === 'not_started' ? dabT('superNoObjectiveYet') : `${dabT('superNoObjective')} — ${dabReasonText(plan.idleReason)}`)
@@ -272,14 +277,14 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
           h('span', { className: 'dab-sa-list-title' }, String(objective.title ?? objective.id)),
           h('span', { className: 'dab-tag' }, String(objective.status ?? '?')),
           typeof objective.source === 'string' ? h('span', { className: 'dab-muted' }, ` · ${objective.source}`) : null)))),
-    dabSaSection(h, 'steps', dabT('superOverviewSteps'),
+    dabSaSectionQ(h, 'steps', dabT('superOverviewSteps'), steps.shown.length === 0,
       steps.shown.length === 0
         ? (facts.available ? h('div', { className: 'dab-muted' }, dabReasonText('activity_not_published')) : dabSaReason(h, 'superagent_not_published'))
         : h('ol', { className: 'dab-sa-steps' }, steps.shown.map(entry => h('li', { key: `${entry.at}-${entry.kind}` },
           h('span', { className: 'dab-sa-step-time' }, dabSaMoment(entry.at) ?? ''), h('span', { className: 'dab-grow' }, String(entry.summary ?? entry.kind ?? '?')),
           typeof entry.kind === 'string' ? h('span', { className: 'dab-tag' }, entry.kind) : null))),
       dabSaExtraNode(h, steps.extra)),
-    dabSaSection(h, 'result', dabT('superOverviewResult'),
+    dabSaSectionQ(h, 'result', dabT('superOverviewResult'), lastCycle === null,
       lastCycle === null
         ? h('div', { className: 'dab-muted' }, dabT('superNoCycle'))
         : h('dl', { className: 'dab-sa-dl' },
@@ -293,24 +298,21 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
       workspace !== null && workspace !== undefined && workspace.capabilities !== undefined
         ? dabCapabilityMatrix(h, workspace.capabilities, workspace.capabilityReasons, context)
         : dabCapabilityMatrix(h, capabilities, null, context)),
-    dabSaSection(h, 'incidents', dabT('superOverviewIncidents'),
+    dabSaSectionQ(h, 'incidents', dabT('superOverviewIncidents'), incidents.length === 0,
       incidents.length === 0
         ? h('div', { className: 'dab-muted' }, dabT('superNoIncidents'))
         : h('ul', { className: 'dab-sa-list dab-sa-incidents' }, incidents.slice(0, 5).map((text, index) => h('li', { key: `i-${index}` }, text)))),
-    dabSaSection(h, 'recommendations', dabT('superOverviewRecommendations'),
+    dabSaSectionQ(h, 'recommendations', dabT('superOverviewRecommendations'), recommendationRows.length === 0,
       recommendationRows.length === 0
         ? h('div', { className: 'dab-muted' }, dabT('superNoRecommendations'))
         : h('ul', { className: 'dab-sa-list' }, recommendationRows.map((text, index) => h('li', { key: `r-${index}` }, text)))),
-    dabSaSection(h, 'journal', dabT('superOverviewJournal'),
+    dabSaSectionQ(h, 'journal', dabT('superOverviewJournal'), journal.shown.length === 0,
       journal.shown.length === 0
         ? h('div', { className: 'dab-muted' }, dabT('superNoJournal'))
         : h('ul', { className: 'dab-sa-journal' }, journal.shown.map(entry => h('li', { key: `${entry.at}-${entry.kind}` },
           h('span', { className: 'dab-sa-step-time' }, dabSaMoment(entry.at) ?? ''), String(entry.summary ?? entry.kind ?? '?')))),
       dabSaExtraNode(h, journal.extra)),
-    h(DabSuperagentDecisions, { superagent, filter: decisionFilter, onFilter: onDecisionFilter, onAnswer, busy }),
-    typeof onOpenDetail === 'function'
-      ? h('button', { type: 'button', className: 'dab-btn dab-sa-open-detail', onClick: onOpenDetail }, dabT('superOpenDetail'))
-      : null)
+    h(DabSuperagentDecisions, { superagent, filter: decisionFilter, onFilter: onDecisionFilter, onAnswer, busy }))
 }
 
 /** Projets: real portfolio, per-project policy, scope, Simuler (dry-run). */
@@ -429,9 +431,9 @@ function dabSaDryRunList(h, key, rows, label) {
 }
 
 /** Directives: a real persisted channel (list, add, revoke), never a textarea. */
-function DabDirectiveForm({ projects, busy, onAdd }) {
+function DabDirectiveForm({ projects, busy, onAdd, initialText }) {
   const h = React.createElement
-  const [text, setText] = React.useState('')
+  const [text, setText] = React.useState(typeof initialText === 'string' ? initialText : '')
   const [scope, setScope] = React.useState('global')
   const [projectId, setProjectId] = React.useState('')
   const options = dabSaList(projects)
@@ -442,8 +444,8 @@ function DabDirectiveForm({ projects, busy, onAdd }) {
   },
   h('label', { className: 'dab-sa-field' },
     h('span', { className: 'dab-sa-field-label' }, dabT('superDirectiveText')),
-    h('input', {
-      className: 'dab-input dab-sa-directive-input', type: 'text', value: text,
+    h('textarea', {
+      className: 'dab-input dab-sa-directive-input', rows: 3, value: text,
       'aria-label': dabT('superDirectiveText'), placeholder: dabT('superDirectivePlaceholder'),
       onChange: event => setText(event?.target?.value ?? ''),
     })),
@@ -467,12 +469,13 @@ function DabDirectiveForm({ projects, busy, onAdd }) {
         options.map(project => h('option', { key: project.id, value: project.id }, project.title))))
       : null,
     h('button', {
-      type: 'submit', className: 'dab-btn dab-sa-directive-add', disabled: busy === true || !valid,
+      type: 'submit', className: 'dab-btn dab-sa-directive-add', 'data-primary': 'true', disabled: busy === true || !valid,
     }, dabT('superDirectiveAdd'))))
 }
 
 function DabSuperagentDirectives({ superagent, portfolio, busy, onAdd, onRevoke }) {
   const h = React.createElement
+  const [seed, setSeed] = React.useState({ text: '', n: 0 })
   const facts = dabSuperagentFacts(superagent, null, {})
   const all = [...facts.directives, ...facts.revokedDirectives]
   const bound = dabSaBound(all, DAB_SUPER_PROJECT_LIMIT)
@@ -500,10 +503,14 @@ function DabSuperagentDirectives({ superagent, portfolio, busy, onAdd, onRevoke 
           }, dabT('superRevoke'))
           : h('span', { className: 'dab-muted' }, dabT('superRevoked'))))),
       dabSaExtraNode(h, bound.extra)),
-    h(DabDirectiveForm, { projects: portfolio, busy, onAdd }),
+    h(DabDirectiveForm, { key: `form-${seed.n}`, projects: portfolio, busy, onAdd, initialText: seed.text }),
     h('div', { className: 'dab-sa-examples' },
       h('h3', { className: 'dab-sa-section-title' }, dabT('superDirectiveExamples')),
-      h('ul', { className: 'dab-sa-list' }, examples.map((example, index) => h('li', { key: `ex-${index}` }, example)))))
+      h('div', { className: 'dab-sa-example-list' }, examples.map((example, index) => h('button', {
+        key: `ex-${index}`, type: 'button', className: 'dab-sa-example',
+        title: dabT('superDirectiveUseExample'),
+        onClick: () => setSeed(previous => ({ text: example, n: previous.n + 1 })),
+      }, example)))))
 }
 
 /** Paramètres: model/fallback, level, budget, permissions, Stop, connectors. */
@@ -520,6 +527,7 @@ function DabSuperagentSettings({
   const budget = facts.budget
   const actions = dabSaObject(mandate?.actions) ?? {}
   const notes = Array.isArray(host?.reconcileNotes) ? host.reconcileNotes.slice(-5) : []
+  const globalRefusal = context?.stopped === true ? 'stopped_by_operator' : context?.mode === 'off' ? 'mode_off' : null
   const connector = dabSaObject(taskboard) ?? dabSaObject(host?.taskboardPublic)
   const connectorReason = connector === null ? null : (typeof connector.reason === 'string' ? connector.reason : null)
   const connectorState = connector === null
@@ -530,7 +538,7 @@ function DabSuperagentSettings({
     dabSaSection(h, 'model', dabT('superSettingsModel'),
       h('div', { className: 'dab-sa-model-row' },
         h('span', { className: 'dab-sa-field-label' }, dabT('superModelPrimary')),
-        h('span', { className: 'dab-sa-model-primary' }, facts.modelText ?? (facts.available ? dabT('superModelUnavailable') : dabT('superNotAvailable')))),
+        h('span', { className: 'dab-sa-model-primary' }, facts.modelText ?? (facts.available ? dabT('superModelHostDefault') : dabT('superNotAvailable')))),
       h('div', { className: 'dab-sa-fallbacks' },
         h('span', { className: 'dab-sa-field-label' }, dabT('superModelFallbacks')),
         facts.fallbackModels.length === 0
@@ -572,6 +580,9 @@ function DabSuperagentSettings({
         }),
         h('span', null, dabT('superNotificationsHint')))),
     dabSaSection(h, 'permissions', dabT('superSettingsPermissions'),
+      // A refusal that applies to EVERY action (Stop, Observe mode) is said once
+      // above the list instead of on each of the 13 rows.
+      globalRefusal === null ? null : h('div', { className: 'dab-sa-permissions-global', role: 'note', title: globalRefusal }, dabReasonText(globalRefusal)),
       h('ul', { className: 'dab-sa-permissions' }, DAB_ACTION_ROWS.map(([action, labelKey]) => {
         const granted = actions[action] === true
         // The host capability is authoritative: an action with no adapter must
@@ -584,7 +595,11 @@ function DabSuperagentSettings({
           ? capability.reason
           : null
         const reason = capabilityRefusal ?? dabActionRefusalReason({ action, mandate, context: { ...context, level } })
-        return h('li', { key: action, className: 'dab-sa-permission', 'data-action': action, 'data-granted': granted ? 'true' : 'false' },
+        const shownReason = reason === globalRefusal ? null : reason
+        return h('li', {
+          key: action, className: 'dab-sa-permission', 'data-action': action, 'data-granted': granted ? 'true' : 'false',
+          'data-blocked': granted && reason !== null ? 'true' : 'false',
+        },
           h('label', { className: 'dab-sa-check' },
             h('input', {
               type: 'checkbox', className: 'dab-sa-permission-toggle', checked: granted,
@@ -594,7 +609,7 @@ function DabSuperagentSettings({
             h('span', null, dabT(labelKey))),
           reason === null
             ? h('span', { className: 'dab-sa-permission-ok' }, dabT('superActionGranted'))
-            : h('span', { className: 'dab-sa-permission-reason', title: reason }, dabReasonText(reason)))
+            : shownReason === null ? null : h('span', { className: 'dab-sa-permission-reason', title: reason }, dabReasonText(reason)))
       })),
       h('div', { className: 'dab-muted' }, dabT('superPermissionsHint'))),
     dabSaSection(h, 'diagnostics', dabT('superSettingsDiagnostics'),

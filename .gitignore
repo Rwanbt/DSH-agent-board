@@ -3,3 +3,4 @@ node_modules/
 .playwright-mcp/
 .dev-cookie.txt
 temp/
+.ux-harness/
