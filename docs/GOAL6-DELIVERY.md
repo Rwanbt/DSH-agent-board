@@ -25,7 +25,7 @@ liste ce qui **n'est pas** validé et pourquoi.
 | Task Board propriétaire (lecture) + adaptateur public-v1 + sonde | **Livré, testé** ; **écriture live non activée** (API publique 503, aucun token) |
 | GitHub | **écriture implémentée et validée en live** sur un dépôt privé jetable : issue, commentaire, PR, checks, idempotence (issue/PR non dupliquées). Aucun merge/ push protégé / suppression. Dépôt **archivé** ; sa suppression exige le scope `delete_repo` (commande fournie §10). |
 | Cockpit 4 onglets + bandeau Super Agent, desktop/mobile | **Livré, testé** ; captures ci-dessous |
-| Installation / migration / rollback documentés | **Livré** (§9) |
+| Installation / migration / rollback documentés | **Livré** (§9) ; migration v1→v2 **testée sur hôte réel** (E2E m0–m3), profil desktop réel vérifié |
 | Revue indépendante adversariale | **1 P0 + 3 P1 + 2 P2 trouvés, tous corrigés** ; revérification : **0 P0 / 0 P1 connus**, suite verte |
 
 Conclusion : le système est **utilisable quotidiennement en usage personnel** dans les
@@ -63,7 +63,7 @@ dans `D:\App\dsh-taskboard` (aucun défaut bloquant trouvé côté Task Board).
 |---|---|---|---|
 | P0-A : décalage hôte/client visible (F0) | `host.build {version, schemaVersion, features[], startedAt, pid, source}` publié ; le client compare et dit « hôte plus ancien » | `tests/goal6-host-gate.test.js` (build/schema/features), E2E 0.7 | Livré |
 | P0-B : `[]` ≠ « tous » (F1) | `scopeMode: 'none'\|'selected'\|'all'`, défaut `none`, `all` exige `allConsent{text:'ALL_PROJECTS',at}` | `tests/mandate.test.js` (20 cas), `goal6-host-gate` (migration + restart + L4), E2E 0a/0f | Livré |
-| P0-B : migration dangereuse | `migrateLegacyPolicy` : ancien autonome + liste vide → `none`, L1, actions `false`, `requiresConfiguration:true`, audit unique | `goal6-host-gate` « v1 migration… » ; E2E 0a | Livré |
+| P0-B : migration dangereuse | `migrateLegacyPolicy` : ancien autonome + liste vide → `none`, L1, actions `false`, `requiresConfiguration:true`, audit unique | `goal6-host-gate` « v1 migration… » ; **E2E m0–m3 (état v1 semé avant démarrage du vrai hôte)** ; profil desktop réel migré | Livré |
 | P0-B : gate central | `effectivePolicyOf` appelé par tick, `/dispatch`, approbation, reprise, failover/handoff, retry, Super Agent | `tests/mandate.test.js`, `goal6-superagent-host`, `goal6-host-gate` (handoff après retrait du projet), 570 tests | Livré |
 | P0-C F2 : capacités véridiques | `capabilities.<action> = {state,reason,source}` dérivé de l'état réel ; jamais `available` si refus | `goal6-host-gate` « capabilities are truthful in OFF and after a Stop » | Livré |
 | P0-C F3 : Stop lisible + Reprendre | `stoppedAt` explicite, `POST /resume`, bandeau « Arrêté (observation) » + Reprendre | hôte : test Stop/Resume ; UI : `cockpit-superagent` | Livré |
@@ -205,6 +205,12 @@ audit.jsonl: 1× mandate_migrated (to={scopeMode:none,L0,requiresConfiguration:t
 Interprétation : l'upgrade a migré l'état réel **une fois** et l'installation est
 restée **inerte** (aucun projet, aucun lancement). C'est la garantie P0 vérifiée sur
 l'installation de production, pas seulement sur un profil jetable.
+
+Upgrade réellement **rejoué** par l'E2E (`m0`–`m3`) : un `state.json` **v1** est écrit
+avant le démarrage du vrai hôte ; au boot il devient `schemaVersion:2`, mandat
+`none/L0/requiresConfiguration:true`, audit `mandate_migrated`, et **tous les
+scénarios 0/a/b/c passent ensuite sur cette installation migrée** — la migration ne
+casse donc pas le comportement normal.
 
 Performance (sections GOAL 6) : projection `live-150` p50 0,164 ms / `history-1000`
 p50 1,020 ms (plus rapide que la baseline documentée, aucun signe de régression) ;

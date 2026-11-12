@@ -344,6 +344,27 @@ async function ensureSafeHome() {
   await mkdir(evidenceDir, { recursive: true })
 }
 
+async function seedLegacyState() {
+  // GOAL 6: prove the upgrade path on a REAL host, not only in unit tests. A
+  // pre-mandate (schemaVersion 1) state is written before the host boots; the
+  // host must migrate it once, restrictively, and stay inert.
+  const dir = join(home, 'agent-board')
+  await mkdir(dir, { recursive: true })
+  const legacy = {
+    schemaVersion: 1,
+    savedAt: Date.now() - 86_400_000,
+    mode: 'off',
+    stoppedAt: null,
+    assignments: [],
+    proposals: [],
+    previews: {},
+    turnEnds: {},
+    audit: [{ at: Date.now() - 86_400_000, type: 'legacy_marker', reason: 'pre-upgrade installation' }],
+  }
+  await writeFile(join(dir, 'state.json'), `${JSON.stringify(legacy, null, 2)}\n`, 'utf8')
+  results.host.seededLegacyState = { schemaVersion: 1, path: redact(join(dir, 'state.json')) }
+}
+
 async function seedWorkspace() {
   const projectDir = join(home, 'project')
   const projectBDir = join(home, 'project-b')
@@ -1157,6 +1178,7 @@ async function listScreenshots() {
 async function main() {
   results.host.home = home
   await ensureSafeHome()
+  await seedLegacyState()
   await seedWorkspace()
 
   fakePrimary = await startFakeLlm({ model: 'e2e-fake-gpt' })
@@ -1172,6 +1194,25 @@ async function main() {
   await createProfileAndInstall()
   const startupUrl = await bootHost()
   results.host.startupUrl = redact(startupUrl)
+
+  // GOAL 6 upgrade proof: a schemaVersion 1 installation is migrated once, with a
+  // restrictive mandate, and must remain inert. This runs on the real host before
+  // any scenario touches the board.
+  {
+    const state = await boardState()
+    const migration = {
+      schemaVersion: state.schemaVersion,
+      scopeMode: state.mandate?.scopeMode ?? null,
+      level: state.mandate?.level ?? null,
+      requiresConfiguration: state.mandate?.requiresConfiguration ?? null,
+      migratedAudit: (state.audit ?? []).some(entry => entry.type === 'mandate_migrated'),
+    }
+    results.host.migration = migration
+    assert('m0. the seeded v1 state was migrated to schemaVersion 2', migration.schemaVersion === 2, JSON.stringify(migration))
+    assert('m1. the migrated mandate is restrictive (scope none, L0, unconfirmed)', migration.scopeMode === 'none' && migration.level === 'L0' && migration.requiresConfiguration === true)
+    assert('m2. the migration is audited as mandate_migrated', migration.migratedAudit === true)
+    assert('m3. the migrated installation stays inert (mode off, no assignment)', state.mode === 'off' && (state.assignments ?? []).length === 0, JSON.stringify({ mode: state.mode, assignments: (state.assignments ?? []).length }))
+  }
 
   const models = await fetch(`${fakePrimary.baseURL}/models`, { signal: AbortSignal.timeout(5000) }).then(async response => ({ status: response.status, body: await response.json() }))
   results.simulation.primaryModels = models
