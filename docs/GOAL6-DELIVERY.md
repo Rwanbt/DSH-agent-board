@@ -2,6 +2,8 @@
 
 - Date : 2026-11-12 (Europe/Paris)
 - Branche : `feat/agent-board-superagent` (depuis `feat/agent-board-responsive-cockpit`, HEAD initial `afd7a66`)
+- Branche poussée : `origin/feat/agent-board-superagent`
+- **PR #3** (empilée, non fusionnée) : https://github.com/Rwanbt/DSH-agent-board/pull/3 → base `feat/agent-board-responsive-cockpit`
 - Dépôt Agent Board : `Rwanbt/DSH-agent-board`
 - Dépôt Task Board : `Rwanbt/dsh-taskboard`, branche `feat/universal-sync`, HEAD `e6aaece`, version **0.12.0**
 - Suite Agent Board : **554 / 554 tests passent**, 0 échec (`node --test tests/`)
@@ -21,7 +23,7 @@ liste ce qui **n'est pas** validé et pourquoi.
 | Super Agent IA réel (session DSH, modèle, directives, mémoire, décisions) | **Livré, testé hôte réel** (LLM simulé au bord, DSH réel) |
 | Planification multi-projets équitable + reprise après crash | **Livré, testé** (hôte réel : A puis B, C jamais touché) |
 | Task Board propriétaire (lecture) + adaptateur public-v1 + sonde | **Livré, testé** ; **écriture live non activée** (API publique 503, aucun token) |
-| GitHub bout en bout (issue → tâche → worker → PR/checks) | **NON validé** : aucun identifiant ni dépôt de test autorisé ; l'adaptateur reste en lecture seule et n'annonce aucune écriture |
+| GitHub bout en bout (issue → tâche → worker → PR/checks) | **NON validé** : aucune écriture n'est implémentée ni annoncée ; **la lecture réelle est validée en live** (3 PR ouvertes listées le 12/11 via l'adaptateur). L'écriture exige un dépôt de test et une décision produit non données. |
 | Cockpit 4 onglets + bandeau Super Agent, desktop/mobile | **Livré, testé** ; captures ci-dessous |
 | Installation / migration / rollback documentés | **Livré** (§9) |
 
@@ -194,6 +196,16 @@ Le build installé 0.12.0 a été validé en process isolé (ledger temporaire) 
 `dependency_blocked` 409, mauvais token 401, aucune fuite de token. Voir
 `docs/TASKBOARD-PUBLIC-V1-AUDIT.md`.
 
+GitHub (lecture réelle, sans token, adaptateur du produit) :
+
+```
+createGithubAdapter({ repository: 'Rwanbt/DSH-agent-board', token: '' }).list()
+→ live:true, status:available, 3 éléments (pull_request), pages:1, truncated:false
+```
+
+Cela prouve la lecture réelle (API GitHub, pagination, normalisation) ; **aucune
+écriture GitHub n'a été exécutée** et l'adaptateur n'en annonce aucune.
+
 ---
 
 ## 7. Sécurité (propriétés couvertes par tests)
@@ -278,10 +290,12 @@ côté un document illisible au lieu de l'écraser.
 
 ### Bloquants externes (non résolus, non simulés en « live »)
 
-1. **GitHub bout en bout non validé** : aucun identifiant, aucun dépôt de test autorisé
-   dans cet environnement. L'adaptateur existant reste **lecture seule** ; aucune
-   capacité d'écriture n'est annoncée. Le scénario issue → tâche → worker → PR/checks
-   n'est donc **pas** prouvé. C'est le principal écart à la barre de sortie P3.
+1. **GitHub bout en bout non validé** : la **lecture** réelle est prouvée (voir §6) et
+   `gh` est authentifié sur la machine, mais l'adaptateur est en **lecture seule** :
+   aucune création d'issue, commentaire ou PR n'est implémentée ni annoncée. Le scénario
+   issue → tâche → worker → PR/checks n'est donc **pas** prouvé. C'est le principal écart
+   à la barre de sortie P3, et il exige une décision produit (dépôt de test autorisé +
+   écriture GitHub) qui n'a pas été donnée.
 2. **Écritures Task Board publiques non activées en live** : `DSH_TASKBOARD_PUBLIC_TOKEN`
    absent du host audité (503 `public_api_disabled`). L'adaptateur et le contrat sont
    implémentés et testés (serveur local + build réel isolé), mais aucune écriture n'a
