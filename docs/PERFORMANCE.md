@@ -146,3 +146,50 @@ is also printed to stdout and the table to stderr.
 - Heap numbers exclude the fixture data shared with the projection.
 - The 50-notifications/s burst is a synthetic upper bound, not an observed DSH
   notification rate.
+
+## GOAL 6 update — projection re-run and additive payload cost
+
+Two measurements were added with the Super Agent work. Both are synthetic and
+say so.
+
+### Re-run of the projection benchmark (2026-11-12, same fixtures)
+
+| Scenario | Nodes | build p50 | build p95 | aggregate p50 |
+|---|---|---|---|---|
+| `live-150` | 150 | 0.164 ms | 0.278 ms | 0.012 ms |
+| `history-1000` | 1,000 | 1.020 ms | 1.678 ms | 0.084 ms |
+| `deep-chain-1000` | 1,000 | 0.965 ms | 1.612 ms | 0.119 ms |
+
+Client store: 50 notifications / 1,000 ms → **5 rebuilds** (coalesced). These are
+**faster** than the earlier baseline on the same machine (0.510 / 2.955 / 3.178 ms
+p50); no regression is observed, but cross-run comparison is noisy and the
+absolute numbers remain synthetic.
+
+Command: `node scripts/bench/projection-bench.mjs` → `docs/bench/projection-bench.*`.
+
+### Additive `/state` payload (the new sections)
+
+`scripts/bench/payload-bench.mjs` measures the GOAL 6 sections only (mandate,
+portfolio, capabilities, superagent, host) with worst-case bounded lists
+(40 directives, 20 pending decisions, 30 activity rows):
+
+| Fixture | mandate | portfolio | capabilities | superagent | **total** |
+|---|---|---|---|---|---|
+| 5 projects / 25 tasks | 1.3 KB | 2.0 KB | 1.0 KB | 30.1 KB | **34.9 KB** |
+| 100 projects / 500 tasks | 8.1 KB | 32.8 KB | 1.0 KB | 61.0 KB | **103.4 KB** |
+
+The Super Agent share is dominated by the **bounded** directive/pending-decision
+lists, not by the ledger: the host publishes `directives.slice(-40)`,
+`decisions.pending.slice(0,20)` and `activity.slice(-40)`, so it cannot grow with
+history. The portfolio grows with the project count (not with task count: tasks
+are collapsed to counters). SSE sends the whole state per coalesced frame
+(120 ms window), so on a 100-project install each frame is ≈ 100 KB on localhost;
+this was not measured over a real SSE transport, and it is one more reason to keep
+the project list bounded/selected.
+
+Commands: `node scripts/bench/payload-bench.mjs` and
+`node scripts/bench/payload-bench.mjs --projects=5 --tasks=5 --out=payload-bench-small.json`
+→ `docs/bench/payload-bench*.json`.
+
+Limits: size only, no serialization latency, no SSE throughput, no browser JSON
+parsing measured.

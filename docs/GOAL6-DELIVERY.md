@@ -192,8 +192,27 @@ E2E hôte réel (DSH isolé, profil `e2e`, Task Board et fournisseurs simulés a
 | c3 projet C hors périmètre | 0 assignment, 0 appel, 0 écriture |
 | c4/c5 portfolio publié | C `selected:false`, A `level:L4` |
 
-Preuve Task Board réelle (lecture) :
+Preuve sur le **profil desktop réel** (installation existante, pas l'E2E isolé) —
+détail dans `docs/e2e/REAL-PROFILE-2026-11-12.md` :
 
+```
+state.json : schemaVersion 2 · mode off · mandate.scopeMode none · level L0
+             requiresConfiguration true · projects {} · superagent null
+audit.jsonl: 1× mandate_migrated (to={scopeMode:none,L0,requiresConfiguration:true})
+             puis 0 launch / 0 delegation_allowed / 0 policy_changed
+```
+
+Interprétation : l'upgrade a migré l'état réel **une fois** et l'installation est
+restée **inerte** (aucun projet, aucun lancement). C'est la garantie P0 vérifiée sur
+l'installation de production, pas seulement sur un profil jetable.
+
+Performance (sections GOAL 6) : projection `live-150` p50 0,164 ms / `history-1000`
+p50 1,020 ms (plus rapide que la baseline documentée, aucun signe de régression) ;
+payload `/state` additif borné : 34,9 KB pour 5 projets / 25 tâches, 103,4 KB pour
+100 projets / 500 tâches (listes de directives/décisions bornées, indépendantes de
+l'historique) — détail dans `docs/PERFORMANCE.md`.
+
+Preuve Task Board réelle (lecture) :
 ```
 GET http://127.0.0.1:62124/dsh-taskboard/public/v1/meta    → 503 public_api_disabled
 GET .../projects                                          → 503 public_api_disabled
