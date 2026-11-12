@@ -33,23 +33,72 @@ const DAB_CAPABILITY_ROWS = Object.freeze([
  * Map one capability value to a visible state and an explicit reason. An absent
  * value is unavailable, never assumed available. The host's own reason (a real
  * code such as `taskboard_write_api_unavailable`) wins over a generic label.
+ *
+ * GOAL 6: the v2 payload may publish `{ state, reason, source }` per entry
+ * instead of a bare string. Both shapes are read. `context` carries the real
+ * refusal facts (mode, Stop, empty scope, pause) so a `gated` value can NEVER
+ * be painted green while the mandate actually refuses (F2).
  */
-function dabCapabilityEntry(key, capabilities, reasons) {
+const DAB_CONTEXT_GATED_CAPABILITIES = Object.freeze(['delegate', 'reassign', 'priority'])
+// A payload may still mark an entry `gated` while carrying a refusal code as
+// its reason (contract §1.4 vocabulary). A refusal can never render as available.
+const DAB_REFUSAL_REASON_CODES = Object.freeze([
+  'mode_off', 'scope_none', 'project_not_selected', 'project_disabled',
+  'paused_by_operator', 'stopped_by_operator', 'level_too_low', 'action_disabled',
+  'approval_required', 'decision_missing', 'decision_expired',
+  'critical_action_not_granted', 'budget_exhausted', 'project_budget_exhausted',
+  'integration_unavailable', 'concurrency_limit', 'no_candidate_work',
+  'requires_configuration',
+])
+
+function dabCapabilityRejection(context, key) {
+  if (context === null || context === undefined) return null
+  if (!DAB_CONTEXT_GATED_CAPABILITIES.includes(key)) return null
+  if (context.stopped === true) return 'stopped_by_operator'
+  if (context.mode === 'off') return 'mode_off'
+  if (context.paused === true) return 'paused_by_operator'
+  if (context.requiresConfiguration === true) return 'requires_configuration'
+  if (context.scopeMode === 'none') return 'scope_none'
+  return null
+}
+
+function dabCapabilityEntry(key, capabilities, reasons, context) {
+  const rejection = dabCapabilityRejection(context, key)
   const missing = capabilities === null || capabilities === undefined
-  const value = missing ? undefined : capabilities[key]
-  const hosted = reasons !== null && reasons !== undefined && typeof reasons[key] === 'string' && reasons[key] !== ''
+  const raw = missing ? undefined : capabilities[key]
+  const hostedReasons = reasons !== null && reasons !== undefined && typeof reasons[key] === 'string' && reasons[key] !== ''
     ? reasons[key]
     : null
-  const withReason = (labelKey, available, fallbackKey) => ({ labelKey, available, reasonKey: hosted === null ? fallbackKey : null, reason: hosted })
-  if (value === true) return { labelKey: 'capabilityAvailable', available: true, reasonKey: null, reason: null }
-  if (value === 'gated') return withReason('capabilityGated', true, 'capReasonGated')
-  if (value === 'proposal_only') return withReason('capabilityProposalOnly', false, 'capReasonProposalOnly')
-  if (value === 'unavailable' || value === false) {
+  const asObject = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : null
+  const payloadState = asObject === null ? raw : asObject.state
+  const payloadReason = asObject === null
+    ? hostedReasons
+    : (typeof asObject.reason === 'string' && asObject.reason !== '' ? asObject.reason : hostedReasons)
+  const withReason = (labelKey, available, fallbackKey) => ({
+    labelKey, available, reasonKey: payloadReason === null ? fallbackKey : null, reason: payloadReason,
+  })
+  // The real state wins over the payload claim: a refused action is refused.
+  if (rejection !== null) return { labelKey: 'capabilityUnavailable', available: false, reasonKey: null, reason: rejection }
+  if (payloadState === true || payloadState === 'available') {
+    return { labelKey: 'capabilityAvailable', available: true, reasonKey: null, reason: null }
+  }
+  if (payloadState === 'gated') {
+    if (payloadReason !== null && DAB_REFUSAL_REASON_CODES.includes(payloadReason)) {
+      return { labelKey: 'capabilityUnavailable', available: false, reasonKey: null, reason: payloadReason }
+    }
+    return withReason('capabilityGated', true, 'capReasonGated')
+  }
+  if (payloadState === 'proposal_only') return withReason('capabilityProposalOnly', false, 'capReasonProposalOnly')
+  if (payloadState === 'unavailable' || payloadState === false) {
     if (key === 'kanbanWrite') return withReason('capabilityUnavailable', false, 'capReasonReadOnly')
     if (key === 'receiveOrchestratorReports') return withReason('capabilityUnavailable', false, 'capReasonNoChannel')
     if (key === 'delegate') return withReason('capabilityUnavailable', false, 'capReasonDisabled')
     if (key === 'reassign' || key === 'priority') return withReason('capabilityUnavailable', false, 'capReasonProposalOnly')
     return withReason('capabilityUnavailable', false, 'capReasonDisabled')
+  }
+  if (asObject !== null) {
+    // Unknown `state` string in an object entry: unavailable, with the reason.
+    return { labelKey: 'capabilityUnavailable', available: false, reasonKey: payloadReason === null ? 'capReasonUnknown' : null, reason: payloadReason }
   }
   return {
     labelKey: 'capabilityUnavailable',
@@ -57,6 +106,19 @@ function dabCapabilityEntry(key, capabilities, reasons) {
     reasonKey: missing ? 'capReasonSupervisionUnavailable' : 'capReasonUnknown',
     reason: null,
   }
+}
+
+/**
+ * Normalize the payload capability matrix into display rows. Used by the band's
+ * shared body and by the Super Agent inspector, so both never disagree.
+ */
+function dabEffectiveCapabilities(capabilities, context) {
+  const rows = []
+  for (const [key, labelKey] of DAB_CAPABILITY_ROWS) {
+    const entry = dabCapabilityEntry(key, capabilities, null, context)
+    rows.push({ key, labelKey, stateLabelKey: entry.labelKey, available: entry.available, reasonKey: entry.reasonKey, reason: entry.reason })
+  }
+  return rows
 }
 
 function dabCounter(h, key, tone, value, label) {
@@ -125,21 +187,27 @@ function dabRecommendationList(h, recommendations, projects) {
     recommendation.taskId ? h('span', { className: 'dab-mono' }, String(recommendation.taskId)) : null)))
 }
 
-function dabCapabilityMatrix(h, capabilities, reasons) {
+function dabCapabilityMatrix(h, capabilities, reasons, context) {
+  const rows = reasons === null || reasons === undefined
+    ? dabEffectiveCapabilities(capabilities, context)
+    : DAB_CAPABILITY_ROWS.map(([key, labelKey]) => {
+      const entry = dabCapabilityEntry(key, capabilities, reasons, context)
+      return { key, labelKey, stateLabelKey: entry.labelKey, available: entry.available, reasonKey: entry.reasonKey, reason: entry.reason }
+    })
   return h('div', { className: 'dab-cap-grid', role: 'list', 'aria-label': dabT('supervisionCapabilities') },
-    DAB_CAPABILITY_ROWS.map(([key, labelKey]) => {
-      const entry = dabCapabilityEntry(key, capabilities, reasons)
-      return h('div', {
-        key, role: 'listitem', className: 'dab-cap-row',
-        'data-available': entry.available ? 'true' : 'false',
-        'data-capability': key,
-      },
-      h('span', { className: 'dab-cap-label' }, dabT(labelKey)),
-      h('span', { className: 'dab-cap-value', 'data-available': entry.available ? 'true' : 'false' }, dabT(entry.labelKey)),
-      entry.reasonKey === null && entry.reason === null
-        ? null
-        : h('span', { className: 'dab-cap-reason' }, h('span', { className: 'dab-cap-reason-label' }, `${dabT('supervisionCapabilityReason')} : `), entry.reason ?? dabT(entry.reasonKey)))
-    }))
+    rows.map(entry => h('div', {
+      key: entry.key, role: 'listitem', className: 'dab-cap-row',
+      'data-available': entry.available ? 'true' : 'false',
+      'data-capability': entry.key,
+      ...(entry.available ? {} : { 'data-refused': 'true' }),
+    },
+    h('span', { className: 'dab-cap-label' }, dabT(entry.labelKey)),
+    h('span', { className: 'dab-cap-value', 'data-available': entry.available ? 'true' : 'false' }, dabT(entry.stateLabelKey)),
+    entry.reasonKey === null && entry.reason === null
+      ? null
+      : h('span', { className: 'dab-cap-reason' },
+        h('span', { className: 'dab-cap-reason-label' }, `${dabT('supervisionCapabilityReason')} : `),
+        entry.reason ?? dabT(entry.reasonKey)))))
 }
 
 /**
@@ -149,8 +217,12 @@ function dabCapabilityMatrix(h, capabilities, reasons) {
  * `DabSuperOrchestratorBar` (cockpit), so the same real facts are never
  * rendered twice with two different meanings.
  */
-function DabSupervisionBody({ workspace, totals, projects, id = DAB_SUPERVISION_BODY_ID, hidden = false }) {
+function DabSupervisionBody({ workspace, totals, projects, id = DAB_SUPERVISION_BODY_ID, hidden = false, context = null }) {
   const h = React.createElement
+  // F4: in Arrêt / stopped, dozens of inapplicable delegation recommendations
+  // are noise. The real count stays visible, the list becomes ONE explicit line.
+  const modeBlocked = context !== null && context !== undefined && (context.stopped === true || context.mode === 'off')
+  const recommendationCount = Array.isArray(workspace.recommendations) ? workspace.recommendations.length : 0
   return h('div', { className: 'dab-band-body', id, hidden },
     workspace.available ? null : h('div', { className: 'dab-band-notice' }, dabT('supervisionUnavailable')),
     // A Task Board that cannot be read is REPORTED here, not silently missing.
@@ -174,8 +246,11 @@ function DabSupervisionBody({ workspace, totals, projects, id = DAB_SUPERVISION_
         hourly: workspace.delegation.hourlyLimit ?? '?',
       })),
     h('div', { className: 'dab-band-section' },
-      h('div', { className: 'dab-label' }, `${dabT('supervisionRecommendations')} (${Array.isArray(workspace.recommendations) ? workspace.recommendations.length : 0})`),
-      dabRecommendationList(h, workspace.recommendations, projects)),
+      h('div', { className: 'dab-label' }, `${dabT('supervisionRecommendations')} (${recommendationCount})`),
+      modeBlocked
+        ? h('div', { className: 'dab-band-notice', 'data-refused': 'true', role: 'note' },
+          `${dabT('supervisionStopNoAction')}${context.stopped === true ? ' (stopped_by_operator)' : ' (mode_off)'}`)
+        : dabRecommendationList(h, workspace.recommendations, projects)),
     h('div', { className: 'dab-band-section' },
       h('div', { className: 'dab-label' }, `${dabT('supervisionBlocks')} (${Array.isArray(workspace.blocks) ? workspace.blocks.length : 0})`),
       dabBlockList(h, workspace.blocks)),
@@ -184,7 +259,7 @@ function DabSupervisionBody({ workspace, totals, projects, id = DAB_SUPERVISION_
       dabDependencyList(h, workspace.crossProjectDependencies, projects)),
     h('div', { className: 'dab-band-section' },
       h('div', { className: 'dab-label' }, dabT('supervisionCapabilities')),
-      dabCapabilityMatrix(h, workspace.capabilities, workspace.capabilityReasons)))
+      dabCapabilityMatrix(h, workspace.capabilities, workspace.capabilityReasons, context)))
 }
 
 /**
@@ -227,7 +302,7 @@ function DabSupervisionBand({ workspace, totals, projects, open, onToggle }) {
 
   // The body is ALWAYS rendered (hidden when collapsed): `aria-controls` must
   // never point at a missing element, and the hidden attribute is enough.
-  const body = h(DabSupervisionBody, { workspace, totals, projects, hidden: !open })
+  const body = h(DabSupervisionBody, { workspace, totals, projects, hidden: !open, context: { mode: workspace.mode } })
 
   return h('section', {
     className: 'dab-band',
@@ -367,4 +442,223 @@ function DabHierarchyView({ hierarchy, ctx, compact }) {
     empty === null
       ? h('div', { className: 'dab-hier-projects' }, hierarchy.projects.map(project => h(DabHierarchyProject, { key: project.id, project, ctx, compact, filtersActive })))
       : null)
+}
+
+// -------------------------------------------------------------- Super Agent facts
+/**
+ * Two distinct states, never merged (contract §5): `supervision` is the
+ * synthetic host layer, `superagent` is the durable AI session. These helpers
+ * derive the AI-session facts with every field guarded, so an old host payload
+ * (no `superagent`) renders an explicit "non disponible" instead of crashing.
+ */
+const DAB_SUPERAGENT_STATE_TEXT = {
+  unavailable: 'superStateUnavailable',
+  notStarted: 'superStateNotStarted',
+  stopped: 'superStateStopped',
+  dormant: 'superStateDormant',
+  thinking: 'superStateThinking',
+  waiting: 'superStateWaiting',
+  active: 'superStateActive',
+  error: 'superStateError',
+}
+
+function dabSuperagentStateLabelKey(stateKey) {
+  return DAB_SUPERAGENT_STATE_TEXT[stateKey] ?? 'superStateUnavailable'
+}
+
+function dabSuperagentFacts(superagent, mandate, context = {}) {
+  const sa = superagent !== null && typeof superagent === 'object' && !Array.isArray(superagent) ? superagent : null
+  const identity = sa?.identity !== null && typeof sa?.identity === 'object' ? sa.identity : null
+  const session = sa?.session !== null && typeof sa?.session === 'object' ? sa.session : null
+  const runtime = sa?.runtime !== null && typeof sa?.runtime === 'object' ? sa.runtime : null
+  const plan = sa?.plan !== null && typeof sa?.plan === 'object' ? sa.plan : null
+  const decisions = Array.isArray(sa?.decisions) ? sa.decisions.filter(entry => entry !== null && typeof entry === 'object') : []
+  const directives = Array.isArray(sa?.directives) ? sa.directives.filter(entry => entry !== null && typeof entry === 'object') : []
+  const activity = Array.isArray(sa?.activity) ? sa.activity.filter(entry => entry !== null && typeof entry === 'object') : []
+  const pendingDecisions = decisions.filter(entry => entry.status === 'pending')
+  const model = identity?.model !== null && typeof identity?.model === 'object' ? identity.model : null
+  const stopped = context !== null && context !== undefined && context.stopped === true
+  const sessionStatus = typeof session?.active === 'boolean' ? session.active : null
+  const identityStatus = typeof identity?.status === 'string' ? identity.status : null
+  let stateKey = 'unavailable'
+  if (sa !== null) {
+    if (sessionStatus === true) {
+      stateKey = identityStatus === 'thinking' ? 'thinking'
+        : identityStatus === 'waiting_human' ? 'waiting'
+          : identityStatus === 'paused' ? 'dormant'
+            : identityStatus === 'error' ? 'error'
+              : 'active'
+    } else if (stopped || identityStatus === 'stopped') {
+      stateKey = 'stopped'
+    } else {
+      stateKey = 'notStarted'
+    }
+  }
+  const stateReason = sa === null
+    ? 'hôte : superagent non publié'
+    : (runtime?.available === false && typeof runtime?.reason === 'string' ? runtime.reason : (typeof session?.lastError === 'string' ? session.lastError : null))
+  const policies = mandate !== null && typeof mandate === 'object' && mandate.projects !== null && typeof mandate.projects === 'object' && !Array.isArray(mandate.projects)
+    ? mandate.projects
+    : {}
+  const policyIds = Object.keys(policies)
+  const enabledProjects = policyIds.filter(id => policies[id]?.enabled === true).length
+  const totalProjects = policyIds.length
+  const lastActivity = activity.length > 0 ? activity[activity.length - 1] : null
+  return {
+    available: sa !== null,
+    identity,
+    session,
+    sessionActive: sessionStatus === true,
+    sessionStatus,
+    identityStatus,
+    stateKey,
+    stateLabelKey: dabSuperagentStateLabelKey(stateKey),
+    stateReason,
+    sessionId: typeof session?.sessionId === 'string' ? session.sessionId : null,
+    generation: Number.isFinite(Number(identity?.generation)) ? Number(identity.generation) : null,
+    model,
+    modelText: model !== null && typeof model.model === 'string'
+      ? `${typeof model.provider === 'string' ? `${model.provider}/` : ''}${model.model}`
+      : null,
+    fallbackModels: Array.isArray(model?.fallback) ? model.fallback.filter(entry => entry !== null && typeof entry === 'object') : [],
+    level: typeof identity?.level === 'string' ? identity.level : (typeof mandate?.level === 'string' ? mandate.level : null),
+    enabledProjects,
+    totalProjects,
+    decisions,
+    pendingDecisions,
+    pendingCount: pendingDecisions.length,
+    pendingApprovals: pendingDecisions.filter(entry => entry.kind === 'approval').length,
+    directives: directives.filter(entry => entry.status !== 'revoked'),
+    revokedDirectives: directives.filter(entry => entry.status === 'revoked'),
+    activity,
+    lastActivity,
+    activitySummary: typeof lastActivity?.summary === 'string' ? lastActivity.summary : null,
+    plan,
+    budget: sa?.budget !== null && typeof sa?.budget === 'object' ? sa.budget : null,
+    runtime,
+    nextWakeAt: Number.isFinite(Number(sa?.nextWakeAt)) ? Number(sa.nextWakeAt) : null,
+    lastCycle: sa?.lastCycle !== null && typeof sa?.lastCycle === 'object' ? sa.lastCycle : null,
+    memory: sa?.memory !== null && typeof sa?.memory === 'object' ? sa.memory : null,
+    paused: context?.paused === true || mandate?.paused === true || identityStatus === 'paused',
+  }
+}
+
+/** Portfolio rows from the real payload sources, in that precedence order. */
+function dabSuperagentPortfolio(host, superagent) {
+  const sources = [
+    superagent?.portfolio,
+    host?.portfolio,
+    host?.projects,
+    host?.workspaces,
+    Array.isArray(superagent?.plan?.objectives)
+      ? superagent.plan.objectives.map(objective => ({ id: objective?.projectId, title: objective?.projectId }))
+      : null,
+  ]
+  const seen = new Map()
+  const add = raw => {
+    if (raw === null || raw === undefined) return
+    if (Array.isArray(raw)) { for (const entry of raw) add(entry); return }
+    if (typeof raw !== 'object') return
+    const id = typeof raw.id === 'string' ? raw.id : (typeof raw.projectId === 'string' ? raw.projectId : (typeof raw.workspaceId === 'string' ? raw.workspaceId : null))
+    if (id === null || id === '' || seen.has(id)) return
+    seen.set(id, {
+      id,
+      title: typeof raw.title === 'string' && raw.title !== '' ? raw.title : (typeof raw.name === 'string' && raw.name !== '' ? raw.name : id),
+      source: typeof raw.source === 'string' && raw.source !== ''
+        ? raw.source
+        : (typeof raw.canonicalSource === 'string' && raw.canonicalSource !== '' ? raw.canonicalSource : null),
+      raw,
+    })
+  }
+  for (const source of sources) add(source)
+  return [...seen.values()]
+}
+
+/** Per-project policy rows: toggle, level, priority, budget, inherited model. */
+const DAB_AUTONOMY_LEVELS = Object.freeze(['L0', 'L1', 'L2', 'L3', 'L4'])
+
+function dabProjectPolicyRows(host, superagent, mandate) {
+  const portfolio = dabSuperagentPortfolio(host, superagent)
+  const policies = mandate !== null && typeof mandate === 'object' && mandate.projects !== null && typeof mandate.projects === 'object' && !Array.isArray(mandate.projects)
+    ? mandate.projects
+    : {}
+  const selectedWorkspaces = Array.isArray(mandate?.selectedWorkspaces) ? mandate.selectedWorkspaces : []
+  const scopeMode = typeof mandate?.scopeMode === 'string' ? mandate.scopeMode : 'none'
+  const identityModel = superagent?.identity?.model !== null && typeof superagent?.identity?.model === 'object' ? superagent.identity.model : null
+  const known = new Set(portfolio.map(entry => entry.id))
+  const extra = Object.keys(policies).filter(id => !known.has(id)).map(id => ({ id, title: id, source: null, raw: null }))
+  return [...portfolio, ...extra].map(entry => {
+    const policy = policies[entry.id] !== null && typeof policies[entry.id] === 'object' ? policies[entry.id] : {}
+    const selected = scopeMode === 'all' || (scopeMode === 'selected' && selectedWorkspaces.includes(entry.id))
+    const enabled = policy.enabled === true
+    let reason = null
+    if (scopeMode === 'none') reason = 'scope_none'
+    else if (!selected) reason = 'project_not_selected'
+    else if (!enabled) reason = 'project_disabled'
+    const model = policy.model !== null && typeof policy.model === 'object' ? policy.model : identityModel
+    return {
+      id: entry.id,
+      title: entry.title,
+      source: entry.source,
+      enabled,
+      selected,
+      level: typeof policy.level === 'string' ? policy.level : 'L0',
+      priority: Number.isFinite(Number(policy.priority)) ? Number(policy.priority) : 5,
+      model,
+      budget: policy.budget !== null && typeof policy.budget === 'object' ? policy.budget : null,
+      reason,
+    }
+  })
+}
+
+const DAB_ACTION_ROWS = Object.freeze([
+  ['comment', 'actionComment'],
+  ['create_task', 'actionCreateTask'],
+  ['update_task', 'actionUpdateTask'],
+  ['launch', 'actionLaunch'],
+  ['delegate', 'actionDelegate'],
+  ['schedule', 'actionSchedule'],
+  ['push_branch', 'actionPushBranch'],
+  ['open_pr', 'actionOpenPr'],
+  ['merge', 'actionMerge'],
+  ['protected_branch_write', 'actionProtectedBranch'],
+  ['delete_task', 'actionDeleteTask'],
+  ['secrets', 'actionSecrets'],
+  ['policy_change', 'actionPolicyChange'],
+])
+const DAB_CRITICAL_ACTIONS = Object.freeze(['merge', 'protected_branch_write', 'delete_task', 'secrets', 'policy_change'])
+const DAB_ACTION_MIN_LEVEL = Object.freeze({
+  comment: 'L3', create_task: 'L3', update_task: 'L3', launch: 'L3', delegate: 'L4',
+  schedule: 'L3', push_branch: 'L3', open_pr: 'L4', merge: 'L4', protected_branch_write: 'L4',
+  delete_task: 'L4', secrets: 'L4', policy_change: 'L4',
+})
+
+function dabActionRefusalReason({ action, mandate, context = {} }) {
+  const actions = mandate !== null && typeof mandate === 'object' && mandate.actions !== null && typeof mandate.actions === 'object' ? mandate.actions : {}
+  const level = typeof context?.level === 'string' ? context.level : (typeof mandate?.level === 'string' ? mandate.level : 'L0')
+  if (context?.stopped === true) return 'stopped_by_operator'
+  if (context?.mode === 'off') return 'mode_off'
+  if (context?.paused === true) return 'paused_by_operator'
+  if (context?.requiresConfiguration === true) return 'requires_configuration'
+  const rank = value => DAB_AUTONOMY_LEVELS.indexOf(value)
+  const required = DAB_ACTION_MIN_LEVEL[action] ?? 'L4'
+  if (actions[action] !== true) {
+    return DAB_CRITICAL_ACTIONS.includes(action) ? 'critical_action_not_granted' : 'action_disabled'
+  }
+  if (rank(level) < rank(required)) return 'level_too_low'
+  return null
+}
+
+/** Whether a real decision is pending (never implied by silence/expiry). */
+function dabDecisionIsPending(decision) {
+  return decision !== null && typeof decision === 'object' && decision.status === 'pending'
+}
+
+function dabDecisionGroups(decisions) {
+  const pending = (Array.isArray(decisions) ? decisions : []).filter(dabDecisionIsPending)
+  return {
+    pending,
+    approvals: pending.filter(entry => entry.kind === 'approval'),
+    arbitrations: pending.filter(entry => entry.kind !== 'approval'),
+  }
 }
