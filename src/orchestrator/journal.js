@@ -13,7 +13,7 @@
  * @module dsh-agent-board/orchestrator/journal
  */
 
-import { appendFile, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -86,6 +86,7 @@ export class StateStore {
    * @param {number[]} [options.renameRetryDelaysMs] injected retry backoff
    * @param {(ms: number) => Promise<void>} [options.sleep] injected delay
    * @param {typeof rename} [options.renameFile] injected rename (test seam)
+   * @param {number} [options.maxJournalBytes] rotate the JSONL audit past this size
    */
   constructor({
     dir,
@@ -93,6 +94,7 @@ export class StateStore {
     renameRetryDelaysMs = DEFAULT_RENAME_RETRY_DELAYS_MS,
     sleep = defaultSleep,
     renameFile = rename,
+    maxJournalBytes = 8 * 1024 * 1024,
   }) {
     if (typeof dir !== 'string' || dir === '') throw new Error('agent-board: StateStore needs a directory')
     this.dir = dir
@@ -102,6 +104,13 @@ export class StateStore {
     this.renameRetryDelaysMs = renameRetryDelaysMs
     this.sleep = sleep
     this.renameFile = renameFile
+    // The JSONL journal is a bounded cache, like state.audit: past ~8 MiB the
+    // current file becomes `audit.jsonl.1` (one generation kept) and the new file
+    // starts with an `audit_rotated` record. Export before rotating if the older
+    // evidence matters: rotation TRUNCATES history and says so in the journal.
+    this.maxJournalBytes = Number.isFinite(maxJournalBytes) && maxJournalBytes > 0 ? maxJournalBytes : 8 * 1024 * 1024
+    this.lastRotation = null
+    this.lastRotationCheckAt = 0
     this.queue = Promise.resolve()
     // Shutdown flag: writeSync() sets it so a queued async write cannot rename
     // its older snapshot over the final document.
@@ -283,12 +292,43 @@ export class StateStore {
   async append(event) {
     const row = { at: this.now(), ...event }
     try {
+      await this.rotateJournalIfNeeded()
       await appendFile(this.journalPath, `${JSON.stringify(row)}\n`, 'utf8')
       return true
     } catch (error) {
       this.lastFailure = `audit append failed: ${String(error)}`
       return false
     }
+  }
+
+  /**
+   * Rotate `audit.jsonl` past `maxJournalBytes`. One generation is kept
+   * (`audit.jsonl.1`); the new file starts with an `audit_rotated` record that
+   * states the truncation, so the loss of older history is never silent.
+   * Checked at most once per minute to keep appends cheap.
+   */
+  async rotateJournalIfNeeded() {
+    const now = Date.now()
+    if (now - this.lastRotationCheckAt < 60_000) return false
+    this.lastRotationCheckAt = now
+    let size = 0
+    try {
+      size = (await stat(this.journalPath)).size
+    } catch {
+      return false
+    }
+    if (size < this.maxJournalBytes) return false
+    const target = `${this.journalPath}.1`
+    try {
+      await unlink(target).catch(() => {})
+      await renameWithRetry(this.journalPath, target, { renameFile: this.renameFile, sleep: this.sleep, delaysMs: this.renameRetryDelaysMs })
+    } catch (error) {
+      this.lastFailure = `audit rotation failed: ${String(error)}`
+      return false
+    }
+    this.lastRotation = { at: now, bytes: size, target }
+    await appendFile(this.journalPath, `${JSON.stringify({ at: this.now(), type: 'audit_rotated', bytes: size, previous: 'audit.jsonl.1' })}\n`, 'utf8')
+    return true
   }
 }
 

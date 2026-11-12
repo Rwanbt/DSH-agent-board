@@ -278,3 +278,27 @@ test('writeSync closes the store so a queued async write cannot overwrite the fi
   assert.equal(final.mode, 'off', 'the shutdown document must win')
   await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 })
+test('audit journal rotates at the cap, keeps one generation and states the truncation', async () => {
+  const dir = await tempDir()
+  try {
+    const store = new StateStore({ dir, now: () => 1000, maxJournalBytes: 400 })
+    await store.init({ mode: 'off' })
+    for (let index = 0; index < 15; index += 1) {
+      // Force the once-a-minute size check for this deterministic test.
+      store.lastRotationCheckAt = 0
+      assert.equal(await store.append({ type: 'tick', index }), true)
+    }
+    const previous = await readFile(join(dir, 'audit.jsonl.1'), 'utf8')
+    const current = await readFile(join(dir, 'audit.jsonl'), 'utf8')
+    assert.ok(previous.length > 0, 'the previous generation is kept')
+    assert.match(current, /"type":"audit_rotated"/, 'the new journal says history was truncated')
+    assert.match(current, /"previous":"audit\.jsonl\.1"/)
+    assert.ok(store.lastRotation !== null && store.lastRotation.bytes >= 400)
+    const all = `${previous}\n${current}`
+    for (let index = 0; index < 15; index += 1) {
+      assert.match(all, new RegExp(`"index":${index}`), 'no event is lost at the rotation boundary')
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
