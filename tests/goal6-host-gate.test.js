@@ -32,7 +32,7 @@ const TASK = {
   execution: { mode: 'claim' },
 }
 
-function makeCtx() {
+function makeCtx({ llm } = {}) {
   const created = []
   const listeners = new Map()
   const routes = new Map()
@@ -66,6 +66,12 @@ function makeCtx() {
       return undefined
     },
     on(event, listener) { listeners.set(event, listener); return () => {} },
+    // Optional services arrive through a conditional inject child, like DSH.
+    inject(deps, callback) {
+      if (!deps.includes('llm') || llm === undefined) return () => {}
+      callback({ get: name => (name === 'llm' ? llm : undefined), on: () => () => {}, effect(fn) { fn() } })
+      return () => {}
+    },
   }
   return { ctx, created, listeners, routes }
 }
@@ -106,7 +112,7 @@ function installFetch(tasks = [TASK]) {
   return () => { globalThis.fetch = previous }
 }
 
-async function withHost({ mandate, stateDocument, tasks } = {}, run) {
+async function withHost({ mandate, stateDocument, tasks, llm } = {}, run) {
   const home = await mkdtemp(join(tmpdir(), 'dab-goal6-'))
   const previousHome = process.env.DSH_HOME
   process.env.DSH_HOME = home
@@ -116,7 +122,7 @@ async function withHost({ mandate, stateDocument, tasks } = {}, run) {
     await writeFile(join(home, 'agent-board', 'state.json'), JSON.stringify(stateDocument), 'utf8')
   }
   const restoreFetch = installFetch(tasks)
-  const made = makeCtx()
+  const made = makeCtx({ llm })
   const dispose = apply(made.ctx, mandate === undefined ? {} : { mandate })
   try {
     await callJson(made.routes, 'GET', '/state')
@@ -538,5 +544,41 @@ test('control: L4 -> L0 and a project switch-off mid-activity stop every NEW lau
     const afterOff = await callJson(routes, 'POST', '/tick', {})
     assert.equal((afterOff.body.actions ?? []).filter(action => action.ok === true).length, 0, JSON.stringify(afterOff.body))
     assert.equal(created.length, 1, 'no new session on a disabled project')
+  })
+})
+
+test('an injected llm service yields real models; model, effort and fallback are settable and validated', async () => {
+  const llm = {
+    listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }, { id: 'local', name: 'Local' }],
+    listModels: async provider => (provider === 'deepseek'
+      ? [{ provider, id: 'v4', name: 'V4' }, { provider, id: 'v4-flash', name: 'V4 Flash' }]
+      : [{ provider, id: 'small', name: 'Small' }]),
+    resolveModelInfo: async (provider, model) => (model === 'v4'
+      ? { provider, id: model, name: model, reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'low' } }
+      : { provider, id: model, name: model }),
+  }
+  await withHost({ llm }, async ({ routes }) => {
+    await waitFor(async () => (await callJson(routes, 'GET', '/state')).body.value.host.models.discovered === true)
+    const models = (await callJson(routes, 'GET', '/state')).body.value.host.models
+    assert.deepEqual(models.providers.map(entry => entry.id), ['deepseek', 'local'])
+    assert.deepEqual(models.providers[0].models.map(entry => entry.id), ['v4', 'v4-flash'])
+
+    const info = await callJson(routes, 'POST', '/models/info', { provider: 'deepseek', model: 'v4' })
+    assert.equal(info.status, 200)
+    assert.deepEqual(info.body.value.efforts.map(entry => entry.id), ['low', 'high'])
+    assert.equal(info.body.value.defaultEffort, 'low')
+
+    const refused = await callJson(routes, 'POST', '/superagent/model', { provider: 'deepseek', model: 'v4', reasoningEffort: 'ultra' })
+    assert.equal(refused.status, 409)
+    assert.equal(refused.body.error, 'reasoning_effort_not_supported')
+    const badFallback = await callJson(routes, 'POST', '/superagent/model', { provider: 'deepseek', model: 'v4', fallback: [{ provider: 'ghost', model: 'x' }] })
+    assert.equal(badFallback.body.error, 'fallback_not_registered')
+
+    const set = await callJson(routes, 'POST', '/superagent/model', {
+      provider: 'deepseek', model: 'v4', reasoningEffort: 'high', fallback: [{ provider: 'local', model: 'small' }],
+    })
+    assert.equal(set.status, 200, JSON.stringify(set.body))
+    const identity = (await callJson(routes, 'GET', '/state')).body.value.superagent.identity
+    assert.deepEqual(identity.model, { provider: 'deepseek', model: 'v4', reasoningEffort: 'high', fallback: [{ provider: 'local', model: 'small' }] })
   })
 })

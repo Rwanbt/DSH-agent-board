@@ -47,13 +47,21 @@ function dabSuperControl(h, props) {
 const DAB_SUPER_PROJECTS_SHOWN = 8
 
 /** Inline project switches: the first thing an operator configures. */
-function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, onOpenProjects, needsProjects }) {
+function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, onOpenProjects, onOpenSettings, needsProjects, globalLevel }) {
   const shown = rows.slice(0, DAB_SUPER_PROJECTS_SHOWN)
+  // Effective level = the most restrictive of global and project: say so when
+  // the global ceiling silently caps an enabled project.
+  const rank = level => DAB_AUTONOMY_LEVELS.indexOf(level)
+  const capped = typeof globalLevel === 'string' && rows.some(row => row.enabled && rank(row.level) > rank(globalLevel))
   const extra = rows.length - shown.length
   return h('div', { className: 'dab-super-projects', role: 'group', 'aria-label': dabT('superProjectsDriven') },
     h('div', { className: 'dab-super-projects-head' },
       h('span', { className: 'dab-super-projects-title' }, dabT('superProjectsDriven')),
       needsProjects ? h('span', { className: 'dab-super-projects-hint' }, dabT('superProjectsNoneHint')) : null,
+      capped
+        ? h('button', { type: 'button', className: 'dab-super-projects-capped', onClick: () => (onOpenSettings ?? onOpenProjects)?.() },
+          dabT('superProjectsCapped', { level: dabLevelLabel(globalLevel) }))
+        : null,
       h('button', { type: 'button', className: 'dab-super-projects-more', onClick: () => onOpenProjects?.() },
         extra > 0 ? dabT('superProjectsMore', { n: rows.length }) : dabT('superDetailsShort'))),
     h('ul', { className: 'dab-super-project-list' }, shown.map(row => h('li', {
@@ -73,14 +81,14 @@ function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, o
         title: dabLevelHint(row.level),
         disabled: busy === true || typeof onSetProjectLevel !== 'function',
         onChange: event => onSetProjectLevel?.(row.id, event?.target?.value),
-      }, DAB_AUTONOMY_LEVELS.map(level => h('option', { key: level, value: level, title: dabLevelHint(level) }, dabLevelLabel(level))))
+      }, DAB_AUTONOMY_LEVELS.map(level => h('option', { key: level, value: level, title: dabLevelHint(level) }, dabLevelOption(level))))
       : null))))
 }
 
 function DabSuperOrchestratorBarImpl({
   workspace, totals, projects, orchestrators: orchestratorList, mode, open, onToggle, onSelect, compact,
   superagent, mandate, capabilities, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenProjects,
-  projectRows, onToggleProject, onSetProjectLevel,
+  projectRows, onToggleProject, onSetProjectLevel, onOpenSettings,
 }) {
   const h = React.createElement
   // Prefer the real, filter-independent orchestrator list from the hierarchy.
@@ -224,7 +232,7 @@ function DabSuperOrchestratorBarImpl({
     ? h('span', { className: 'dab-super-facts' },
       h('span', { className: 'dab-super-fact dab-super-model', title: modelText ?? dabT('superModelUnavailable') },
         h('span', { className: 'dab-super-fact-label' }, dabT('model')), modelText ?? dabT('superModelUnavailable')),
-      h('span', { className: 'dab-super-fact dab-super-level' }, h('span', { className: 'dab-super-fact-label' }, dabT('superLevelLabel')), levelText),
+      h('span', { className: 'dab-super-fact dab-super-level' }, h('span', { className: 'dab-super-fact-label' }, dabT('superLevelLabel')), dabLevelBadge(h, facts.level) ?? levelText),
       projectsText === null ? null : h('span', { className: 'dab-super-fact dab-super-enabled' }, projectsText),
       h('span', { className: 'dab-super-fact dab-super-activity', title: activityText }, activityText),
       facts.pendingCount > 0
@@ -243,8 +251,8 @@ function DabSuperOrchestratorBarImpl({
 
   controls,
 
-  Array.isArray(projectRows) && projectRows.length > 0
-    ? dabSuperProjects(h, { rows: projectRows, busy, onToggleProject, onSetProjectLevel, onOpenProjects: onOpenProjects ?? onOpenSuperagent, needsProjects })
+  open === true && Array.isArray(projectRows) && projectRows.length > 0
+    ? dabSuperProjects(h, { rows: projectRows, busy, onToggleProject, onSetProjectLevel, onOpenProjects: onOpenProjects ?? onOpenSuperagent, onOpenSettings, needsProjects, globalLevel: typeof mandate?.level === 'string' ? mandate.level : facts.level })
     : null,
 
   // Mini orchestrator avatars: real agents only. A project without a declared
@@ -295,6 +303,7 @@ const DabSuperOrchestratorBar = React.memo(DabSuperOrchestratorBarImpl, (a, b) =
   && a.projectRows === b.projectRows
   && a.onToggleProject === b.onToggleProject
   && a.onSetProjectLevel === b.onSetProjectLevel
+  && a.onOpenSettings === b.onOpenSettings
   && a.superagent === b.superagent
   && a.mandate === b.mandate
   && a.capabilities === b.capabilities

@@ -416,6 +416,9 @@ export function createBoardStore(ctx, options = {}) {
     stopSuperagent: () => post('/superagent/stop', {}),
     cycleSuperagent: trigger => post('/superagent/cycle', { trigger: trigger ?? 'manual' }),
     setSuperagentModel: model => post('/superagent/model', model ?? {}),
+    /** Exact-route efforts for one model (read-only; no state refresh). */
+    modelInfo: (provider, model) => request('POST', '/models/info', { provider, model }),
+    probeTaskboard: () => post('/integrations/taskboard/probe', {}),
     addDirective: input => post('/superagent/directives', {
       text: String(input?.text ?? ''),
       scope: input?.scope === 'project' ? 'project' : 'global',

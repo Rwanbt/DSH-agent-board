@@ -85,7 +85,7 @@ return {
   DabSuperagentDirectives, DabSuperagentSettings, DabSuperagentDecisions, DabAllProjectsConfirm,
   dabSuperagentFacts, dabProjectPolicyRows, dabEffectiveCapabilities, dabCapabilityEntry,
   dabActionRefusalReason, dabSuperagentPortfolio, dabDecisionGroups, dabAllProjectsConfirmValid,
-  dabSaBound, dabReasonText, dabLevelLabel, dabLevelHint,
+  dabSaBound, dabReasonText, dabLevelLabel, dabLevelHint, dabLevelOption, DabSuperagentModelEditor,
 }`
 
 const cockpit = new Function('React', CODE)(React)
@@ -644,7 +644,29 @@ test('settings show model discovery, refusal reasons per action, connector and l
   }))
   const text = textOf(tree)
   assert.match(text, /deepseek\/v4/)
-  assert.match(text, /1 provider\(s\) discovered/)
+  // The model is EDITABLE from the real catalog: provider and model selects
+  // list only discovered entries, and saving posts provider/model/effort/fallback.
+  assert.match(text, /Current model/)
+  const providerSelect = byClass(tree, 'dab-sa-model-provider')[0]
+  assert.deepEqual(byTag(providerSelect, 'option').map(option => option.props.value), ['', 'deepseek'])
+  const modelSelect = byClass(tree, 'dab-sa-model-name')[0]
+  assert.deepEqual(byTag(modelSelect, 'option').map(option => option.props.value), ['', 'v4'])
+  assert.equal(byClass(tree, 'dab-sa-model-fallback').length, 2)
+  const saved = []
+  const editor = render(cockpit.DabSuperagentModelEditor({
+    facts: cockpit.dabSuperagentFacts(makeInactiveSuperagent(), makeMandate(), {}),
+    models: makeHost().models, busy: false, onSetModel: model => { saved.push(model); return { ok: true } },
+  }))
+  byTag(editor, 'form')[0].props.onSubmit({ preventDefault() {} })
+  // The existing fallback is preserved when only the primary is saved.
+  assert.deepEqual(saved, [{ provider: 'deepseek', model: 'v4', fallback: [{ provider: 'other', model: 'm2' }] }])
+  // Without discovery the editor says why and offers nothing invented.
+  const undiscovered = render(cockpit.DabSuperagentModelEditor({
+    facts: cockpit.dabSuperagentFacts(makeInactiveSuperagent(), makeMandate(), {}),
+    models: { discovered: false, reason: 'llm_service_unavailable', providers: [] },
+  }))
+  assert.equal(byClass(undiscovered, 'dab-sa-model-provider').length, 0)
+  assert.match(textOf(undiscovered), /DSH model service unavailable/)
   assert.match(text, /Token budget/)
   assert.match(text, /metric unavailable/)
   // Stop refuses every action, with the real reason, on every row.
@@ -739,8 +761,10 @@ test('the project picker lives in the card: one switch and a named level per pro
   const leveled = []
   const mandate = makeMandate({ scopeMode: 'none', selectedWorkspaces: [], projects: {} })
   const projectRows = cockpit.dabProjectPolicyRows(makeHost(), makeInactiveSuperagent(), mandate)
+  // Collapsed card: no project list (it belongs to the opened card).
+  assert.equal(byClass(band({ mandate, projectRows }), 'dab-super-projects').length, 0)
   const tree = band({
-    mandate, projectRows, totals: { ...TOTALS, projects: 2 },
+    mandate, projectRows, open: true, totals: { ...TOTALS, projects: 2 },
     onToggleProject: (id, enabled) => toggled.push([id, enabled]),
     onSetProjectLevel: (id, level) => leveled.push([id, level]),
   })
@@ -760,22 +784,24 @@ test('the project picker lives in the card: one switch and a named level per pro
 
   // An enabled project shows its level by NAME, and changing it calls the host.
   const enabledRows = cockpit.dabProjectPolicyRows(makeHost(), makeInactiveSuperagent(), makeMandate())
-  const enabledTree = band({ projectRows: enabledRows, onToggleProject: () => {}, onSetProjectLevel: (id, level) => leveled.push([id, level]) })
+  const enabledTree = band({ open: true, projectRows: enabledRows, onToggleProject: () => {}, onSetProjectLevel: (id, level) => leveled.push([id, level]) })
   const select = byClass(enabledTree, 'dab-super-project-level')
   assert.equal(select.length, 1, 'only enabled projects get a level picker')
-  assert.match(textOf(select[0]), /L3 · Bounded autonomy/)
+  assert.match(textOf(select[0]), /🟠 Bounded autonomy/)
+  assert.doesNotMatch(textOf(select[0]), /\bL[0-4]\b/, 'no internal level code on screen')
   select[0].props.onChange({ target: { value: 'L3' } })
   assert.deepEqual(leveled, [['ws:a', 'L3']])
 })
 
 test('levels are named for humans everywhere', () => {
-  assert.equal(cockpit.dabLevelLabel('L0'), 'L0 · Observe')
-  assert.equal(cockpit.dabLevelLabel('L4'), 'L4 · Maximum autonomy')
+  assert.equal(cockpit.dabLevelLabel('L0'), 'Observe')
+  assert.equal(cockpit.dabLevelLabel('L4'), 'Maximum autonomy')
+  assert.equal(cockpit.dabLevelOption('L2'), '🟢 Supervised')
   assert.match(cockpit.dabLevelHint('L2'), /waits for your approval/)
   cockpit.setLang('fr')
   try {
-    assert.equal(cockpit.dabLevelLabel('L1'), 'L1 · Conseiller')
-    assert.equal(cockpit.dabLevelLabel('L3'), 'L3 · Autonome encadré')
+    assert.equal(cockpit.dabLevelLabel('L1'), 'Conseiller')
+    assert.equal(cockpit.dabLevelLabel('L3'), 'Autonome encadré')
   } finally {
     cockpit.setLang('en')
   }
@@ -822,4 +848,18 @@ test('enabling a project from the card selects it first, then switches it on; di
   assert.equal(off.length, 1, 'disabling never widens or narrows the scope')
   assert.match(off[0].url, /\/mandate\/project$/)
   assert.deepEqual(JSON.parse(off[0].init.body), { projectId: 'ws:a', enabled: false })
+})
+
+test('the card warns when the global level silently caps an enabled project', () => {
+  let opened = null
+  const mandate = makeMandate({ level: 'L0', projects: { 'ws:a': { enabled: true, level: 'L2', priority: 1, model: null, budget: null, note: '' } } })
+  const projectRows = cockpit.dabProjectPolicyRows(makeHost(), makeInactiveSuperagent(), mandate)
+  const tree = band({ mandate, projectRows, open: true, onOpenSettings: () => { opened = 'settings' } })
+  const warning = byClass(tree, 'dab-super-projects-capped')
+  assert.equal(warning.length, 1)
+  assert.match(textOf(warning[0]), /global level “Observe” caps every project/)
+  warning[0].props.onClick()
+  assert.equal(opened, 'settings')
+  const fine = band({ mandate: makeMandate({ level: 'L4' }), projectRows: cockpit.dabProjectPolicyRows(makeHost(), makeInactiveSuperagent(), makeMandate({ level: 'L4' })), open: true })
+  assert.equal(byClass(fine, 'dab-super-projects-capped').length, 0)
 })

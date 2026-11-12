@@ -686,11 +686,14 @@ const DAB_CSS = `
 .dab-super-projects-more { margin-left: auto; border: 0; background: transparent; padding: 2px 4px; font: inherit; font-size: 12px;
   color: var(--dsw-alias-label-secondary); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .dab-super-projects-more:hover { color: var(--dsw-alias-label-primary); }
-.dab-super-project-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 14px; }
+.dab-super-projects-capped { flex: 1 1 100%; order: 3; text-align: left; border: 0; border-radius: var(--dsw-radius-sm); padding: 7px 10px; cursor: pointer;
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 14%, transparent); color: var(--dsw-alias-state-warn-primary); font: inherit; font-size: 12px; }
+.dab-super-project-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 6px 18px; }
 .dab-super-project { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; min-height: 34px; }
 .dab-super-project-toggle { min-width: 0; }
 .dab-super-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dab-super-project-level { flex: none; max-width: 170px; min-height: 28px; font-size: 12px; }
+.dab-super-project-level { flex: 0 0 auto; width: 168px; min-height: 28px; font-size: 12px; }
+.dab-super-project-toggle { flex: 1 1 auto; }
 .dab-super-project-toggle:focus-visible, .dab-super-projects-more:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 .dab-super-decisions { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 0 8px;
   border-radius: 999px; corner-shape: round; border: 1px solid var(--dsw-alias-state-warn-primary);
@@ -807,6 +810,22 @@ const DAB_CSS = `
 .dab-sa-example:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 .dab-sa-check { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
 .dab-sa-check input { min-width: 16px; min-height: 16px; }
+/* Autonomy level: coloured dot + name (grey observe -> violet maximum). */
+.dab-level { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.dab-level-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #9ca3af; }
+.dab-level[data-level="L1"] .dab-level-dot { background: #3b82f6; }
+.dab-level[data-level="L2"] .dab-level-dot { background: #22c55e; }
+.dab-level[data-level="L3"] .dab-level-dot { background: #f97316; }
+.dab-level[data-level="L4"] .dab-level-dot { background: #a855f7; }
+.dab-sa-sub .dab-level { padding: 0 7px; border-radius: 999px; background: var(--dab-chip-fill); line-height: 18px; }
+/* Model editor */
+.dab-sa-model-editor { display: flex; flex-direction: column; gap: 10px; }
+.dab-sa-model-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+.dab-sa-model-field .dab-select { width: 100%; min-height: 30px; }
+.dab-sa-model-actions { display: flex; align-items: center; gap: 10px; justify-content: space-between; flex-wrap: wrap; font-size: 11px; }
+.dab-sa-model-save { margin-left: auto; }
+.dab-sa-connector { align-items: center; }
+.dab-sa-probe { margin-left: auto; }
 .dab-sa-permissions { gap: 0; }
 .dab-sa-permissions-global { padding: 8px 10px; border-radius: var(--dsw-radius-sm); background: var(--dab-chip-fill); font-size: 12px; color: var(--dsw-alias-state-warn-primary); }
 .dab-sa-permission { display: grid; grid-template-columns: minmax(150px, 40%) minmax(0, 1fr); align-items: center; gap: 2px 12px; padding: 7px 0;
@@ -843,6 +862,8 @@ const DAB_CSS = `
   .dab-sa-toggle { min-height: 40px; }
   .dab-sa-field .dab-select, .dab-sa-field .dab-input { min-height: 36px; }
   .dab-sa-model-row, .dab-sa-fallbacks { grid-template-columns: 1fr; gap: 2px; }
+  .dab-sa-model-grid { grid-template-columns: 1fr; }
+  .dab-sa-model-field .dab-select { min-height: 40px; }
   .dab-super-project-list { grid-template-columns: 1fr; }
   .dab-super-project { min-height: 44px; }
   .dab-super-project-level { min-height: 36px; max-width: 55%; }

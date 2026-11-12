@@ -287,6 +287,11 @@ export function apply(ctx, config = {}) {
   // GOAL 6: model discovery snapshot (async, cached) and the last dry-run. Both
   // are published so the cockpit never has to guess or invent.
   let modelSnapshot = { discovered: false, at: 0, reason: 'not_probed', providers: [] }
+  // The `llm` service is an OPTIONAL dependency: it is not in `inject` (the
+  // board must load without it), so it is captured by a conditional
+  // `ctx.inject(['llm'])` child below. `ctx.get('llm')` alone returns nothing
+  // for an undeclared service, which left model discovery permanently empty.
+  let llmService = null
   let modelSnapshotAt = 0
   let lastDryRun = null
   // One assessment at a time: the Super Agent session's turn/end resolves it.
@@ -622,7 +627,7 @@ export function apply(ctx, config = {}) {
    * is the honest answer when the service is absent.
    */
   async function refreshModelSnapshot() {
-    const llm = ctx.get?.('llm')
+    const llm = llmService ?? ctx.get?.('llm')
     if (llm === undefined || llm === null || typeof llm.listProviders !== 'function') {
       modelSnapshot = { discovered: false, at: Date.now(), reason: 'llm_service_unavailable', providers: [] }
       modelSnapshotAt = Date.now()
@@ -643,6 +648,7 @@ export function apply(ctx, config = {}) {
             models.push({
               id: modelId,
               name: String(model?.name ?? model?.displayName ?? modelId),
+              // Efforts are resolved lazily per exact route (GET /models/info).
               reasoningEfforts: Array.isArray(model?.reasoningEfforts) ? model.reasoningEfforts.filter(value => typeof value === 'string').slice(0, 8) : [],
             })
           }
@@ -659,6 +665,35 @@ export function apply(ctx, config = {}) {
       modelSnapshot = { discovered: false, at: Date.now(), reason: `discovery_failed:${truncate(String(error?.message ?? error), 120)}`, providers: [] }
     }
     modelSnapshotAt = Date.now()
+  }
+
+  /**
+   * Exact-route metadata for one provider/model: the selectable reasoning
+   * efforts and the default, read from the owning adapter. Never invented: a
+   * host without `resolveModelInfo` answers `efforts: []` with a reason.
+   */
+  async function resolveModelEfforts(provider, model) {
+    const llm = llmService ?? ctx.get?.('llm')
+    if (llm === undefined || llm === null || typeof llm.resolveModelInfo !== 'function') {
+      return { efforts: [], defaultEffort: null, reason: 'llm_service_unavailable' }
+    }
+    try {
+      const info = await llm.resolveModelInfo(provider, model)
+      const efforts = Array.isArray(info?.reasoning?.efforts)
+        ? info.reasoning.efforts
+          .filter(entry => entry !== null && typeof entry === 'object' && typeof entry.id === 'string')
+          .slice(0, 12)
+          .map(entry => ({ id: entry.id, name: typeof entry.name === 'string' ? entry.name : entry.id, description: typeof entry.description === 'string' ? entry.description : null }))
+        : []
+      return {
+        efforts,
+        defaultEffort: typeof info?.reasoning?.defaultEffort === 'string' ? info.reasoning.defaultEffort : null,
+        contextWindow: Number.isFinite(Number(info?.context?.contextWindow)) ? Number(info.context.contextWindow) : null,
+        reason: efforts.length === 0 ? 'no_reasoning_efforts' : null,
+      }
+    } catch (error) {
+      return { efforts: [], defaultEffort: null, reason: `model_info_failed:${truncate(String(error?.message ?? error), 120)}` }
+    }
   }
 
   function audit(event) {
@@ -3823,6 +3858,12 @@ export function apply(ctx, config = {}) {
               touch()
               return sendJson(res, 200, { ok: true, value: superagentPublicOf() })
             }
+            if (route === '/models/info') {
+              const provider = typeof body.provider === 'string' ? body.provider : ''
+              const model = typeof body.model === 'string' ? body.model : ''
+              if (provider === '' || model === '') return sendJson(res, 400, { ok: false, error: 'provider_and_model_required' })
+              return sendJson(res, 200, { ok: true, value: await resolveModelEfforts(provider, model) })
+            }
             if (route === '/superagent/model') {
               const provider = typeof body.provider === 'string' ? body.provider : ''
               const model = typeof body.model === 'string' ? body.model : ''
@@ -3837,12 +3878,32 @@ export function apply(ctx, config = {}) {
                   reason: modelSnapshot.reason ?? null,
                 })
               }
+              const registered = (p, m) => modelSnapshot.providers.some(entry => entry.id === p && entry.models.some(candidate => candidate.id === m))
+              const fallback = []
+              for (const entry of (Array.isArray(body.fallback) ? body.fallback : []).slice(0, 3)) {
+                const fp = typeof entry?.provider === 'string' ? entry.provider : ''
+                const fm = typeof entry?.model === 'string' ? entry.model : ''
+                if (fp === '' || fm === '') continue
+                if (!registered(fp, fm)) return sendJson(res, 409, { ok: false, error: 'fallback_not_registered', provider: fp, model: fm })
+                if (fp === provider && fm === model) continue
+                fallback.push({ provider: fp, model: fm })
+              }
+              let reasoningEffort = null
+              if (typeof body.reasoningEffort === 'string' && body.reasoningEffort !== '') {
+                const info = await resolveModelEfforts(provider, model)
+                // An effort the route does not advertise is refused, never clamped.
+                if (info.efforts.length > 0 && !info.efforts.some(entry => entry.id === body.reasoningEffort)) {
+                  return sendJson(res, 409, { ok: false, error: 'reasoning_effort_not_supported' })
+                }
+                reasoningEffort = body.reasoningEffort
+              }
               const agent = ensureSuperAgent()
               const previous = agent.identity.model
               agent.identity.model = {
                 provider,
                 model,
-                ...(typeof body.reasoningEffort === 'string' ? { reasoningEffort: body.reasoningEffort } : {}),
+                ...(reasoningEffort !== null ? { reasoningEffort } : {}),
+                ...(Array.isArray(body.fallback) ? { fallback } : (Array.isArray(previous?.fallback) ? { fallback: previous.fallback } : {})),
               }
               // A live session keeps its model; the new choice applies at the
               // next safe boundary (a recycle), never mid-turn.
@@ -4095,6 +4156,24 @@ export function apply(ctx, config = {}) {
       }
     },
   }
+  // Optional `llm` service: captured while it exists, released when it goes.
+  // A provider list change (`llm/adapters-updated`) refreshes the catalog.
+  if (typeof ctx.inject === 'function') {
+    try {
+      ctx.inject(['llm'], child => {
+        llmService = child.get?.('llm') ?? null
+        void refreshModelSnapshot()
+        try { child.on?.('llm/adapters-updated', () => { void refreshModelSnapshot() }) } catch { /* optional event */ }
+        const release = () => { llmService = null; modelSnapshot = { discovered: false, at: Date.now(), reason: 'llm_service_unavailable', providers: [] } }
+        if (typeof child.effect === 'function') child.effect(() => release, 'dsh-agent-board: llm service')
+        else return release
+        return undefined
+      })
+    } catch (error) {
+      warn(`llm service injection unavailable: ${String(error?.message ?? error)}`)
+    }
+  }
+
   // Register through ctx.effect: the fiber's teardown must remove the route.
   // A plain returned disposer is not enough here — a leaked route would block
   // every later activation with "duplicate route" until the Host restarts.
