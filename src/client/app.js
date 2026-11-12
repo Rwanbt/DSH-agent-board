@@ -186,6 +186,7 @@ function dabMakePage(store, ctx) {
     const mandate = snapshot.mandate ?? null
     const capabilities = snapshot.capabilities ?? null
     const portfolio = React.useMemo(() => (typeof dabSuperagentPortfolio === 'function' ? dabSuperagentPortfolio(host, superagent) : []), [host, superagent])
+    const projectRows = React.useMemo(() => (typeof dabProjectPolicyRows === 'function' ? dabProjectPolicyRows(host, superagent, mandate) : []), [host, superagent, mandate])
     const superContext = {
       mode,
       stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
@@ -355,11 +356,17 @@ function dabMakePage(store, ctx) {
       setBusy(true)
       try {
         const result = await operation()
-        setNotice(result?.ok === true ? '' : `${label}: ${result?.payload?.error ?? result?.error ?? result?.status ?? 'failed'}`)
+        const error = String(result?.payload?.error ?? result?.error ?? result?.status ?? 'failed')
+        setNotice(result?.ok === true ? '' : `${label}: ${typeof dabReasonText === 'function' ? dabReasonText(error) : error}`)
       } finally {
         setBusy(false)
       }
     }
+    // Stable handlers for the band (it is memoized on its callbacks).
+    const actRef = React.useRef(act)
+    actRef.current = act
+    const toggleProject = React.useCallback((projectId, enabled) => actRef.current('project', () => store.enableProject(projectId, enabled)), [store])
+    const setProjectLevel = React.useCallback((projectId, level) => actRef.current('project-level', () => store.setProject(projectId, { level })), [store])
 
     const hostDown = snapshot.hostError !== null && snapshot.hostError !== undefined && host.sync === null
     const canStop = (host.assignments ?? []).some(assignment => assignment.status === 'running' || assignment.status === 'starting')
@@ -423,6 +430,9 @@ function dabMakePage(store, ctx) {
       onOpenSuperagent: openSuperagent,
       onOpenDecisions: openSuperagent,
       onOpenProjects: openSuperagentProjects,
+      projectRows,
+      onToggleProject: toggleProject,
+      onSetProjectLevel: setProjectLevel,
     })
 
     const filtersActiveAll = filtersActive || ui.project !== null || focus !== null
@@ -531,7 +541,7 @@ function dabMakePage(store, ctx) {
         onClose: () => setSuperagentOpen(false),
         onOpenDetail: openSuperagent,
         onDryRun: runDryRun,
-        onToggleProject: (projectId, enabled) => act('project', () => store.setProject(projectId, { enabled })),
+        onToggleProject: toggleProject,
         onSetProjectLevel: (projectId, level) => act('project-level', () => store.setProject(projectId, { level })),
         onSetProjectPriority: (projectId, priority) => act('project-priority', () => store.setProject(projectId, { priority })),
         onConfirmAllProjects: confirm => act('scope', () => store.setScope('all', undefined, confirm)),

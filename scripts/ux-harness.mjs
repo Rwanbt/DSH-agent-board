@@ -59,9 +59,14 @@ const context = { mode: 'off', stopped: false, scopeMode: 'none', requiresConfig
 function App() {
   const [tab, setTab] = React.useState(new URLSearchParams(location.search).get('tab'))
   const [open, setOpen] = React.useState(true)
+  const [policies, setPolicies] = React.useState({ 'Ravum': { enabled: true, level: 'L3' } })
+  const liveMandate = { ...mandate, scopeMode: Object.keys(policies).length ? 'selected' : 'none', selectedWorkspaces: Object.keys(policies), projects: policies }
+  const projectRows = dabProjectPolicyRows(host, superagent, liveMandate)
   return h('div', { className: 'dab-root', style: { position: 'relative', minHeight: '100vh', containerType: 'inline-size', containerName: 'dab' } },
     h(DabSuperOrchestratorBar, { workspace, totals: { projects: 5, agents: 7, dependencies: 0 }, projects: [], orchestrators: [], mode: 'off', open, compact: true,
-      onToggle: () => setOpen(v => !v), onSelect: () => {}, superagent, mandate, capabilities: {}, stopped: false, busy: false,
+      onToggle: () => setOpen(v => !v), onSelect: () => {}, superagent, mandate: liveMandate, capabilities: {}, stopped: false, busy: false, projectRows,
+      onToggleProject: (id, on) => setPolicies(p => ({ ...p, [id]: { ...(p[id] ?? { level: 'L0' }), enabled: on } })),
+      onSetProjectLevel: (id, level) => setPolicies(p => ({ ...p, [id]: { ...p[id], level } })),
       onStart() {}, onPause() {}, onStop() {}, onResume() {}, onOpenSuperagent: () => setTab('overview'), onOpenProjects: () => setTab('projects') }),
     tab ? h(DabSuperagentInspector, { key: tab, initialTab: tab, superagent, mandate, capabilities: {}, portfolio: host.projects, host, context, workspace, narrow: true, ui: {}, busy: false,
       onClose: () => setTab(null) }) : null)

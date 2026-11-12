@@ -289,6 +289,20 @@ const DAB_STRINGS = {
     superUnavailableReason: 'hôte : superagent non publié',
     superModelUnavailable: 'modèle non résolu',
     superModelHostDefault: 'modèle par défaut de DSH',
+    levelName_L0: 'Observation',
+    levelName_L1: 'Conseiller',
+    levelName_L2: 'Supervisé',
+    levelName_L3: 'Autonome encadré',
+    levelName_L4: 'Autonomie maximale',
+    levelHint_L0: 'Lit et rapporte, ne crée ni ne lance rien.',
+    levelHint_L1: 'Analyse et propose des plans, sans les appliquer.',
+    levelHint_L2: 'Prépare le travail et attend votre approbation avant d’agir.',
+    levelHint_L3: 'Planifie et lance les tâches autorisées ; vous consulte pour les exceptions.',
+    levelHint_L4: 'Gère seul les projets choisis ; ne vous consulte que pour les décisions hors mandat.',
+    superProjectsDriven: 'Projets pilotés',
+    superProjectsNoneHint: 'Activez un projet pour que le Super Agent puisse agir dessus.',
+    superProjectsMore: 'Tous les projets ({n})',
+    superProjectLevelOf: 'Niveau d’autonomie : {project}',
     supervisionNothingToReport: 'Rien à signaler : aucune recommandation, aucun blocage, aucune dépendance entre projets.',
     superDirectiveUseExample: 'Utiliser cet exemple',
     superNoObjectiveYet: 'Aucun objectif : démarrez le Super Agent après avoir choisi des projets.',
@@ -726,6 +740,20 @@ const DAB_STRINGS = {
     superUnavailableReason: 'host: superagent not published',
     superModelUnavailable: 'unresolved model',
     superModelHostDefault: 'DSH default model',
+    levelName_L0: 'Observe',
+    levelName_L1: 'Advisor',
+    levelName_L2: 'Supervised',
+    levelName_L3: 'Bounded autonomy',
+    levelName_L4: 'Maximum autonomy',
+    levelHint_L0: 'Reads and reports; creates and launches nothing.',
+    levelHint_L1: 'Analyses and proposes plans without applying them.',
+    levelHint_L2: 'Prepares work and waits for your approval before acting.',
+    levelHint_L3: 'Plans and launches allowed tasks; asks you about exceptions.',
+    levelHint_L4: 'Runs the chosen projects on its own; asks only for out-of-mandate decisions.',
+    superProjectsDriven: 'Driven projects',
+    superProjectsNoneHint: 'Enable a project so the Super Agent can act on it.',
+    superProjectsMore: 'All projects ({n})',
+    superProjectLevelOf: 'Autonomy level: {project}',
     supervisionNothingToReport: 'Nothing to report: no recommendation, no block, no cross-project dependency.',
     superDirectiveUseExample: 'Use this example',
     superNoObjectiveYet: 'No objective yet: start the Super Agent once projects are chosen.',
@@ -1171,6 +1199,17 @@ const DAB_REASON_TEXT = {
     credentials_rejected: 'credentials rejected',
     unsupported_version: 'unsupported version',
   },
+}
+
+/** "L2 · Supervisé": the code stays visible (it is what the docs use), the name explains it. */
+function dabLevelLabel(level) {
+  if (typeof level !== 'string' || !/^L[0-4]$/.test(level)) return typeof level === 'string' ? level : ''
+  return `${level} · ${dabT(`levelName_${level}`)}`
+}
+
+/** One-sentence description of what a level allows. */
+function dabLevelHint(level) {
+  return typeof level === 'string' && /^L[0-4]$/.test(level) ? dabT(`levelHint_${level}`) : ''
 }
 
 /** True when `value` looks like a machine code (snake_case), not a sentence. */

@@ -44,9 +44,43 @@ function dabSuperControl(h, props) {
   }, label)
 }
 
+const DAB_SUPER_PROJECTS_SHOWN = 8
+
+/** Inline project switches: the first thing an operator configures. */
+function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, onOpenProjects, needsProjects }) {
+  const shown = rows.slice(0, DAB_SUPER_PROJECTS_SHOWN)
+  const extra = rows.length - shown.length
+  return h('div', { className: 'dab-super-projects', role: 'group', 'aria-label': dabT('superProjectsDriven') },
+    h('div', { className: 'dab-super-projects-head' },
+      h('span', { className: 'dab-super-projects-title' }, dabT('superProjectsDriven')),
+      needsProjects ? h('span', { className: 'dab-super-projects-hint' }, dabT('superProjectsNoneHint')) : null,
+      h('button', { type: 'button', className: 'dab-super-projects-more', onClick: () => onOpenProjects?.() },
+        extra > 0 ? dabT('superProjectsMore', { n: rows.length }) : dabT('superDetailsShort'))),
+    h('ul', { className: 'dab-super-project-list' }, shown.map(row => h('li', {
+      key: row.id, className: 'dab-super-project', 'data-enabled': row.enabled ? 'true' : 'false', 'data-project-id': row.id,
+    },
+    h('button', {
+      type: 'button', className: 'dab-sa-toggle dab-super-project-toggle', role: 'switch',
+      'aria-checked': row.enabled ? 'true' : 'false',
+      'aria-label': `${row.enabled ? dabT('superProjectDisable') : dabT('superProjectEnable')} : ${row.title}`,
+      disabled: busy === true || typeof onToggleProject !== 'function',
+      onClick: () => onToggleProject?.(row.id, !row.enabled),
+    }, h('span', { className: 'dab-super-project-name' }, row.title)),
+    row.enabled
+      ? h('select', {
+        className: 'dab-select dab-super-project-level', value: row.level,
+        'aria-label': dabT('superProjectLevelOf', { project: row.title }),
+        title: dabLevelHint(row.level),
+        disabled: busy === true || typeof onSetProjectLevel !== 'function',
+        onChange: event => onSetProjectLevel?.(row.id, event?.target?.value),
+      }, DAB_AUTONOMY_LEVELS.map(level => h('option', { key: level, value: level, title: dabLevelHint(level) }, dabLevelLabel(level))))
+      : null))))
+}
+
 function DabSuperOrchestratorBarImpl({
   workspace, totals, projects, orchestrators: orchestratorList, mode, open, onToggle, onSelect, compact,
   superagent, mandate, capabilities, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenProjects,
+  projectRows, onToggleProject, onSetProjectLevel,
 }) {
   const h = React.createElement
   // Prefer the real, filter-independent orchestrator list from the hierarchy.
@@ -88,7 +122,10 @@ function DabSuperOrchestratorBarImpl({
   const modelText = facts.modelText ?? (facts.available ? dabT('superModelHostDefault') : null)
   const totalProjects = facts.totalProjects > 0 ? facts.totalProjects : projectCount
   const needsProjects = facts.available && facts.enabledProjects === 0 && totalProjects > 0
-  const levelText = facts.level === null ? dabT('superLevelUnavailable') : facts.level
+  const levelText = facts.level === null ? dabT('superLevelUnavailable') : dabLevelLabel(facts.level)
+  // Stop matters only while something runs; the toolbar keeps the global
+  // emergency Stop reachable at all times.
+  const canStop = facts.sessionActive === true || inFlight > 0
   const projectsText = totalProjects > 0
     ? dabT('superProjectsEnabled', { enabled: facts.enabledProjects, total: totalProjects })
     : (facts.available ? dabT('superProjectsUnavailable') : null)
@@ -102,25 +139,25 @@ function DabSuperOrchestratorBarImpl({
     // Exactly one primary action for the current state: Start, Resume or Pause.
     canResume
       ? dabSuperControl(h, {
-        key: 'resume', action: 'resume', label: `▶ ${dabT('resume')}`, title: dabT('superResume'), primary: true, disabled: busy === true, onClick: onResume,
+        key: 'resume', action: 'resume', label: dabT('resume'), title: dabT('superResume'), primary: true, disabled: busy === true, onClick: onResume,
       })
-      : null,
-    canStart
+      : canPause
+        ? dabSuperControl(h, {
+          key: 'pause', action: 'pause', label: dabT('superPauseShort'), title: dabT('superPause'), primary: true,
+          disabled: busy === true, onClick: onPause,
+        })
+        : canStart
+          ? dabSuperControl(h, {
+            key: 'start', action: 'start', label: dabT('superStartShort'), title: dabT('superStart'), primary: true,
+            disabled: busy === true || facts.enabledProjects === 0, onClick: onStart,
+          })
+          : null,
+    canStop
       ? dabSuperControl(h, {
-        key: 'start', action: 'start', label: `▶ ${dabT('superStartShort')}`, title: dabT('superStart'), primary: true,
-        disabled: busy === true, onClick: onStart,
+        key: 'stop', action: 'stop', label: dabT('superStopShort'), title: dabT('superStop'),
+        disabled: busy === true, onClick: onStop,
       })
       : null,
-    canPause
-      ? dabSuperControl(h, {
-        key: 'pause', action: 'pause', label: `⏸ ${dabT('superPauseShort')}`, title: dabT('superPause'),
-        disabled: busy === true, onClick: onPause,
-      })
-      : null,
-    dabSuperControl(h, {
-      key: 'stop', action: 'stop', label: `⏹ ${dabT('superStopShort')}`, title: dabT('superStop'), danger: true,
-      disabled: busy === true, onClick: onStop,
-    }),
     onOpenSuperagent !== undefined && onOpenSuperagent !== null
       ? dabSuperControl(h, {
         key: 'details', action: 'details', label: dabT('superDetailsShort'), title: dabT('superDetailsOpen'),
@@ -206,14 +243,8 @@ function DabSuperOrchestratorBarImpl({
 
   controls,
 
-  needsProjects
-    ? h('button', {
-      type: 'button',
-      className: 'dab-super-cta',
-      'data-cta': 'choose-projects',
-      title: dabT('superChooseProjectsHint'),
-      onClick: () => (onOpenProjects ?? onOpenSuperagent)?.(),
-    }, dabT('superChooseProjects'))
+  Array.isArray(projectRows) && projectRows.length > 0
+    ? dabSuperProjects(h, { rows: projectRows, busy, onToggleProject, onSetProjectLevel, onOpenProjects: onOpenProjects ?? onOpenSuperagent, needsProjects })
     : null,
 
   // Mini orchestrator avatars: real agents only. A project without a declared
@@ -261,6 +292,9 @@ const DabSuperOrchestratorBar = React.memo(DabSuperOrchestratorBarImpl, (a, b) =
   && a.onOpenSuperagent === b.onOpenSuperagent
   && a.onOpenDecisions === b.onOpenDecisions
   && a.onOpenProjects === b.onOpenProjects
+  && a.projectRows === b.projectRows
+  && a.onToggleProject === b.onToggleProject
+  && a.onSetProjectLevel === b.onSetProjectLevel
   && a.superagent === b.superagent
   && a.mandate === b.mandate
   && a.capabilities === b.capabilities

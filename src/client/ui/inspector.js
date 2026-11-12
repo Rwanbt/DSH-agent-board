@@ -377,7 +377,7 @@ function DabSuperagentProjects({
             className: 'dab-select dab-sa-level', value: row.level,
             'aria-label': `${dabT('superProjectLevel')} : ${row.title}`,
             onChange: event => onSetProjectLevel?.(row.id, event?.target?.value),
-          }, DAB_AUTONOMY_LEVELS.map(level => h('option', { key: level, value: level }, level)))),
+          }, DAB_AUTONOMY_LEVELS.map(level => h('option', { key: level, value: level, title: dabLevelHint(level) }, dabLevelLabel(level))))),
         h('label', { className: 'dab-sa-field dab-sa-field-inline' },
           h('span', { className: 'dab-sa-field-label' }, dabT('superProjectPriority')),
           h('input', {
@@ -557,7 +557,8 @@ function DabSuperagentSettings({
         h('select', {
           className: 'dab-select dab-sa-global-level', value: level, 'aria-label': dabT('superSettingsGlobalLevel'),
           onChange: event => onSetLevel?.(event?.target?.value),
-        }, DAB_AUTONOMY_LEVELS.map(value => h('option', { key: value, value }, value))))),
+        }, DAB_AUTONOMY_LEVELS.map(value => h('option', { key: value, value, title: dabLevelHint(value) }, dabLevelLabel(value))))),
+      h('div', { className: 'dab-muted dab-sa-level-hint' }, dabLevelHint(level))),
     dabSaSection(h, 'budget', dabT('superSettingsBudget'),
       budget === null
         ? dabSaReason(h, 'budget_not_published')
@@ -719,7 +720,7 @@ function DabSuperagentInspector(props) {
         h('div', { className: 'dab-sa-sub' },
           h('span', { className: 'dab-sa-state', 'data-session-state': facts.stateKey }, dabT(facts.stateLabelKey)),
           facts.modelText === null ? null : h('span', { className: 'dab-sa-head-model' }, facts.modelText),
-          facts.level === null ? null : h('span', { className: 'dab-tag' }, facts.level))),
+          facts.level === null ? null : h('span', { className: 'dab-tag', title: dabLevelHint(facts.level) }, dabLevelLabel(facts.level)))),
       h('button', {
         type: 'button', className: 'dab-btn', 'data-variant': 'ghost', 'aria-label': dabT('close'), onClick: () => onClose?.(),
       }, '✕')),
