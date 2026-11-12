@@ -3,6 +3,7 @@
 A card-and-branch cockpit for **DeepSeek Harness**: one card per session and
 sub-agent, grouped by project, with real native statuses and model/provider, a
 supervisor that launches Task Board work in OFF / SUPERVISED / AUTONOMOUS modes,
+a **Super Agent** that plans across projects from an explicit operator mandate,
 a failover path that switches model/provider and hands the task off, and a
 **unified execution backend** that keeps the Task Board as the canonical
 execution record while the board keeps the model failover.
@@ -12,7 +13,7 @@ execution record while the board keeps the model failover.
 > implemented and tested (see `docs/GOAL3-DELIVERY.md` for the exact evidence
 > classes). The execution contract is a **proposed extension of the Task Board**
 > and is currently proved against a **simulated** server
-> (`tests/fixtures/fake-taskboard-server.mjs`): the real `dsh-taskboard` 0.11.0
+> (`tests/fixtures/fake-taskboard-server.mjs`): the real `dsh-taskboard` 0.12.0
 > does not implement it yet, so `executionBackend:'contract'` is refused against
 > it (`contract_unavailable`) and the two legacy backends remain the live paths.
 > A real isolated DSH host was booted with a fake OpenAI-compatible provider and
@@ -20,6 +21,17 @@ execution record while the board keeps the model failover.
 > was exercised **without user credentials**; a real provider outage and a real
 > Task Board extension were **not** exercised. See
 > [docs/LIMITATIONS.md](docs/LIMITATIONS.md) before trusting a claim.
+>
+> **GOAL 6 (Super Agent + explicit mandate):** a scope-aware mandate replaces the
+> permissive legacy policy (`scopeMode: none | selected | all`, levels L0–L4,
+> per-action grants, per-project model/priority/budget), every mutating path goes
+> through ONE deterministic gate (`effectivePolicyOf`), a persistent Super Agent
+> evaluates the multi-project portfolio, keeps directives and memory, and asks
+> for human decisions instead of acting. The real installed profile was upgraded
+> and verified inert (`schemaVersion:2`, `scopeMode:none`, L0). GitHub **writes**
+> are implemented behind an explicit opt-in and validated live on a disposable
+> repository; no merge/protected-push/delete exists. Full evidence, limits and
+> rollback: [`docs/GOAL6-DELIVERY.md`](docs/GOAL6-DELIVERY.md).
 >
 > **GOAL 4 (mascots + supervision):** the 15 approved mascots, the reusable
 > `AgentAvatar`, the role-aware cards, the workspace → project → orchestrator
@@ -47,9 +59,13 @@ execution record while the board keeps the model failover.
 | `goal3/supervision-orchestration` | GOAL 3 work: unified execution contract, layered routing/budget/fencing, supervision fidelity, adapters, benchmarks, reviews (to be merged into `dev`). |
 | `feat/agent-board-mascots-super-orchestrator` | GOAL 4: the 15 Mascot SVGs byte-identical, role registry/aliases, `AgentAvatar`, role-aware cards + hierarchy + filters, the Super Orchestrator supervision layer and the Task Board coordination read model. |
 | `feat/agent-board-responsive-cockpit` | GOAL 5: the responsive cockpit (global multi-project view by default, compact header/filters, Super Orchestrator band, runtime indicators, adaptive grid, inspector drawer / bottom sheet, two-column mobile mosaic). |
+| `feat/agent-board-superagent` | GOAL 6: explicit mandate (scope/levels/actions), single policy gate, Super Agent runtime (identity, directives, memory, DecisionInbox), portfolio planning, Task Board public-v1 client, opt-in GitHub writes, cockpit tabs. |
 
-The board never pushes, merges or opens a PR on a forge: the forge adapters are
-read-only and the Task Board stays the sole owner of tickets and executions.
+The board **never merges, never pushes a protected branch and never deletes** on
+a forge. It can open an issue/comment/PR **only** when the operator both enables
+`allowGithubWrites` and grants the matching action in the mandate; those writes
+are idempotent and audited. By default the forge is read-only and the Task Board
+stays the sole owner of tickets and executions.
 
 ## What it does
 
@@ -182,10 +198,40 @@ forget read cursors, previews and assignments.
   native main view) posts an ack; the state is persisted host-side, so the card
   stays grey after a refresh.
 
+## Mandate and Super Agent (GOAL 6)
+
+After the upgrade the board is **inert by design**: `state.json` migrates to
+`schemaVersion: 2` with `scopeMode: 'none'`, `level: 'L0'` and
+`requiresConfiguration: true`; nothing launches until you configure the mandate
+(cockpit → *Projets* tab, or `POST /dsh-agent-board/api/v2/mandate`).
+
+- **Scope** — `none` (default) | `selected` (explicit workspace list) | `all`
+  (requires the literal confirmation `ALL_PROJECTS`). An empty list never means
+  “all”.
+- **Levels** — `L0` observe, `L1` propose, `L2` supervised launch, `L3` routine
+  autonomy (comment, create/update, schedule, push branch), `L4` critical
+  (open PR, merge-triggering actions). The **most restrictive** rule wins:
+  mode, stop, action grant, level, project state, integration ceiling.
+- **Actions** — individual grants (`launch`, `delegate`, `create_task`,
+  `update_task`, `comment`, `open_pr`, `push_branch`, `delete_task`,
+  `schedule`); a level never implies an action.
+- **Dry run** — `GET /dry-run` simulates one tick and returns, for every
+  candidate, `allowed`/`reason` and the effective capability matrix.
+- **Decisions** — the Super Agent never crosses the gate: it writes a
+  DecisionInbox item, the operator answers, and an approval is **single-use**.
+- **Directives & memory** — persisted operator directives (global/project) and a
+  bounded memory digest; a project can pin its own model and hourly budget.
+
+Honest limits: the real Task Board public API is disabled without a token, so
+public-v1 **writes** are not validated live; GitHub writes are validated on a
+disposable repository only. See `docs/GOAL6-DELIVERY.md` §10.
+
 ## Configuration
 
-The policy is editable at runtime through the panel API and is persisted in
-`state.json`:
+The **mandate** (GOAL 6) is the canonical authorization source and is stored in
+`state.json`; the legacy `/policy` endpoint is still accepted and translated
+into the mandate (it can never widen a configured mandate). The policy below is
+editable at runtime through the panel API and is persisted in `state.json`:
 
 ```http
 POST /dsh-agent-board/api/v2/policy
@@ -201,20 +247,27 @@ POST /dsh-agent-board/api/v2/policy
               "contractBoardReport": true } }
 ```
 
-`allowedWorkspaces: []` means “every workspace visible to the board”.
-`executionBackend: "board"` creates the session itself (model-level failover
-possible); `"taskboard"` delegates to the Task Board executor
-(`POST /dsh-taskboard/tasks/:id/run`: execution record, permission, worktree)
-and explicitly gives up model failover; `"contract"` uses the proposed execution
-contract (`docs/TASKBOARD-CONTRACT.md`) to keep BOTH. The Task Board ledger is
-read-only from the board's perspective; `done` stays human-only.
+- `allowedWorkspaces: []` on the legacy policy means “every workspace visible”,
+  but it is **translated conservatively** into an explicit selected scope: the
+  mandate never treats an empty list as “all”.
+- `executionBackend: "board"` creates the session itself (model-level failover
+  possible); `"taskboard"` delegates to the Task Board executor
+  (`POST /dsh-taskboard/tasks/:id/run`: execution record, permission, worktree)
+  and explicitly gives up model failover; `"contract"` uses the proposed execution
+  contract (`docs/TASKBOARD-CONTRACT.md`) to keep BOTH. The Task Board ledger is
+  read-only from the board's perspective; `done` stays human-only.
+- GitHub: set `githubRepository: 'owner/name'` to enable reads. Writes require
+  `allowGithubWrites: true` **and** the mandate action; when enabled they use
+  `GITHUB_TOKEN` from the environment (never the UI, never logged).
 
 ## Safety invariants
 
 - `done` is never set by the board or a launched agent.
-- The Task Board ledger is never written by the board; only the official
-  `taskboard_*` tools act on it, from the launched session, or the proposed
-  execution contract (lease/attach/report/release/settle, never `done`).
+- The Task Board ledger is never written by the **execution path**: only the
+  official `taskboard_*` tools act on it from the launched session, or the
+  proposed execution contract (lease/attach/report/release/settle, never `done`).
+  A public-v1 client (claim/attach/complete) is implemented and exercised against
+  a real 0.12.0 build, but it is not yet the execution backend.
 - One host owns `$DSH_HOME/agent-board` at a time (`instance.lock`); a secondary
   host serves reads and refuses mutations (409 `not_primary`).
 - A card cannot widen its own permission beyond the policy mandate; a worktree
@@ -223,7 +276,11 @@ read-only from the board's perspective; `done` stays human-only.
   workspace.
 - A stale writer cannot settle an assignment another writer owns (fencing); a
   Stop that lands during a launch/handoff wins the race.
-- The plugin never pushes, merges or opens a PR.
+- Forge **merge, protected-branch push and deletion do not exist**; issue,
+  comment and PR creation require `allowGithubWrites` + the mandate action, are
+  idempotent (project/type-namespaced keys) and audited.
+- The JSONL audit rotates at 8 MiB (`audit.jsonl.1`, one generation) and records
+  `audit_rotated`; older history is exported before it is truncated.
 
 ## HTTP API (same-origin, authenticated by the DSH browser session)
 
@@ -241,6 +298,16 @@ read-only from the board's perspective; `done` stays human-only.
 | POST | `/resume` | clear the operator stop (Stop is not OFF) |
 | POST | `/dispatch` | `{taskId}` explicit manual launch |
 | POST | `/proposals/:id/decide` | `{approve:boolean}` |
+| GET/POST | `/mandate` | read / patch the explicit mandate (`scopeMode`, level, actions) |
+| POST | `/mandate/confirm` | confirm the configuration (`requiresConfiguration:false`) |
+| POST | `/mandate/projects/:id` | project override (enabled, level, model, budget, priority) |
+| GET | `/dry-run` | simulate one tick: every candidate with `allowed`/`reason` |
+| GET | `/diagnostics` | host diagnostics (state, lock, adapters, model discovery) |
+| GET/POST | `/superagent`, `/superagent/start|stop|model|directive|cycle` | Super Agent runtime and controls |
+| POST | `/superagent/decision` | answer a DecisionInbox item (approval is single-use) |
+| POST | `/integrations/taskboard/probe` | real public-v1 negotiation (no secret returned) |
+| GET | `/forge/checks/:ref` | read CI checks for a ref |
+| POST | `/forge/issue`, `/forge/issue/:n/comment`, `/forge/pr` | opt-in GitHub writes (mandate + `allowGithubWrites`), idempotent |
 
 Every request goes through `ctx.connection.requestRejection` before the
 handler runs.
@@ -263,21 +330,37 @@ and simulated Task Board, five workspaces, 21 real sessions):
   [hierarchy](docs/e2e/screenshots/cockpit-1366-hierarchy.png) ·
   [supervision details](docs/e2e/screenshots/cockpit-1366-superbar-open.png)
 
+GOAL 6 (mandate, Super Agent band, scope, settings, mobile, dark):
+
+- [projects + scope](docs/e2e/screenshots/goal6-1366-projects.png) ·
+  [settings + effective permissions](docs/e2e/screenshots/goal6-1366-settings.png) ·
+  [super agent band](docs/e2e/screenshots/goal6-1366-cockpit.png) ·
+  [directives](docs/e2e/screenshots/goal6-1366-directives.png)
+- [dark](docs/e2e/screenshots/goal6-1366-dark.png) ·
+  [390 px](docs/e2e/screenshots/goal6-390-band.png) ·
+  [390 px settings](docs/e2e/screenshots/goal6-390-settings.png)
+
+All nine captures and their captured facts: [GOAL6-UI-EVIDENCE.md](docs/e2e/GOAL6-UI-EVIDENCE.md).
+
 ## Tests
 
 ```sh
-node --test tests/            # full suite (unit + contract + host integration + security + perf)
+node --test tests/            # full suite, 570 tests (unit + contract + host + security + perf)
 node scripts/build-assets.mjs # regenerate the inlined SVG data URIs (never hand-edit)
 node scripts/build-client.mjs # regenerate src/client.js after editing src/client/**
 node scripts/mascot-gallery.mjs # write an HTML gallery of the 32 approved SVGs
 node scripts/smoke-host.mjs   # fast module/DAG smoke check
-node scripts/e2e/run-e2e.mjs  # isolated real DSH host + fake provider + simulated contract
+node scripts/e2e/run-e2e.mjs  # isolated real DSH host: migration + gate + failover + 3 projects
+node scripts/e2e/github-live.mjs  # LIVE GitHub writes (needs GITHUB_TOKEN + a disposable repo)
 node scripts/bench/projection-bench.mjs   # 5/20/50/150 agents, 1000 sessions
+node scripts/bench/payload-bench.mjs      # additive /state size (bounded sections)
 ```
 
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [GOAL 6 delivery record (mandate, Super Agent, forge)](docs/GOAL6-DELIVERY.md) · [contract](docs/GOAL6-CONTRACT.md) · [Task Board public-v1 audit](docs/TASKBOARD-PUBLIC-V1-AUDIT.md)
+- [GOAL 6 UI evidence](docs/e2e/GOAL6-UI-EVIDENCE.md) · [real-profile migration proof](docs/e2e/REAL-PROFILE-2026-11-12.md)
 - [Responsive cockpit contract](docs/UX-COCKPIT-CONTRACT.md) · [GOAL 5 delivery record](docs/GOAL5-DELIVERY.md) · [independent review](docs/REVIEW-GOAL5.md)
 - [Mascots, supervision & Super Orchestrator](docs/MASCOTS-SUPER-ORCHESTRATOR.md)
 - [Contracts & adapters](docs/CONTRACTS.md)

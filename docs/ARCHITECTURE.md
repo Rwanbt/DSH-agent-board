@@ -3,18 +3,20 @@
 ```text
 [ Agent Board panel (browser, React via the DSH module table) ]
         │  native subscriptions: sessions.list, uiSession.sessionStatus, workspaces.list
-        │  host state: GET /state + SSE /events, commands /mode /policy /stop /ack /tick
+        │  host state: GET /state + SSE /events; commands /mode /mandate /policy /stop /ack /tick /dry-run
         ▼
 [ Host plugin: supervisor + orchestrator + router + recovery  (src/host/index.js) ]
         │  ctx.agents.create / inject / followup / cancel      ctx.on('session/event')
-        ├── WorkSourceAdapter  dsh-taskboard (read-only, live)  · GitHub (read-only, unvalidated)
+        ├── WorkSourceAdapter  dsh-taskboard (public-v1, live read; writes need a token)  · GitHub (read live; opt-in idempotent writes, live-validated on a disposable repo)
         │                      GitLab/Forgejo/Gitea/Bitbucket/Jira/Linear (skeletons)
         ├── AgentExecutorAdapter  DSH (live) · Claude Code/Codex/OpenCode (skeletons)
         ├── ModelRouter  classify → retry / switch / handoff       (src/routing)
         └── Recovery      checkpoint → reconcile → new session     (src/recovery)
         ▼
-[ Durable state ]  $DSH_HOME/agent-board/state.json (atomic tmp+rename)
-                   $DSH_HOME/agent-board/audit.jsonl (append-only)
+[ Durable state ]  $DSH_HOME/agent-board/state.json (atomic tmp+rename, schemaVersion 2, explicit mandate)
+                   $DSH_HOME/agent-board/audit.jsonl (append-only, rotates at 8 MiB)
+[ Super Agent ]    identity + directives + memory + DecisionInbox + portfolio plan
+                   (src/superagent, src/plan, src/contracts/mandate.js)
 ```
 
 The browser can be closed: the host half keeps the timer, the journal and the
