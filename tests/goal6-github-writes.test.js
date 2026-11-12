@@ -60,7 +60,7 @@ function installFakeGithub() {
     }
     if (method === 'POST' && path === '/repos/o/r/pulls') {
       const body = JSON.parse(init.body)
-      const pull = { number: state.nextNumber++, title: body.title, state: 'open', html_url: `https://example.test/pull/${state.nextNumber - 1}`, head: { ref: body.head }, base: { ref: body.base }, updated_at: '2026-01-01T00:00:00Z' }
+      const pull = { number: state.nextNumber++, title: body.title, body: body.body ?? '', state: 'open', html_url: `https://example.test/pull/${state.nextNumber - 1}`, head: { ref: body.head }, base: { ref: body.base }, updated_at: '2026-01-01T00:00:00Z' }
       state.pulls.push(pull)
       return json(201, pull)
     }
@@ -340,6 +340,70 @@ test('without the adapter opt-in the host refuses every forge write', async () =
     if (dispose !== null) dispose()
     if (previousHome === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = previousHome
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+test('forge idempotency keys are namespaced by project AND object type', async () => {
+  const fake = installFakeGithub()
+  const home = await mkdtemp(join(tmpdir(), 'dab-forge-ns-'))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  const previousToken = process.env.GITHUB_TOKEN
+  process.env.GITHUB_TOKEN = TOKEN
+  const made = makeCtx()
+  let dispose = null
+  try {
+    dispose = apply(made.ctx, {
+      githubRepository: 'o/r',
+      allowGithubWrites: true,
+      mandate: {
+        scopeMode: 'selected',
+        selectedWorkspaces: ['w1', 'w2'],
+        level: 'L4',
+        actions: { create_task: true, comment: true, open_pr: true },
+        projects: { w1: { enabled: true }, w2: { enabled: true } },
+        requiresConfiguration: false,
+      },
+    })
+    await callJson(made.routes, 'GET', '/state')
+    await callJson(made.routes, 'POST', '/mode', { mode: 'autonomous' })
+
+    // Same caller key, two projects => two distinct issues.
+    const first = await callJson(made.routes, 'POST', '/forge/issue', { projectId: 'w1', title: 'w1 issue', idempotencyKey: 'shared' })
+    const second = await callJson(made.routes, 'POST', '/forge/issue', { projectId: 'w2', title: 'w2 issue', idempotencyKey: 'shared' })
+    assert.equal(first.status, 201, JSON.stringify(first.body))
+    assert.equal(second.status, 201, JSON.stringify(second.body))
+    assert.notEqual(first.body.value.issue.id, second.body.value.issue.id)
+    assert.equal(fake.state.issues.length, 2)
+
+    // Same caller key, another object type => a different marker, no cross-match.
+    const pr = await callJson(made.routes, 'POST', '/forge/pr', { projectId: 'w1', title: 'PR', head: 'feat/ns', base: 'dev', idempotencyKey: 'shared' })
+    assert.equal(pr.status, 201, JSON.stringify(pr.body))
+    assert.match(fake.state.pulls[0].body, /<!-- agent-board:id:w1:pr:shared -->/)
+    const firstIssueRow = fake.state.issues.find(entry => String(entry.number) === first.body.value.issue.id)
+    assert.match(firstIssueRow.body, /<!-- agent-board:id:w1:issue:shared -->/)
+    const issueAgain = await callJson(made.routes, 'POST', '/forge/issue', { projectId: 'w1', title: 'retry', idempotencyKey: 'shared' })
+    assert.equal(issueAgain.status, 200)
+    assert.equal(issueAgain.body.value.issue.id, first.body.value.issue.id, 'the issue key never matches the PR object')
+    assert.equal(fake.state.issues.length, 2)
+
+    // Comment: deterministic key from taskId, and a hard 400 without any key.
+    const c1 = await callJson(made.routes, 'POST', `/forge/issue/${first.body.value.issue.id}/comment`, { projectId: 'w1', taskId: 't-9', body: 'même clé' })
+    const c2 = await callJson(made.routes, 'POST', `/forge/issue/${first.body.value.issue.id}/comment`, { projectId: 'w1', taskId: 't-9', body: 'même clé' })
+    assert.equal(c1.status, 201, JSON.stringify(c1.body))
+    assert.equal(c2.status, 200)
+    assert.equal(c2.body.value.comment.id, c1.body.value.comment.id, 'a retry without a key but with the same taskId is the same comment')
+    assert.equal((fake.state.comments.get(String(first.body.value.issue.id)) ?? []).length, 1)
+    const noKey = await callJson(made.routes, 'POST', `/forge/issue/${first.body.value.issue.id}/comment`, { projectId: 'w1', body: 'sans clé' })
+    assert.equal(noKey.status, 400)
+    assert.equal(noKey.body.error, 'idempotencyKey_required')
+  } finally {
+    if (dispose !== null) dispose()
+    if (previousToken === undefined) delete process.env.GITHUB_TOKEN
+    else process.env.GITHUB_TOKEN = previousToken
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    fake.restore()
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
