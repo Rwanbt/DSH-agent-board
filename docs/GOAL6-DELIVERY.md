@@ -6,7 +6,7 @@
 - **PR #3** (empilée, non fusionnée) : https://github.com/Rwanbt/DSH-agent-board/pull/3 → base `feat/agent-board-responsive-cockpit`
 - Dépôt Agent Board : `Rwanbt/DSH-agent-board`
 - Dépôt Task Board : `Rwanbt/dsh-taskboard`, branche `feat/universal-sync`, HEAD `e6aaece`, version **0.12.0**
-- Suite Agent Board : **563 / 563 tests passent**, 0 échec (`node --test tests/`)
+- Suite Agent Board : **567 / 567 tests passent**, 0 échec (`node --test tests/`)
 - Bundle client reconstruit : `src/client.js` (603 799 octets, 23 modules)
 - E2E hôte réel : **scénarios 0, a, b, c verts** (`node scripts/e2e/run-e2e.mjs`)
 
@@ -23,7 +23,7 @@ liste ce qui **n'est pas** validé et pourquoi.
 | Super Agent IA réel (session DSH, modèle, directives, mémoire, décisions) | **Livré, testé hôte réel** (LLM simulé au bord, DSH réel) |
 | Planification multi-projets équitable + reprise après crash | **Livré, testé** (hôte réel : A puis B, C jamais touché) |
 | Task Board propriétaire (lecture) + adaptateur public-v1 + sonde | **Livré, testé** ; **écriture live non activée** (API publique 503, aucun token) |
-| GitHub bout en bout (issue → tâche → worker → PR/checks) | **NON validé** : aucune écriture n'est implémentée ni annoncée ; **la lecture réelle est validée en live** (3 PR ouvertes listées le 12/11 via l'adaptateur). L'écriture exige un dépôt de test et une décision produit non données. |
+| GitHub | **écriture implémentée et validée en live** sur un dépôt privé jetable : issue, commentaire, PR, checks, idempotence (issue/PR non dupliquées). Aucun merge/ push protégé / suppression. Dépôt **archivé** ; sa suppression exige le scope `delete_repo` (commande fournie §10). |
 | Cockpit 4 onglets + bandeau Super Agent, desktop/mobile | **Livré, testé** ; captures ci-dessous |
 | Installation / migration / rollback documentés | **Livré** (§9) |
 | Revue indépendante adversariale | **1 P0 + 3 P1 + 2 P2 trouvés, tous corrigés** ; revérification : **0 P0 / 0 P1 connus**, suite verte |
@@ -62,7 +62,7 @@ dans `D:\App\dsh-taskboard` (aucun défaut bloquant trouvé côté Task Board).
 | P0-A : décalage hôte/client visible (F0) | `host.build {version, schemaVersion, features[], startedAt, pid, source}` publié ; le client compare et dit « hôte plus ancien » | `tests/goal6-host-gate.test.js` (build/schema/features), E2E 0.7 | Livré |
 | P0-B : `[]` ≠ « tous » (F1) | `scopeMode: 'none'\|'selected'\|'all'`, défaut `none`, `all` exige `allConsent{text:'ALL_PROJECTS',at}` | `tests/mandate.test.js` (20 cas), `goal6-host-gate` (migration + restart + L4), E2E 0a/0f | Livré |
 | P0-B : migration dangereuse | `migrateLegacyPolicy` : ancien autonome + liste vide → `none`, L1, actions `false`, `requiresConfiguration:true`, audit unique | `goal6-host-gate` « v1 migration… » ; E2E 0a | Livré |
-| P0-B : gate central | `effectivePolicyOf` appelé par tick, `/dispatch`, approbation, reprise, failover/handoff, retry, Super Agent | `tests/mandate.test.js`, `goal6-superagent-host`, `goal6-host-gate` (handoff après retrait du projet), 563 tests | Livré |
+| P0-B : gate central | `effectivePolicyOf` appelé par tick, `/dispatch`, approbation, reprise, failover/handoff, retry, Super Agent | `tests/mandate.test.js`, `goal6-superagent-host`, `goal6-host-gate` (handoff après retrait du projet), 567 tests | Livré |
 | P0-C F2 : capacités véridiques | `capabilities.<action> = {state,reason,source}` dérivé de l'état réel ; jamais `available` si refus | `goal6-host-gate` « capabilities are truthful in OFF and after a Stop » | Livré |
 | P0-C F3 : Stop lisible + Reprendre | `stoppedAt` explicite, `POST /resume`, bandeau « Arrêté (observation) » + Reprendre | hôte : test Stop/Resume ; UI : `cockpit-superagent` | Livré |
 | P0-C F4 : recommandations en Arrêt | une seule ligne explicite en OFF/Stop, compteurs conservés | `tests/cockpit-superagent.test.js` | Livré |
@@ -80,7 +80,9 @@ dans `D:\App\dsh-taskboard` (aucun défaut bloquant trouvé côté Task Board).
 | P2 : planification multi-projets | `plan/portfolio.js` + `plan/scheduler.js` (priorité → anti-famine → moins servi → id) branchés sur le tick, avec **interleave round-robin** entre projets | `goal6-portfolio` (10 tests, dont « un projet ne prend pas les 2 slots ») ; E2E c1/c2 | Livré |
 | P2 : reprise / idempotence | journal v2, lease/fencing existants, réconciliation au démarrage, décision consommée une fois | suite existante + `goal6-superagent-host` (restart) | Livré |
 | P3 : Task Board canonique | lecture via connecteur existant ; adaptateur public-v1 complet ; sonde réelle | `taskboard-public` (11 tests), `goal6-taskboard-probe` (3), audit live | Partiel (voir §10) |
+| P3 : GitHub (lecture + écritures autorisées) | `connectors/github.js` : issues/PR/checks en lecture ; `createIssue`/`commentIssue`/`openPullRequest` derrière **deux murs** (`allowGithubWrites` + action du mandat), idempotence par marqueur + cache ; aucune capacité merge/delete | `tests/goal6-github-writes.test.js` (4 tests) + **E2E live réel** sur dépôt privé jetable (`docs/e2e/GITHUB-LIVE-E2E.json`) | Livré et validé live |
 | P3 : `in_review`, jamais `done` | conservé et testé (E2E a5, b6) | E2E | Livré |
+| P3 : autres forges | squelettes `unavailable` avec raison ; aucune capacité inventée | tests adapters | Livré (honnête, non implémenté) |
 | P4 : cockpit | 4 onglets, bandeau, décisions, a11y, mobile | `cockpit-superagent` + captures §8 | Livré |
 | P5 : sécurité | deny-by-default, secrets jamais publiés, injection balisée, audit | `security.test.js` + `goal6-*` | Livré |
 | P6 : E2E réel | 4 scénarios sur un vrai process DSH | E2E | Livré |
@@ -165,7 +167,7 @@ aucune session (prouvé par test).
 ## 6. Preuves exécutées (commandes exactes)
 
 ```powershell
-node --test tests/                       # 563/563, 0 fail
+node --test tests/                       # 567/567, 0 fail
 node --check src/host/index.js           # OK
 node scripts/build-client.mjs            # built 603 799 bytes, 23 modules
 node scripts/e2e/run-e2e.mjs             # 0/a/b/c verts sur un vrai process DSH
@@ -209,10 +211,27 @@ createGithubAdapter({ repository: 'Rwanbt/DSH-agent-board', token: '' }).list()
 → live:true, status:available, 3 éléments (pull_request), pages:1, truncated:false
 ```
 
-Cela prouve la lecture réelle (API GitHub, pagination, normalisation) ; **aucune
-écriture GitHub n'a été exécutée** et l'adaptateur n'en annonce aucune. Cette preuve est
-un contrôle opérateur ponctuel : l'adaptateur continue de déclarer
-`validatedLive:false` (il ne s'auto-déclare pas validé pour un autre dépôt).
+**Écritures GitHub validées en live** sur un dépôt privé jetable
+(`Rwanbt/agent-board-e2e-disposable`, supprimé/archivé après le test), avec le vrai
+adaptateur et un token réel jamais journalisé :
+
+```
+PASS 1. issue réelle créée (#4)
+PASS 2. même idempotencyKey ⇒ MÊME issue (aucune duplication)
+PASS 3. commentaire réel créé
+PASS 4. même clé ⇒ aucun commentaire dupliqué
+PASS 5. branche jetable + un commit
+PASS 6. pull request réelle ouverte (#5), jamais fusionnée
+PASS 7. même branche ⇒ aucune seconde PR
+PASS 8. checks CI lisibles (total=0)
+PASS 9. aucune méthode merge exposée
+```
+
+Preuves : `docs/e2e/GITHUB-LIVE-E2E.json` ; script reproductible :
+`scripts/e2e/github-live.mjs`. Le dépôt a été archivé (privé) et ses issues/PR fermées ;
+sa suppression exige le scope `delete_repo` (commande exacte en §10). Aucune écriture
+n'a été faite sur un dépôt de projet réel : les écritures restent désactivées par défaut
+(`allowGithubWrites:false`) et soumises au mandat.
 
 ---
 
@@ -281,6 +300,22 @@ Détail et limites : `docs/e2e/GOAL6-UI-EVIDENCE.md`.
 Sans token : l'API reste désactivée côté Task Board (503) et l'Agent Board l'affiche
 comme telle. Aucun secret n'est demandé par l'UI.
 
+### Activer l'intégration GitHub (optionnelle, écriture désactivée par défaut)
+
+```powershell
+# 1) dépôt cible (config du plugin / cordis) : githubRepository: 'owner/name'
+# 2) écritures explicitement autorisées : allowGithubWrites: true
+# 3) token fourni par l'environnement (jamais par l'UI, jamais journalisé) :
+[Environment]::SetEnvironmentVariable('GITHUB_TOKEN', '<token>', 'User')
+# 4) dans l'UI : sélectionner le projet, niveau L3+ (L4 pour open_pr), cocher les
+#    actions Commenter / Créer une tâche / Ouvrir une PR
+```
+
+Sans `allowGithubWrites:true`, la matrice de capacités affiche
+`github_writes_disabled` et toute route `/forge/*` refuse. Routes disponibles :
+`POST /forge/issue`, `POST /forge/issue/:n/comment`, `POST /forge/pr`,
+`GET /forge/checks/:ref`. Aucune route merge/delete n'existe.
+
 ### Migration v1 → v2
 
 1. Sauvegarder `%USERPROFILE%\.dsh\agent-board\state.json` + `journal.jsonl`.
@@ -306,12 +341,17 @@ côté un document illisible au lieu de l'écraser.
 
 ### Bloquants externes (non résolus, non simulés en « live »)
 
-1. **GitHub bout en bout non validé** : la **lecture** réelle est prouvée (voir §6) et
-   `gh` est authentifié sur la machine, mais l'adaptateur est en **lecture seule** :
-   aucune création d'issue, commentaire ou PR n'est implémentée ni annoncée. Le scénario
-   issue → tâche → worker → PR/checks n'est donc **pas** prouvé. C'est le principal écart
-   à la barre de sortie P3, et il exige une décision produit (dépôt de test autorisé +
-   écriture GitHub) qui n'a pas été donnée.
+1. **GitHub** : lecture **et écritures** validées en live sur un dépôt privé jetable
+   (§6). Ce qui n'est **pas** validé : le cycle complet *issue → tâche Task Board →
+   worker → PR/checks* reste impossible tant que l'API publique Task Board est
+   désactivée (token absent, §10.2) ; aucune écriture n'a été faite sur un dépôt de
+   projet réel (par conception : `allowGithubWrites:false` + mandat) ; merge, push sur
+   branche protégée et suppression d'issue ne sont **pas implémentés** (décisions
+   critiques séparées). Nettoyage restant : le dépôt `Rwanbt/agent-board-e2e-disposable`
+   est **archivé/privé**, ses issues et PR sont fermées ; sa suppression exige le scope
+   `delete_repo` :
+   `gh auth refresh -h github.com -s delete_repo` puis
+   `gh repo delete Rwanbt/agent-board-e2e-disposable --yes`.
 2. **Écritures Task Board publiques non activées en live** : `DSH_TASKBOARD_PUBLIC_TOKEN`
    absent du host audité (503 `public_api_disabled`). L'adaptateur et le contrat sont
    implémentés et testés (serveur local + build réel isolé), mais aucune écriture n'a

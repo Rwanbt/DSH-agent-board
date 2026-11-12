@@ -825,7 +825,13 @@ export function apply(ctx, config = {}) {
     ready = true
   })
 
-  connectors = createConnectors({ baseUrl: configuredOrigin(), githubRepository, ctx })
+  connectors = createConnectors({
+    baseUrl: configuredOrigin(),
+    githubRepository,
+    githubToken: process.env.GITHUB_TOKEN,
+    allowGithubWrites: config.allowGithubWrites === true,
+    ctx,
+  })
 
   // ------------------------------------------------------ execution contract
   // The Task Board owns the canonical execution record. This client speaks the
@@ -1232,6 +1238,20 @@ export function apply(ctx, config = {}) {
   // authorize them and then nothing would happen. They are published as
   // unavailable with an explicit reason until a real adapter exists.
   const IMPLEMENTED_ACTIONS = Object.freeze(new Set(['launch']))
+  // Forge actions map to an adapter capability. They are available only when the
+  // GitHub adapter is configured, writes are explicitly enabled, and the mandate
+  // grants the action for a selected project.
+  const FORGE_WRITE_ACTIONS = Object.freeze({ create_task: 'create', comment: 'comment', open_pr: 'open_pr' })
+
+  function forgeReadiness(action) {
+    const capability = FORGE_WRITE_ACTIONS[action]
+    if (capability === undefined) return { relevant: false, ok: false, reason: null }
+    const adapter = connectors?.get?.('github')
+    const described = adapter !== null && adapter !== undefined && typeof adapter.describe === 'function' ? adapter.describe() : null
+    if (described === null || described.status !== 'available') return { relevant: true, ok: false, reason: 'github_not_configured' }
+    if (described.capabilities?.[capability] !== true) return { relevant: true, ok: false, reason: 'github_writes_disabled' }
+    return { relevant: true, ok: true, reason: null }
+  }
 
   /** Can this host actually open a worker session for the configured backend? */
   function backendReadiness() {
@@ -1250,7 +1270,9 @@ export function apply(ctx, config = {}) {
    * the real reason otherwise. Never a decorative "sous conditions" while OFF.
    */
   function capabilityOf(action) {
-    if (!IMPLEMENTED_ACTIONS.has(action)) {
+    const forge = forgeReadiness(action)
+    if (forge.relevant && !forge.ok) return { state: 'unavailable', reason: forge.reason, source: 'integration' }
+    if (!IMPLEMENTED_ACTIONS.has(action) && !forge.relevant) {
       return { state: 'unavailable', reason: 'no_adapter_for_action', source: 'host' }
     }
     if (action === 'launch') {
@@ -1260,15 +1282,16 @@ export function apply(ctx, config = {}) {
     if (action === 'delegate' && typeof ctx.agents?.create !== 'function') {
       return { state: 'unavailable', reason: 'runtime_unavailable', source: 'runtime' }
     }
+    const integration = forge.relevant ? 'github' : 'board'
     const mandate = state.mandate
     const scopeProjects = mandate?.scopeMode === 'all'
       ? workspaceList().map(workspace => String(workspace.id))
       : (Array.isArray(mandate?.selectedWorkspaces) ? mandate.selectedWorkspaces : [])
     if (scopeProjects.length === 0) {
-      const decision = effectiveFor(action)
+      const decision = effectiveFor(action, { integration })
       return { state: decision.allowed ? 'available' : (decision.requiresApproval || decision.reason === 'requires_configuration' ? 'gated' : 'unavailable'), reason: decision.reason, source: 'mandate' }
     }
-    const decisions = scopeProjects.map(projectId => effectiveFor(action, { projectId }))
+    const decisions = scopeProjects.map(projectId => effectiveFor(action, { projectId, integration }))
     if (decisions.some(decision => decision.allowed)) return { state: 'available', reason: 'allowed', source: 'mandate' }
     const gated = decisions.find(decision => decision.requiresApproval || decision.reason === 'requires_configuration' || decision.reason === 'project_disabled')
     return { state: gated !== undefined ? 'gated' : 'unavailable', reason: (gated ?? decisions[0]).reason, source: 'mandate' }
@@ -3509,6 +3532,22 @@ export function apply(ctx, config = {}) {
             .catch(error => sendJson(res, 502, { ok: false, error: truncate(String(error?.message ?? error), 300) }))
           return
         }
+        // CI checks for a ref (branch/tag/SHA) — read-only.
+        if (method === 'GET' && route.startsWith('/forge/checks/')) {
+          void readyPromise.then(async () => {
+            const adapter = connectors.get('github')
+            if (adapter === null || adapter === undefined || typeof adapter.checks !== 'function') {
+              return sendJson(res, 404, { ok: false, error: 'github_not_configured' })
+            }
+            const ref = decodeURIComponent(route.slice('/forge/checks/'.length))
+            try {
+              return sendJson(res, 200, { ok: true, value: await adapter.checks(ref) })
+            } catch (error) {
+              return sendJson(res, 502, { ok: false, error: error?.code ?? 'forge_error', message: truncate(String(error?.message ?? error), 200) })
+            }
+          })
+          return
+        }
         if (method === 'POST') {
           void (async () => {
             await readyPromise
@@ -3771,6 +3810,71 @@ export function apply(ctx, config = {}) {
               const value = await probePublicTaskBoard()
               return sendJson(res, 200, { ok: true, value })
             }
+            // -------------------------------------------------- forge (GitHub)
+            // Writes are behind TWO independent walls: the config opt-in
+            // (allowWrites) and the operator mandate action for a selected
+            // project. No merge/delete route exists at all.
+            const forgeActionOf = { create_task: 'create', comment: 'comment', open_pr: 'open_pr' }
+            const forgeReady = action => {
+              const adapter = connectors.get('github')
+              const described = adapter !== null && adapter !== undefined && typeof adapter.describe === 'function' ? adapter.describe() : null
+              if (described === null || described.status !== 'available') return { ok: false, error: 'github_not_configured' }
+              if (described.capabilities?.[forgeActionOf[action]] !== true) return { ok: false, error: 'github_writes_disabled' }
+              const projectId = typeof body.projectId === 'string' ? body.projectId : ''
+              if (projectId === '') return { ok: false, error: 'projectId_required' }
+              const gate = effectiveFor(action, { projectId, integration: 'github', approved: body.confirmed === true })
+              if (!gate.allowed) return { ok: false, error: gate.reason, gate }
+              return { ok: true, adapter, projectId }
+            }
+            const forgeStatus = code => (code === 'invalid_input' ? 400 : code === 'rate_limited' ? 429 : code === 'credentials_rejected' ? 502 : 409)
+            if (route === '/forge/issue') {
+              const ready = forgeReady('create_task')
+              if (!ready.ok) return sendJson(res, ready.error === 'projectId_required' ? 400 : 409, { ok: false, error: ready.error })
+              const idempotencyKey = typeof body.idempotencyKey === 'string' && body.idempotencyKey !== ''
+                ? body.idempotencyKey
+                : (typeof body.taskId === 'string' && body.taskId !== '' ? `task:${body.taskId}:issue` : '')
+              if (idempotencyKey === '') return sendJson(res, 400, { ok: false, error: 'idempotencyKey_required' })
+              try {
+                const value = await ready.adapter.createIssue({ title: body.title, body: body.body, labels: body.labels }, { idempotencyKey })
+                audit({ type: value.created ? 'forge_issue_created' : 'forge_issue_reused', at: Date.now(), projectId: ready.projectId, number: value.issue.id, url: value.issue.url, idempotencyKey })
+                touch()
+                return sendJson(res, value.created ? 201 : 200, { ok: true, value })
+              } catch (error) {
+                return sendJson(res, forgeStatus(error?.code), { ok: false, error: error?.code ?? 'forge_error', message: truncate(String(error?.message ?? error), 200) })
+              }
+            }
+            const forgeComment = route.match(/^\/forge\/issue\/([^/]+)\/comment$/)
+            if (forgeComment !== null) {
+              const ready = forgeReady('comment')
+              if (!ready.ok) return sendJson(res, ready.error === 'projectId_required' ? 400 : 409, { ok: false, error: ready.error })
+              const idempotencyKey = typeof body.idempotencyKey === 'string' && body.idempotencyKey !== ''
+                ? body.idempotencyKey
+                : `comment:${decodeURIComponent(forgeComment[1])}:${newId('k')}`
+              try {
+                const value = await ready.adapter.commentIssue(decodeURIComponent(forgeComment[1]), body.body, { idempotencyKey })
+                audit({ type: value.created ? 'forge_comment_created' : 'forge_comment_reused', at: Date.now(), projectId: ready.projectId, number: String(forgeComment[1]), idempotencyKey })
+                touch()
+                return sendJson(res, value.created ? 201 : 200, { ok: true, value })
+              } catch (error) {
+                return sendJson(res, forgeStatus(error?.code), { ok: false, error: error?.code ?? 'forge_error', message: truncate(String(error?.message ?? error), 200) })
+              }
+            }
+            if (route === '/forge/pr') {
+              const ready = forgeReady('open_pr')
+              if (!ready.ok) return sendJson(res, ready.error === 'projectId_required' ? 400 : 409, { ok: false, error: ready.error })
+              const idempotencyKey = typeof body.idempotencyKey === 'string' && body.idempotencyKey !== ''
+                ? body.idempotencyKey
+                : (typeof body.head === 'string' ? `pr:${body.head}` : '')
+              if (idempotencyKey === '') return sendJson(res, 400, { ok: false, error: 'idempotencyKey_required' })
+              try {
+                const value = await ready.adapter.openPullRequest({ title: body.title, body: body.body, head: body.head, base: body.base }, { idempotencyKey })
+                audit({ type: value.created ? 'forge_pr_opened' : 'forge_pr_reused', at: Date.now(), projectId: ready.projectId, number: value.pull.id, url: value.pull.url })
+                touch()
+                return sendJson(res, value.created ? 201 : 200, { ok: true, value })
+              } catch (error) {
+                return sendJson(res, forgeStatus(error?.code), { ok: false, error: error?.code ?? 'forge_error', message: truncate(String(error?.message ?? error), 200) })
+              }
+            }
             if (route === '/policy') {
               const incoming = { ...state.policy, ...(body.policy ?? {}) }
               if (!isMode(body.policy?.mode)) incoming.mode = state.mode
@@ -3973,6 +4077,7 @@ export const configSchema = {
   workspaceId: { type: 'string', description: 'Optional default workspace id for manual dispatches.' },
   baseUrl: { type: 'string', description: 'Origin of the Task Board HTTP API (defaults to the DSH web origin).' },
   githubRepository: { type: 'string', description: 'Optional owner/name for the read-only GitHub adapter.' },
+  allowGithubWrites: { type: 'boolean', description: 'Explicit opt-in for GitHub writes (create issue, comment, open PR). Default false; writes also require the operator mandate action and are audited.' },
   mandate: { type: 'object', description: 'Optional FIRST-RUN operator mandate (scopeMode, level, actions, projects). Ignored when a durable mandate is already configured; audited as mandate_seeded_from_config.' },
 }
 

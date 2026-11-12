@@ -1,11 +1,17 @@
 /**
- * Minimal, explicitly-unvalidated GitHub forge adapter.
+ * GitHub forge adapter.
  *
- * Scope: READ issues (with pull requests distinguished), bounded pagination and
- * rate-limit classification. It is disabled unless a repository is configured,
- * and it reports `validatedLive: false` until an operator runs it against a real
- * repository with a token. Nothing here creates, comments on, labels or
- * transitions a remote object, and the token never appears in an error message.
+ * READ path (always available when a repository is configured): issues and pull
+ * requests with bounded pagination and rate-limit classification.
+ *
+ * WRITE path (opt-in, `allowWrites:true`): create issue, comment an issue, open a
+ * pull request. Each write is idempotent through an embedded marker (the forge
+ * has no idempotency key), audited by the host, and gated by the operator
+ * mandate BEFORE it reaches this module. This adapter deliberately exposes NO
+ * merge, no protected-branch push and no issue deletion: those are separate,
+ * critical actions that this build does not implement.
+ *
+ * The token never appears in an error message, a returned value or a log line.
  *
  * @module dsh-agent-board/connectors/github
  */
@@ -15,6 +21,9 @@ import { AdapterError, defineAdapter } from '../contracts/adapters.js'
 const API = 'https://api.github.com'
 const MAX_PAGES = 3
 const PER_PAGE = 50
+const MAX_DEDUPE_ITEMS = 100
+const SAFE_BRANCH = /^[A-Za-z0-9._/-]{1,120}$/
+const SAFE_REPO = /^[^/\s]+\/[^/\s]+$/
 
 /** `Link: <...>; rel="next"` -> the next URL, or null. */
 export function nextLinkOf(headerValue) {
@@ -26,14 +35,26 @@ export function nextLinkOf(headerValue) {
   return null
 }
 
+/** The idempotency marker embedded in an issue body or a comment. */
+export function markerOf(idempotencyKey) {
+  return `<!-- agent-board:id:${String(idempotencyKey)} -->`
+}
+
 /**
  * @param {object} options
  * @param {string} [options.repository]  "owner/name"
  * @param {string} [options.token]       defaults to process.env.GITHUB_TOKEN
  * @param {Function} [options.fetchImpl]
+ * @param {boolean} [options.allowWrites] explicit opt-in; default false
  */
-export function createGithubAdapter({ repository, token = process.env.GITHUB_TOKEN, fetchImpl = globalThis.fetch }) {
-  const enabled = typeof repository === 'string' && /^[^/\s]+\/[^/\s]+$/.test(repository)
+export function createGithubAdapter({ repository, token = process.env.GITHUB_TOKEN, fetchImpl = globalThis.fetch, allowWrites = false } = {}) {
+  const enabled = typeof repository === 'string' && SAFE_REPO.test(repository)
+  const writesEnabled = enabled && allowWrites === true
+  const owner = enabled ? String(repository).split('/')[0] : null
+  // The forge list endpoints are eventually consistent: an immediate retry can
+  // miss a just-created marker. The in-process cache makes same-run retries
+  // exact, while the embedded marker still protects a retry after a restart.
+  const idempotency = { issues: new Map(), comments: new Map(), pulls: new Map() }
 
   function headerOf(response, name) {
     try {
@@ -43,15 +64,16 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
     }
   }
 
-  async function request(url) {
+  async function request(url, { method = 'GET', body = undefined } = {}) {
     if (!enabled) {
       throw new AdapterError('github: no repository configured', { code: 'not_configured', adapterId: 'github' })
     }
     const headers = { accept: 'application/vnd.github+json', 'user-agent': 'dsh-agent-board' }
+    if (method !== 'GET') headers['content-type'] = 'application/json'
     if (typeof token === 'string' && token !== '') headers.authorization = `Bearer ${token}`
     let response
     try {
-      response = await fetchImpl(url, { headers })
+      response = await fetchImpl(url, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
     } catch (error) {
       throw new AdapterError('github: network error', { code: 'transport', retryable: true, adapterId: 'github', cause: error })
     }
@@ -59,9 +81,6 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
     const remaining = remainingRaw === null || remainingRaw === '' ? null : Number(remainingRaw)
     const resetSeconds = Number(headerOf(response, 'x-ratelimit-reset'))
     if (response.status === 429 || (response.status === 403 && remaining === 0)) {
-      // GitHub signals exhaustion with 403 + x-ratelimit-remaining: 0 (and 429
-      // for secondary limits). A 403 WITHOUT that header (SSO, IP allow-list,
-      // stripped proxy) is a credential/permission refusal, not a quota.
       const retryAfterMs = Number.isFinite(resetSeconds) && resetSeconds > 0 ? Math.max(0, resetSeconds * 1000 - Date.now()) : null
       throw new AdapterError('github: rate limit exhausted', {
         code: 'rate_limited', retryable: true, adapterId: 'github', retryAfterMs,
@@ -73,9 +92,17 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
       })
     }
     if (!response.ok) {
+      // The forge's own message is NOT relayed: it can contain URLs or hints.
       throw new AdapterError(`github: HTTP ${response.status}`, { code: `http_${response.status}`, retryable: response.status >= 500, adapterId: 'github' })
     }
-    return { body: await response.json(), next: nextLinkOf(headerOf(response, 'link')) }
+    const parsed = await response.json().catch(() => null)
+    return { body: parsed, next: nextLinkOf(headerOf(response, 'link')) }
+  }
+
+  function requireWrites(operation) {
+    if (!writesEnabled) {
+      throw new AdapterError(`github: ${operation} is disabled`, { code: 'writes_disabled', adapterId: 'github' })
+    }
   }
 
   function normalizeIssue(issue) {
@@ -89,21 +116,58 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
       state: String(issue.state ?? 'open'),
       url: issue.html_url ?? null,
       labels: Array.isArray(issue.labels) ? issue.labels.map(label => String(label.name ?? '')) : [],
-      // The forge revision: usable as a conflict token for a future write path.
       revision: issue.updated_at ?? null,
       raw: undefined,
     }
+  }
+
+  function normalizePull(pull) {
+    return {
+      id: String(pull.number),
+      system: 'github',
+      externalId: String(pull.number),
+      canonicalId: `github:${pull.number}`,
+      kind: 'pull_request',
+      state: String(pull.state ?? 'open'),
+      url: pull.html_url ?? null,
+      head: pull.head?.ref ?? null,
+      base: pull.base?.ref ?? null,
+      title: String(pull.title ?? ''),
+      revision: pull.updated_at ?? null,
+      raw: undefined,
+    }
+  }
+
+  /** Bounded search for an existing object carrying the marker (idempotence). */
+  async function findIssueByMarker(marker) {
+    const { body } = await request(`${API}/repos/${repository}/issues?state=all&per_page=${MAX_DEDUPE_ITEMS}`)
+    const list = Array.isArray(body) ? body : []
+    return list.find(entry => typeof entry?.body === 'string' && entry.body.includes(marker)) ?? null
+  }
+
+  async function findCommentByMarker(number, marker) {
+    const { body } = await request(`${API}/repos/${repository}/issues/${encodeURIComponent(String(number))}/comments?per_page=${MAX_DEDUPE_ITEMS}`)
+    const list = Array.isArray(body) ? body : []
+    return list.find(entry => typeof entry?.body === 'string' && entry.body.includes(marker)) ?? null
+  }
+
+  async function findOpenPull(head) {
+    const { body } = await request(`${API}/repos/${repository}/pulls?state=open&head=${encodeURIComponent(`${owner}:${head}`)}`)
+    const list = Array.isArray(body) ? body : []
+    return list[0] ?? null
   }
 
   return defineAdapter({
     id: 'github',
     kind: 'forge',
     title: 'GitHub',
-    capabilities: ['list', 'get'],
+    capabilities: ['list', 'get', 'checks', ...(writesEnabled ? ['create', 'comment', 'open_pr'] : [])],
     status: enabled ? 'available' : 'disabled',
     validatedLive: false,
     notes: enabled
-      ? 'Read-only issues/PRs. Bounded pagination and rate-limit classification; not validated against a live repository.'
+      ? (writesEnabled
+        ? 'Issues/PRs read, checks read, and opt-in writes (create issue, comment, open PR) with embedded idempotency markers. No merge, no protected-branch push, no deletion.'
+        : 'Read-only issues/PRs/checks. Writes are disabled until explicitly enabled and mandated.')
       : 'Disabled until a repository is configured.',
     async list() {
       const items = []
@@ -121,6 +185,99 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
       const { body } = await request(`${API}/repos/${repository}/issues/${encodeURIComponent(String(id))}`)
       return normalizeIssue(body)
     },
+    /** CI/checks for a ref (branch, tag or SHA). Read-only. */
+    async checks(ref) {
+      const safeRef = typeof ref === 'string' && SAFE_BRANCH.test(ref) ? ref : null
+      if (safeRef === null) throw new AdapterError('github: invalid ref', { code: 'invalid_input', adapterId: 'github' })
+      const { body } = await request(`${API}/repos/${repository}/commits/${encodeURIComponent(safeRef)}/check-runs`)
+      const runs = Array.isArray(body?.check_runs) ? body.check_runs : []
+      return {
+        ref: safeRef,
+        total: runs.length,
+        runs: runs.slice(0, 50).map(run => ({
+          name: String(run.name ?? ''),
+          status: String(run.status ?? 'unknown'),
+          conclusion: run.conclusion === undefined ? null : run.conclusion,
+          url: run.html_url ?? null,
+        })),
+      }
+    },
+    /**
+     * Create an issue. `idempotencyKey` is required and embedded as a marker: a
+     * retry returns the SAME issue instead of opening a duplicate.
+     */
+    async createIssue({ title, body = '', labels = [] } = {}, { idempotencyKey } = {}) {
+      requireWrites('createIssue')
+      if (typeof title !== 'string' || title.trim() === '') throw new AdapterError('github: title is required', { code: 'invalid_input', adapterId: 'github' })
+      if (typeof idempotencyKey !== 'string' || idempotencyKey === '') throw new AdapterError('github: idempotencyKey is required', { code: 'invalid_input', adapterId: 'github' })
+      const marker = markerOf(idempotencyKey)
+      const cached = idempotency.issues.get(idempotencyKey)
+      if (cached !== undefined) return { issue: cached, created: false, idempotent: true }
+      const existing = await findIssueByMarker(marker)
+      if (existing !== null) {
+        const issue = normalizeIssue(existing)
+        idempotency.issues.set(idempotencyKey, issue)
+        return { issue, created: false, idempotent: true }
+      }
+      const payload = { title: String(title).slice(0, 240), body: `${String(body).slice(0, 60_000)}\n\n${marker}`.trim() }
+      if (Array.isArray(labels) && labels.length > 0) payload.labels = labels.filter(label => typeof label === 'string').slice(0, 10)
+      const { body: created } = await request(`${API}/repos/${repository}/issues`, { method: 'POST', body: payload })
+      const issue = normalizeIssue(created)
+      idempotency.issues.set(idempotencyKey, issue)
+      return { issue, created: true, idempotent: false }
+    },
+    /** Comment an issue/PR. Idempotent through the same marker mechanism. */
+    async commentIssue(number, body = '', { idempotencyKey } = {}) {
+      requireWrites('commentIssue')
+      if (typeof idempotencyKey !== 'string' || idempotencyKey === '') throw new AdapterError('github: idempotencyKey is required', { code: 'invalid_input', adapterId: 'github' })
+      const marker = markerOf(idempotencyKey)
+      const cacheKey = `${number}:${idempotencyKey}`
+      const cached = idempotency.comments.get(cacheKey)
+      if (cached !== undefined) return { comment: cached, created: false, idempotent: true }
+      const existing = await findCommentByMarker(number, marker)
+      if (existing !== null) {
+        const comment = { id: String(existing.id), url: existing.html_url ?? null }
+        idempotency.comments.set(cacheKey, comment)
+        return { comment, created: false, idempotent: true }
+      }
+      const { body: created } = await request(`${API}/repos/${repository}/issues/${encodeURIComponent(String(number))}/comments`, {
+        method: 'POST',
+        body: { body: `${String(body).slice(0, 60_000)}\n\n${marker}`.trim() },
+      })
+      const comment = { id: String(created?.id ?? ''), url: created?.html_url ?? null }
+      idempotency.comments.set(cacheKey, comment)
+      return { comment, created: true, idempotent: false }
+    },
+    /**
+     * Open a pull request. Never merges. A retry for the same head branch
+     * returns the already-open pull request instead of creating a second one.
+     */
+    async openPullRequest({ title, body = '', head, base } = {}, { idempotencyKey } = {}) {
+      requireWrites('openPullRequest')
+      if (typeof idempotencyKey !== 'string' || idempotencyKey === '') throw new AdapterError('github: idempotencyKey is required', { code: 'invalid_input', adapterId: 'github' })
+      if (typeof head !== 'string' || !SAFE_BRANCH.test(head)) throw new AdapterError('github: invalid head branch', { code: 'invalid_input', adapterId: 'github' })
+      if (typeof base !== 'string' || !SAFE_BRANCH.test(base)) throw new AdapterError('github: invalid base branch', { code: 'invalid_input', adapterId: 'github' })
+      const cached = idempotency.pulls.get(head)
+      if (cached !== undefined) return { pull: cached, created: false, idempotent: true }
+      const existing = await findOpenPull(head)
+      if (existing !== null) {
+        const pull = normalizePull(existing)
+        idempotency.pulls.set(head, pull)
+        return { pull, created: false, idempotent: true }
+      }
+      const { body: created } = await request(`${API}/repos/${repository}/pulls`, {
+        method: 'POST',
+        body: { title: String(title ?? '').slice(0, 240), head, base, body: String(body).slice(0, 60_000) },
+      })
+      const pull = normalizePull(created)
+      idempotency.pulls.set(head, pull)
+      return { pull, created: true, idempotent: false }
+    },
+    // Contract-named aliases: `defineAdapter` validates a declared capability
+    // against a method of the same name. They delegate to the explicit methods.
+    async create(payload, options) { return this.createIssue(payload, options) },
+    async comment(number, body, options) { return this.commentIssue(number, body, options) },
+    async open_pr(payload, options) { return this.openPullRequest(payload, options) },
     describe() {
       return {
         id: 'github',
@@ -128,11 +285,19 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
         title: 'GitHub',
         status: enabled ? 'available' : 'disabled',
         validatedLive: false,
-        capabilities: { list: true, get: true, subscribe: false, create: false, update: false, comment: false, transition: false },
-        notes: enabled
-          ? 'Read-only. Bounded pagination + rate-limit retry hint. Integration not validated live.'
-          : 'Disabled until a repository is configured.',
         repository: enabled ? repository : null,
+        writeEnabled: writesEnabled,
+        capabilities: {
+          list: enabled, get: enabled, checks: enabled, subscribe: false,
+          create: writesEnabled, update: false, comment: writesEnabled, open_pr: writesEnabled,
+          // Never implemented on purpose: a merge is a critical human decision.
+          merge: false, push_protected: false, delete: false,
+        },
+        notes: enabled
+          ? (writesEnabled
+            ? 'Read + opt-in writes (create issue, comment, open PR) with embedded idempotency. No merge/push-protected/delete.'
+            : 'Read-only. Writes disabled (allowWrites:false).')
+          : 'Disabled until a repository is configured.',
       }
     },
   })

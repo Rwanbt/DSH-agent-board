@@ -58,10 +58,14 @@ const STATIC_EXECUTORS = Object.freeze([
  * @param {string} [options.githubRepository]
  * @param {object} [options.ctx]  cordis host context, enables the real executor matrix
  */
-export function createConnectors({ baseUrl, githubRepository, ctx } = {}) {
+export function createConnectors({ baseUrl, githubRepository, githubToken, allowGithubWrites, ctx } = {}) {
   const registry = createAdapterRegistry()
   registry.register(createTaskboardAdapter({ baseUrl }))
-  registry.register(createGithubAdapter({ repository: githubRepository }))
+  registry.register(createGithubAdapter({
+    repository: githubRepository,
+    ...(typeof githubToken === 'string' ? { token: githubToken } : {}),
+    allowWrites: allowGithubWrites === true,
+  }))
   for (const skeleton of SKELETONS) {
     registry.register(createSkeletonAdapter({ ...skeleton, validatedLive: false }))
   }

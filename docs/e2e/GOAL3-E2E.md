@@ -1,13 +1,13 @@
 # GOAL 3 E2E — isolated real DSH host + fake OpenAI-compatible provider + fake Task Board
 
 - Date: 2026-11-12
-- Started: 2026-11-12T02:20:01.638Z
+- Started: 2026-11-12T08:31:36.153Z
 - Verdict: **PASS** (29/29 assertions passed, 4 scenario(s) executed)
 - DSH CLI: `C:\Users\barat\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd` (0.2.2-rc.1)
 - Disposable `DSH_HOME`: `C:\Users\barat\AppData\Local\Temp\dsh-e2e-home-goal3`
 - Profile: `e2e` (created from the shipped `web` template, plugin installed with `link:D:/App/DSH-agent-board`)
-- Model provider: **simulated** OpenAI-compatible server on `127.0.0.1` (port 60213 primary, 60214 backup)
-- Task Board: **simulated** ledger on `127.0.0.1:60215` — every response carries `x-simulated-taskboard: true`
+- Model provider: **simulated** OpenAI-compatible server on `127.0.0.1` (port 58408 primary, 58409 backup)
+- Task Board: **simulated** ledger on `127.0.0.1:58410` — every response carries `x-simulated-taskboard: true`
 - Credentials: **none**. The provider route uses an invented environment value; the desktop profile was never read or written.
 
 ## Commands actually run
@@ -45,9 +45,9 @@ GET  /dsh-agent-board/api/v2/events   (SSE)
 
 ### a-contract-model-turn — Autonomous tick leases a canonical execution, runs a real session turn on the fake provider, attaches, settles to in_review
 
-- Contract: `{"version":1,"ok":true,"writes":true,"degraded":false,"absent":false,"simulated":true,"reason":"contract_ok","features":["execution.lease","execution.attach","execution.report","execution.release","execution.settle","execution.fencing","execution.idempotency","execution.reroute"],"missing":[],"missingWrite":[],"at":1794450004958}`
-- Tick: `[{"kind":"launch","taskId":"tb-e2e-contract","ok":true,"assignmentId":"asg-ac450959-17c8-43dc-abb4-b30678808fcc","sessionId":"session-agentboard-81558f8e-1783-4b82-aa4d-d20b4ec6d824","executionId":"exec-1","leaseId":"lease-1"}]`
-- Session: `session-agentboard-81558f8e-1783-4b82-aa4d-d20b4ec6d824` — `turnEnd`: `{"at":1794450005417,"kind":"completed","error":null}`
+- Contract: `{"version":1,"ok":true,"writes":true,"degraded":false,"absent":false,"simulated":true,"reason":"contract_ok","features":["execution.lease","execution.attach","execution.report","execution.release","execution.settle","execution.fencing","execution.idempotency","execution.reroute"],"missing":[],"missingWrite":[],"at":1794472300752}`
+- Tick: `[{"kind":"launch","taskId":"tb-e2e-contract","ok":true,"assignmentId":"asg-709408a5-5e75-4a0e-94d5-bebfb3c2b5b3","sessionId":"session-agentboard-e413c588-f3e5-4ff8-bdcc-028d590b1fa2","executionId":"exec-1","leaseId":"lease-1"}]`
+- Session: `session-agentboard-e413c588-f3e5-4ff8-bdcc-028d590b1fa2` — `turnEnd`: `{"at":1794472301027,"kind":"completed","error":null}`
 - Fake provider requests: `[{"seq":1,"status":200,"chunks":6,"model":"e2e-fake-gpt"}]`
 - Assignment: `status=done`, `backend=contract`, `leaseId=lease-1`, `executionId=exec-1`
 - Simulated Task Board calls (by the REAL product): `["POST /dsh-taskboard/tasks/tb-e2e-contract/executions/lease","POST /dsh-taskboard/executions/lease-1/attach","POST /dsh-taskboard/executions/lease-1/settle"]`
@@ -61,8 +61,8 @@ data: {"schemaVersion":2,"mode":"autonomous","stoppedAt":null,"policy":{"mode":"
 
 ### b-contract-failover — A scripted 429 on the primary provider makes the board release attempt 1 and lease a SECOND execution with previousExecutionId on the backup route
 
-- Tick: `[{"kind":"launch","taskId":"tb-e2e-failover","ok":true,"assignmentId":"asg-af8ff9a6-8def-4dc4-990f-7c32cdde6b26","sessionId":"session-agentboard-273f3674-bcc7-4d4c-b6a8-65e7a541d85f","executionId":"exec-2","leaseId":"lease-2"}]`
-- `routeEvents`: `[{"at":1794450017019,"taskId":"tb-e2e-failover","assignmentId":"asg-af8ff9a6-8def-4dc4-990f-7c32cdde6b26","from":"e2e-primary/e2e-fake-gpt","to":"e2e-backup/e2e-fake-backup-gpt","action":"switch","reason":"switch_after_rate_limit","kind":"rate_limit"}]`
+- Tick: `[{"kind":"launch","taskId":"tb-e2e-failover","ok":true,"assignmentId":"asg-00ac44e6-bd03-4515-a480-fb65f4fb595e","sessionId":"session-agentboard-5c4c957e-b7f2-494e-8a57-312e114409d5","executionId":"exec-2","leaseId":"lease-2"}]`
+- `routeEvents`: `[{"at":1794472312800,"taskId":"tb-e2e-failover","assignmentId":"asg-00ac44e6-bd03-4515-a480-fb65f4fb595e","from":"e2e-primary/e2e-fake-gpt","to":"e2e-backup/e2e-fake-backup-gpt","action":"switch","reason":"switch_after_rate_limit","kind":"rate_limit"}]`
 - Primary provider: 1 × 429, 0 × 200.
 - Backup provider: 1 × 200.
 - Assignments: `[{"attempt":0,"status":"superseded","provider":"e2e-primary","leaseId":"lease-2","executionId":"exec-2","history":[]},{"attempt":1,"status":"done","provider":"e2e-backup","leaseId":"lease-3","executionId":"exec-3","history":["rate_limit"]}]`
@@ -92,18 +92,18 @@ data: {"schemaVersion":2,"mode":"autonomous","stoppedAt":null,"policy":{"mode":"
 - ✅ **0f. "all projects" without the explicit confirmation is refused** — {"status":409,"error":"all_scope_requires_confirmation"}
 - ✅ **0g. after the explicit grant the launch capability becomes available** — {"state":"available","reason":"allowed","source":"mandate"}
 - ✅ **0h. the grant is audited and cleared the configuration gate** — {"requiresConfiguration":false}
-- ✅ **a1. the execution contract negotiated with writes=true** — {"version":1,"ok":true,"writes":true,"degraded":false,"absent":false,"simulated":true,"reason":"contract_ok","features":["execution.lease","execution.attach","execution.report","execution.release","execution.settle","execution.fencing","execution.idempotency","execution.reroute"],"missing":[],"missingWrite":[],"at":1794450004958}
-- ✅ **a2. POST /tick launched a real board session on the contract backend** — {"action":{"kind":"launch","taskId":"tb-e2e-contract","ok":true,"assignmentId":"asg-ac450959-17c8-43dc-abb4-b30678808fcc","sessionId":"session-agentboard-81558f8e-1783-4b82-aa4d-d20b4ec6d824","executionId":"exec-1","leaseId":"lease-1"},"backend":"contract","sessionId":"session-agentboard-81558f8e-1783-4b82-aa4d-d20b4ec6d824"}
-- ✅ **a3. the model turn completed on the fake provider** — {"turnEnd":{"at":1794450005417,"kind":"completed","error":null},"primary":[{"status":200,"chunks":6}]}
+- ✅ **a1. the execution contract negotiated with writes=true** — {"version":1,"ok":true,"writes":true,"degraded":false,"absent":false,"simulated":true,"reason":"contract_ok","features":["execution.lease","execution.attach","execution.report","execution.release","execution.settle","execution.fencing","execution.idempotency","execution.reroute"],"missing":[],"missingWrite":[],"at":1794472300752}
+- ✅ **a2. POST /tick launched a real board session on the contract backend** — {"action":{"kind":"launch","taskId":"tb-e2e-contract","ok":true,"assignmentId":"asg-709408a5-5e75-4a0e-94d5-bebfb3c2b5b3","sessionId":"session-agentboard-e413c588-f3e5-4ff8-bdcc-028d590b1fa2","executionId":"exec-1","leaseId":"lease-1"},"backend":"contract","sessionId":"session-agentboard-e413c588-f3e5-4ff8-bdcc-028d590b1fa2"}
+- ✅ **a3. the model turn completed on the fake provider** — {"turnEnd":{"at":1794472301027,"kind":"completed","error":null},"primary":[{"status":200,"chunks":6}]}
 - ✅ **a4. the simulated Task Board received lease -> attach -> settle** — [{"method":"POST","path":"/dsh-taskboard/tasks/tb-e2e-contract/executions/lease","status":"accepted"},{"method":"POST","path":"/dsh-taskboard/executions/lease-1/attach","status":"accepted"},{"method":"POST","path":"/dsh-taskboard/executions/lease-1/settle","status":"accepted"}]
 - ✅ **a5. the settled execution is in_review with a report and is NEVER done** — {"status":"in_review","executions":[{"id":"exec-1","outcome":"succeeded","hasReport":true,"previousExecutionId":null}]}
 - ✅ **a6. the board audit recorded contract settlement** — ["delegation_allowed","launch","tick","mode_changed","turn_done","contract_settled"]
 - ✅ **a7. SSE /events delivered a named state frame** — {"frames":3,"named":3,"error":null,"sample":"event: state\ndata: {\"schemaVersion\":2,\"mode\":\"autonomous\",\"stoppedAt\":null,\"policy\":{\"mode\":\"autonomous\",\"maxConcurrent\":2,\"maxRetries\":2,\"maxSwitches\":2,\"proposalTtlMs\":1800000,\"leaseTtlMs\":600000,\"retryCooldownMs\":300000,\"max
 - ✅ **b1. the scripted 429 was classified as rate_limit and routed to a switch** — {"primarySaw429":true,"routeEvents":["switch:rate_limit"]}
-- ✅ **b2. the board switched to the backup provider route** — {"at":1794450017019,"taskId":"tb-e2e-failover","assignmentId":"asg-af8ff9a6-8def-4dc4-990f-7c32cdde6b26","from":"e2e-primary/e2e-fake-gpt","to":"e2e-backup/e2e-fake-backup-gpt","action":"switch","reason":"switch_after_rate_limit","kind":"rate_limit"}
+- ✅ **b2. the board switched to the backup provider route** — {"at":1794472312800,"taskId":"tb-e2e-failover","assignmentId":"asg-00ac44e6-bd03-4515-a480-fb65f4fb595e","from":"e2e-primary/e2e-fake-gpt","to":"e2e-backup/e2e-fake-backup-gpt","action":"switch","reason":"switch_after_rate_limit","kind":"rate_limit"}
 - ✅ **b3. attempt 1 execution was released and executed on the primary provider** — {"sawRelease":true,"first":{"id":"exec-2","outcome":"cancelled","route":{"provider":"e2e-primary","model":"e2e-fake-gpt"}}}
 - ✅ **b4. a SECOND canonical execution carries previousExecutionId** — {"executions":[{"id":"exec-2","previousExecutionId":null,"outcome":"cancelled","route":"e2e-primary"},{"id":"exec-3","previousExecutionId":"exec-2","outcome":"succeeded","route":"e2e-backup"}]}
-- ✅ **b5. the second session ran on the backup route and completed** — {"backupTurnEnd":{"at":1794450017292,"kind":"completed","error":null},"backup200":true}
+- ✅ **b5. the second session ran on the backup route and completed** — {"backupTurnEnd":{"at":1794472313010,"kind":"completed","error":null},"backup200":true}
 - ✅ **b6. the card ended in_review with the second execution report, never done** — {"status":"in_review","second":{"outcome":"succeeded","hasReport":true}}
 - ✅ **b7. audit recorded release/handoff/settle** — ["launch","route_decision","contract_released","handoff","turn_done","contract_settled"]
 - ✅ **c1. the highest-priority project (A) is served first** — 
@@ -127,11 +127,11 @@ data: {"schemaVersion":2,"mode":"autonomous","stoppedAt":null,"policy":{"mode":"
 
 ```text
 GET  /dsh-taskboard/contract           -> HTTP 200 advertised ["execution.lease","execution.attach","execution.report","execution.release","execution.settle","execution.fencing","execution.idempotency","execution.reroute"]
-POST /tasks/tb-e2e-contract-direct/executions/lease -> HTTP 202 {"leaseId":"lease-4","executionId":"exec-4","taskId":"tb-e2e-contract-direct","taskVersion":2,"route":null,"attempt":1,"fence":4,"expiresAt":1794450141267,"state":"leased"}
+POST /tasks/tb-e2e-contract-direct/executions/lease -> HTTP 202 {"leaseId":"lease-4","executionId":"exec-4","taskId":"tb-e2e-contract-direct","taskVersion":2,"route":null,"attempt":1,"fence":4,"expiresAt":1794472436897,"state":"leased"}
 POST lease replay (same key)           -> HTTP 200 (idempotent, same lease)
 POST lease (different key)             -> HTTP 409 {"code":"lease_conflict","message":"task tb-e2e-contract-direct already has an active lease (lease-4)","leaseId":"lease-4","fence":4}
-POST attach                            -> HTTP 200 {"leaseId":"lease-4","sessionId":"session-e2e-contract","executionId":"exec-4","state":"attached","attachedAt":1794450021269}
-POST report                            -> HTTP 200 {"leaseId":"lease-4","reportRevision":1,"acceptedAt":1794450021270}
+POST attach                            -> HTTP 200 {"leaseId":"lease-4","sessionId":"session-e2e-contract","executionId":"exec-4","state":"attached","attachedAt":1794472316899}
+POST report                            -> HTTP 200 {"leaseId":"lease-4","reportRevision":1,"acceptedAt":1794472316901}
 POST settle                            -> HTTP 200 {"leaseId":"lease-4","executionId":"exec-4","taskId":"tb-e2e-contract-direct","outcome":"succeeded","taskVersion":5,"status":"in_review","reportRevision":2,"simulated":true}
 ```
 
@@ -176,7 +176,7 @@ The Agent Board panel in the isolated instance (same client bundle as the produc
     "goal3-ux-390x844-light.png"
   ],
   "desktopProfileTouched": false,
-  "finishedAt": "2026-11-12T02:20:21.374Z"
+  "finishedAt": "2026-11-12T08:31:56.994Z"
 }
 ```
 
