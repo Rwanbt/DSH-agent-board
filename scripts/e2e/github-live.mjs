@@ -119,8 +119,11 @@ try {
     method: 'PUT',
     body: { message: `test(e2e): agent board live validation ${stamp}`, content, branch },
   })
-  evidence.observed.branch = { name: branch, base }
-  check('5. a disposable branch with one commit exists', true, branch)
+  // Verify the branch and the file really exist (no hardcoded assertion).
+  const branchRef = await api(`/repos/${repository}/git/ref/heads/${encodeURIComponent(branch)}`)
+  const fileInfo = await api(`/repos/${repository}/contents/e2e-${stamp}.md?ref=${encodeURIComponent(branch)}`)
+  evidence.observed.branch = { name: branch, base, headSha: branchRef.object?.sha ?? null, fileSha: fileInfo.sha ?? null }
+  check('5. a disposable branch and its commit exist', typeof branchRef.object?.sha === 'string' && typeof fileInfo.sha === 'string', branch)
 
   // 4. pull request + idempotency
   const pr = await adapter.openPullRequest(
@@ -137,11 +140,20 @@ try {
 
   // 5. checks read
   const checks = await adapter.checks(branch)
-  evidence.observed.checks = { total: checks.total, runs: checks.runs.slice(0, 5) }
-  check('8. CI checks are readable for the branch head', Number.isInteger(checks.total) && checks.total >= 0, `total=${checks.total}`)
+  evidence.observed.checks = { total: checks.total, ciConfigured: checks.total > 0, runs: checks.runs.slice(0, 5) }
+  check('8. CI checks are readable for the branch head', typeof checks.total === 'number' && Array.isArray(checks.runs) && checks.total >= 0, `total=${checks.total} (ciConfigured=${checks.total > 0})`)
 
   // 6. no merge capability at all
   check('9. the adapter exposes no merge method', typeof adapter.merge === 'undefined')
+
+  evidence.cleanup = {
+    note: 'This script never deletes anything. Close the objects and delete the disposable repository manually.',
+    commands: [
+      `gh pr close <pr-number> -R ${repository} --delete-branch`,
+      `gh issue close <issue-number> -R ${repository}`,
+      `gh repo delete ${repository} --yes   # requires: gh auth refresh -h github.com -s delete_repo`,
+    ],
+  }
 
   evidence.finishedAt = new Date().toISOString()
   evidence.ok = evidence.assertions.every(entry => entry.ok === true)
