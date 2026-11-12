@@ -44,7 +44,8 @@ export function assessmentSchemaLines(schemaVersion = ASSESSMENT_SCHEMA_VERSION)
     `  "schemaVersion": ${schemaVersion},`,
     '  "situation": string  // one or two sentences, plain text (NOT an object)',
     `  "findings": [ { "kind": one of ${FINDING_KINDS.map(value => `"${value}"`).join(' | ')}, "projectId": a project id from the portfolio or null, "summary": string, "refs": [string] } ],`,
-    `  "proposals": [ { "action": one of ${ASSESSMENT_ACTIONS.map(value => `"${value}"`).join(' | ')}, "projectId": a project id from the portfolio, "taskId": string or null, "rationale": string, "risk": "low" | "medium" | "high", "expectedEffect": string, "requiresApproval": boolean } ],`,
+    `  "proposals": [ { "action": one of ${ASSESSMENT_ACTIONS.map(value => `"${value}"`).join(' | ')}, "projectId": a project id from the portfolio, "taskId": string or null, "rationale": string, "risk": "low" | "medium" | "high", "expectedEffect": string, "requiresApproval": boolean, "payload": object or null } ],`,
+    '  // payload is action-specific: create_task {"title","description"?,"urgency"?}; update_task {"title"?,"description"?,"prompt"?,"urgency"?,"blocked"?,"waitingForHuman"?,"waitingReason"?}; comment {"body"}.',
     `  "decisions": [ { "kind": one of ${DECISION_KINDS.map(value => `"${value}"`).join(' | ')}, "projectId": id or null, "title": string, "context": string, "options": [ { "label": string, "effect": "approve" | "reject" } ], "recommendation": string, "urgency": "urgent" | "normal" } ],`,
     '  "directiveEcho": [string]  // the operator directives you applied, quoted; [] if none',
     '  "noopReason": string or null  // non-empty when there is nothing useful to do',
@@ -187,10 +188,23 @@ export function buildAssessmentPrompt(input = {}) {
     const status = boundedText(task.status, 40) || 'unknown'
     const title = embed(task.title)
     const description = embed(task.description)
-    const lines = [`- task id=${id} project=${taskProject} status=${status}`]
+    const flags = [
+      task.ready === false ? `ready=false(${boundedText(task.readinessReason, 80) || 'unknown'})` : 'ready=true',
+      task.blocked === true ? 'blocked=true' : null,
+      task.waitingForHuman === true ? 'waitingForHuman=true' : null,
+      Array.isArray(task.dependsOn) && task.dependsOn.length > 0
+        ? `dependsOn=${task.dependsOn.slice(0, 10).map(value => boundedText(value, 120)).filter(Boolean).join(',')}`
+        : null,
+    ].filter(value => value !== null)
+    const lines = [`- task id=${id} project=${taskProject} status=${status}${flags.length > 0 ? ` ${flags.join(' ')}` : ''}`]
     if (title !== null) lines.push(`  title: ${title}`)
     if (description !== null) lines.push(`  description: ${description}`)
     externalLines.push(lines.join('\n'))
+  }
+  // Never let a bounded list look complete: say how many cards were omitted.
+  const tasksTruncated = finiteInt(source.tasksTruncated, 0) ?? 0
+  if (tasksTruncated > 0) {
+    externalLines.push(`- ${tasksTruncated} more task(s) are outside this bounded view (ready cards are listed first); do not assume the board is idle.`)
   }
 
   const externalSources = Array.isArray(source.external) ? source.external : (Array.isArray(source.sources) ? source.sources : [])
@@ -362,6 +376,27 @@ function validateProject(value, projectIds) {
  * @param {{projectIds?: string[]|Set<string>, portfolioProjectIds?: string[], portfolio?: object[]}} [options]
  * @returns {{ok: boolean, assessment?: object, errors: string[]}}
  */
+/** Per-action payload fields a proposal may carry (bounded, no unknown keys). */
+const PAYLOAD_TEXT_MAX = Object.freeze({
+  create_task: Object.freeze({ title: 200, description: 2000, urgency: 20 }),
+  update_task: Object.freeze({ title: 200, description: 2000, prompt: 2000, urgency: 20, waitingReason: 500 }),
+  comment: Object.freeze({ body: 2000 }),
+})
+const PAYLOAD_BOOL = Object.freeze({ update_task: Object.freeze(['blocked', 'waitingForHuman']) })
+
+function normalizePayload(action, raw) {
+  if (!isRecord(raw)) return null
+  const out = {}
+  for (const [key, max] of Object.entries(PAYLOAD_TEXT_MAX[action] ?? {})) {
+    const text = boundedText(raw[key], max)
+    if (text !== '') out[key] = text
+  }
+  for (const key of PAYLOAD_BOOL[action] ?? []) {
+    if (typeof raw[key] === 'boolean') out[key] = raw[key]
+  }
+  return Object.keys(out).length > 0 ? out : null
+}
+
 export function validateAssessment(value, options = {}) {
   const errors = []
   let candidate = value
@@ -444,6 +479,7 @@ export function validateAssessment(value, options = {}) {
       notes.push('proposal_risk_coerced_high')
     }
     const taskIdText = boundedText(raw.taskId ?? raw.task_id, MAX_ID)
+    const payload = normalizePayload(action, raw.payload)
     proposals.push({
       id: boundedText(raw.id, MAX_ID) || idFrom('proposal', `${action}:${project.projectId}:${index}`),
       action,
@@ -454,6 +490,7 @@ export function validateAssessment(value, options = {}) {
       expectedEffect: boundedText(raw.expectedEffect ?? raw.expected_effect, MAX_SUMMARY),
       // Only an explicit `false` claims no approval is required.
       requiresApproval: raw.requiresApproval !== false,
+      ...(payload === null ? {} : { payload }),
     })
   }
   if (rawProposals.length > MAX_PROPOSALS) {

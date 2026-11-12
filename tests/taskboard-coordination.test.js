@@ -381,7 +381,7 @@ test('the module is pure: no write export, no fetch call, no network', () => {
   assert.equal(calls, 0, 'the coordination module never performs a request')
 })
 
-test('task board read model stays additive and never adds a write method', async () => {
+test('task board read model stays additive; only the documented writes exist', async () => {
   const fetchImpl = fakeFetch(async () => ({
     ok: true,
     status: 200,
@@ -401,7 +401,7 @@ test('task board read model stays additive and never adds a write method', async
       },
     }),
   }))
-  const adapter = createTaskboardAdapter({ baseUrl: 'http://127.0.0.1:62337', fetchImpl })
+  const adapter = createTaskboardAdapter({ baseUrl: 'http://127.0.0.1:62337', fetchImpl, token: () => undefined })
   const listed = await adapter.list()
   const [first, second] = listed.items
 
@@ -430,13 +430,18 @@ test('task board read model stays additive and never adds a write method', async
   assert.deepEqual(second.project, { id: 'w2', workspaceId: 'w2', source: 'workspaceId' })
   assert.deepEqual(second.dependsOn, [])
 
-  // The connector still declares no ledger write capability.
+  // With no public token the board-content writes are UNAVAILABLE (honest),
+  // while the read path keeps working. No transition/move/delete method exists:
+  // `done` is never an adapter action.
   const described = adapter.describe()
   assert.deepEqual(Object.keys(described.capabilities).filter(key => described.capabilities[key]).sort(), ['get', 'list', 'run'])
   for (const capability of ['create', 'update', 'comment', 'transition']) {
     assert.equal(described.capabilities[capability], false, capability)
   }
-  for (const method of ['create', 'update', 'comment', 'transition', 'move', 'delete']) {
+  for (const method of ['create', 'update', 'comment']) {
+    assert.equal(typeof adapter[method], 'function', `the adapter implements ${method}`)
+  }
+  for (const method of ['transition', 'move', 'delete']) {
     assert.equal(typeof adapter[method], 'undefined', `the adapter has no ${method} method`)
   }
   assert.equal(described.validatedLive, false)
@@ -444,7 +449,7 @@ test('task board read model stays additive and never adds a write method', async
   const { createConnectors } = await import('../src/connectors/registry.js')
   const taskboard = createConnectors({ baseUrl: 'http://127.0.0.1:1' })
     .describe().adapters.find(entry => entry.id === 'dsh-taskboard')
-  assert.deepEqual(taskboard.declaredCapabilities.slice().sort(), ['get', 'list', 'run'])
+  assert.deepEqual(taskboard.declaredCapabilities.slice().sort(), ['comment', 'create', 'get', 'list', 'run', 'update'])
 })
 
 test('the real read path feeds the mapper and performs GETs only (simulated fixture)', async t => {

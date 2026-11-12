@@ -68,10 +68,10 @@ function makeCtx() {
   const handles = new Map()
   const listeners = new Map()
   const routes = new Map()
-  const control = { replyText: JSON.stringify(assessment()) }
+  const control = { replyText: JSON.stringify(assessment()), replyDelayMs: 5, failFollowups: 0 }
   const llm = {
     listProviders: () => [{ id: 'fake-provider', name: 'Fake Provider', locality: 'local' }],
-    listModels: async () => [{ id: 'fake-model', name: 'Fake Model' }],
+    listModels: async () => [{ id: 'fake-model', name: 'Fake Model' }, { id: 'fake-model-2', name: 'Fake Model 2' }],
   }
   function emit(sessionId, event) {
     listeners.get('session/event')?.({ id: sessionId }, event)
@@ -94,10 +94,14 @@ function makeCtx() {
           cancel: () => {},
           followup(message) {
             messages.push({ sessionId: options.sessionId, text: message?.content?.[0]?.text ?? '' })
+            if (control.failFollowups > 0) {
+              control.failFollowups -= 1
+              throw new Error('fake provider unavailable')
+            }
             setTimeout(() => {
               emit(options.sessionId, { type: 'assistant/message', time: Date.now(), data: { message: { content: [{ type: 'text', text: control.replies?.length ? control.replies.shift() : control.replyText }] } } })
               emit(options.sessionId, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed' } } })
-            }, 5)
+            }, control.replyDelayMs)
           },
         }
         handles.set(options.sessionId, agent)
@@ -154,13 +158,26 @@ async function waitFor(predicate, timeoutMs = 8000) {
 
 function installFetch() {
   const previous = globalThis.fetch
-  globalThis.fetch = async url => {
-    if (String(url).includes('/dsh-taskboard/state')) {
-      return { ok: true, status: 200, json: async () => ({ ok: true, value: { revision: 9, tasks: structuredClone(TASKS) } }) }
+  const calls = []
+  const reply = (value, status = 200) => ({ ok: status < 400, status, json: async () => value })
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    const method = init?.method ?? 'GET'
+    calls.push({ url: target, method, headers: init?.headers, body: init?.body })
+    if (target.includes('/dsh-taskboard/state')) {
+      return reply({ ok: true, value: { revision: 9, tasks: structuredClone(TASKS) } })
     }
-    return { ok: false, status: 404, json: async () => ({}) }
+    if (target.includes('/dsh-taskboard/public/v1/tasks')) {
+      if (method === 'GET') return reply({ ok: true, value: { id: 't1', version: 3 } })
+      if (target.endsWith('/update')) return reply({ ok: true, value: { id: 't1', version: 4 } })
+      if (target.endsWith('/comments')) return reply({ ok: true, value: { taskId: 't1', commentId: 'c1', version: 5 } })
+      return reply({ ok: true, value: { id: 'new-1', version: 1 } }, 201)
+    }
+    return reply({}, 404)
   }
-  return () => { globalThis.fetch = previous }
+  const restore = () => { globalThis.fetch = previous }
+  restore.calls = calls
+  return restore
 }
 
 async function boot({ home }) {
@@ -375,6 +392,187 @@ test('Super Agent: one repair round recovers an answer missing schemaVersion, st
     restoreFetch()
     if (previousHome === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = previousHome
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+const ORIGINAL_TASKS = TASKS.map(task => structuredClone(task))
+function resetTasks() {
+  TASKS.splice(0, TASKS.length, ...ORIGINAL_TASKS.map(task => structuredClone(task)))
+}
+
+test('Super Agent (audit A01): never launches a card that is not ready', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dab-superagent-readiness-'))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  const restoreFetch = installFetch()
+  const host = await boot({ home })
+  try {
+    await callJson(host.routes, 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(host.routes, 'POST', '/superagent/model', { provider: 'fake-provider', model: 'fake-model' })
+    await callJson(host.routes, 'POST', '/superagent/start')
+    const proposal = { id: 'p1', action: 'launch', projectId: 'w1', taskId: 't1', rationale: 'audit', risk: 'low', expectedEffect: 'session', requiresApproval: false }
+    host.control.replyText = JSON.stringify(assessment({ proposals: [proposal], decisions: [] }))
+    const cases = [
+      { mutate: task => { task.status = 'backlog' }, reason: /task_not_todo:backlog/ },
+      { mutate: task => { task.blocked = true }, reason: /task_blocked/ },
+      { mutate: task => { task.waitingForHuman = true }, reason: /task_waiting_for_human/ },
+      { mutate: task => { task.dependsOn = ['missing-prerequisite'] }, reason: /dependencies_unsatisfied:missing-prerequisite/ },
+    ]
+    for (const entry of cases) {
+      resetTasks()
+      entry.mutate(TASKS[0])
+      const cycle = await callJson(host.routes, 'POST', '/superagent/cycle', { trigger: 'manual' })
+      assert.equal(cycle.status, 200, JSON.stringify(cycle.body))
+      const executed = cycle.body.value.executed
+      assert.equal(executed.length, 1, JSON.stringify(executed))
+      assert.equal(executed[0].ok, false, JSON.stringify(executed))
+      assert.match(String(executed[0].reason), entry.reason)
+    }
+    assert.equal(host.created.filter(options => String(options.sessionId).startsWith('session-agentboard-')).length, 0, 'no worker session for an unready card')
+  } finally {
+    resetTasks()
+    host.dispose()
+    restoreFetch()
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('Super Agent (audit A05): a pause during the assessment blocks the launch', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dab-superagent-pause-'))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  const restoreFetch = installFetch()
+  const host = await boot({ home })
+  try {
+    await callJson(host.routes, 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(host.routes, 'POST', '/superagent/model', { provider: 'fake-provider', model: 'fake-model' })
+    await callJson(host.routes, 'POST', '/superagent/start')
+    host.control.replyDelayMs = 80
+    const proposal = { id: 'p1', action: 'launch', projectId: 'w1', taskId: 't1', rationale: 'audit', risk: 'low', expectedEffect: 'session', requiresApproval: false }
+    host.control.replyText = JSON.stringify(assessment({ proposals: [proposal], decisions: [] }))
+    const pending = callJson(host.routes, 'POST', '/superagent/cycle', { trigger: 'manual' })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const paused = await callJson(host.routes, 'POST', '/superagent/pause')
+    assert.equal(paused.status, 200, JSON.stringify(paused.body))
+    const cycle = await pending
+    const body = cycle.body.value ?? cycle.body
+    assert.equal(body.ran, true)
+    assert.equal(body.reason, 'superagent_paused')
+    assert.equal(host.created.filter(options => String(options.sessionId).startsWith('session-agentboard-')).length, 0, 'the paused cycle launched nothing')
+    const state = (await callJson(host.routes, 'GET', '/state')).body.value.superagent
+    assert.equal(state.identity.status, 'paused', 'a paused identity is never resurrected to idle')
+    assert.equal(state.lastCycle.outcome, 'refused')
+  } finally {
+    host.dispose()
+    restoreFetch()
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('Super Agent (audit A06): a model change recycles the session at the next cycle', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dab-superagent-model-'))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  const restoreFetch = installFetch()
+  const host = await boot({ home })
+  try {
+    await callJson(host.routes, 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(host.routes, 'POST', '/superagent/model', { provider: 'fake-provider', model: 'fake-model' })
+    await callJson(host.routes, 'POST', '/superagent/start')
+    const changed = await callJson(host.routes, 'POST', '/superagent/model', { provider: 'fake-provider', model: 'fake-model-2' })
+    assert.equal(changed.status, 200, JSON.stringify(changed.body))
+    host.control.replyText = JSON.stringify(assessment({ proposals: [], decisions: [], noopReason: 'idle' }))
+    const cycle = await callJson(host.routes, 'POST', '/superagent/cycle', { trigger: 'manual' })
+    assert.equal(cycle.status, 200, JSON.stringify(cycle.body))
+    const sessions = host.created.filter(options => String(options.sessionId).startsWith('session-superagent-'))
+    assert.equal(sessions.length, 2, 'the previous session is replaced, not reused with the old model')
+    assert.equal(sessions[1].agentOptions.model, 'fake-model-2')
+    const state = (await callJson(host.routes, 'GET', '/state')).body.value.superagent
+    assert.equal(state.runtime.activeModel.model, 'fake-model-2', 'the ACTIVE model is published separately')
+  } finally {
+    host.dispose()
+    restoreFetch()
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('Super Agent (audit A07): a retryable failure uses the configured fallback route', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dab-superagent-fallback-'))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  const restoreFetch = installFetch()
+  const host = await boot({ home })
+  try {
+    await callJson(host.routes, 'POST', '/mode', { mode: 'autonomous' })
+    const configured = await callJson(host.routes, 'POST', '/superagent/model', {
+      provider: 'fake-provider', model: 'fake-model', fallback: [{ provider: 'fake-provider', model: 'fake-model-2' }],
+    })
+    assert.equal(configured.status, 200, JSON.stringify(configured.body))
+    await callJson(host.routes, 'POST', '/superagent/start')
+    host.control.replyText = JSON.stringify(assessment({ proposals: [], decisions: [], noopReason: 'idle' }))
+    host.control.failFollowups = 1
+    const cycle = await callJson(host.routes, 'POST', '/superagent/cycle', { trigger: 'manual' })
+    assert.equal(cycle.status, 200, JSON.stringify(cycle.body))
+    const sessions = host.created.filter(options => String(options.sessionId).startsWith('session-superagent-'))
+    assert.equal(sessions.length, 2, 'the failed session is replaced by the fallback route')
+    assert.equal(sessions[1].agentOptions.model, 'fake-model-2')
+    const state = (await callJson(host.routes, 'GET', '/state')).body.value.superagent
+    assert.equal(state.runtime.activeModel.model, 'fake-model-2')
+  } finally {
+    host.dispose()
+    restoreFetch()
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('Super Agent (audit A03): create_task, update_task and comment reach the board API', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dab-superagent-writes-'))
+  const previousHome = process.env.DSH_HOME
+  const previousToken = process.env.DSH_TASKBOARD_PUBLIC_TOKEN
+  process.env.DSH_HOME = home
+  process.env.DSH_TASKBOARD_PUBLIC_TOKEN = 'audit-token'
+  const restoreFetch = installFetch()
+  const host = await boot({ home })
+  try {
+    await callJson(host.routes, 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(host.routes, 'POST', '/superagent/model', { provider: 'fake-provider', model: 'fake-model' })
+    await callJson(host.routes, 'POST', '/superagent/start')
+    const proposals = [
+      { id: 'c1', action: 'create_task', projectId: 'w1', taskId: null, rationale: 'new card', risk: 'low', expectedEffect: 'card', requiresApproval: false, payload: { title: 'Nouvelle carte', description: 'desc', urgency: 'urgent' } },
+      { id: 'u1', action: 'update_task', projectId: 'w1', taskId: 't1', rationale: 'edit card', risk: 'low', expectedEffect: 'edit', requiresApproval: false, payload: { title: 'Titre modifié', blocked: true } },
+      { id: 'm1', action: 'comment', projectId: 'w1', taskId: 't1', rationale: 'note', risk: 'low', expectedEffect: 'comment', requiresApproval: false, payload: { body: 'Note du Super Agent' } },
+    ]
+    host.control.replyText = JSON.stringify(assessment({ proposals, decisions: [] }))
+    const cycle = await callJson(host.routes, 'POST', '/superagent/cycle', { trigger: 'manual' })
+    assert.equal(cycle.status, 200, JSON.stringify(cycle.body))
+    const executed = cycle.body.value.executed
+    assert.equal(executed.length, 3, JSON.stringify(executed))
+    for (const entry of executed) assert.equal(entry.ok, true, JSON.stringify(entry))
+    const calls = restoreFetch.calls.filter(call => call.url.includes('/dsh-taskboard/public/v1'))
+    assert.ok(calls.some(call => call.method === 'POST' && call.url.endsWith('/tasks')), JSON.stringify(calls))
+    assert.ok(calls.some(call => call.method === 'POST' && call.url.endsWith('/update')))
+    assert.ok(calls.some(call => call.method === 'POST' && call.url.endsWith('/comments')))
+    assert.ok(calls.every(call => String(call.headers?.authorization ?? '').startsWith('Bearer ')), 'every write is bearer-authenticated')
+    const updateCall = calls.find(call => call.url.endsWith('/update'))
+    const updateBody = JSON.parse(String(updateCall.body ?? '{}'))
+    assert.equal(updateBody.ifVersion, 3, 'the connector reads the current version before editing')
+    assert.equal(host.created.filter(options => String(options.sessionId).startsWith('session-agentboard-')).length, 0, 'board writes open no worker session')
+  } finally {
+    host.dispose()
+    restoreFetch()
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    if (previousToken === undefined) delete process.env.DSH_TASKBOARD_PUBLIC_TOKEN
+    else process.env.DSH_TASKBOARD_PUBLIC_TOKEN = previousToken
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })

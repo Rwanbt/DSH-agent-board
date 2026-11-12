@@ -30,6 +30,7 @@
 
 import { DEFAULT_POLICY, MODES, allowedPermissionOf, normalizeSupervision } from '../contracts/model.js'
 import { mandateCheck } from './dag.js'
+import { taskReadinessOf } from './readiness.js'
 import { HOURLY_WINDOW_MS } from '../routing/budget.js'
 
 /** Assignment statuses that mean "this delegation is still in flight". */
@@ -165,10 +166,17 @@ export function evaluateDelegation({ policy = {}, task = null, taskboard = null,
 
   const tasks = tasksIn(taskboard)
   const tasksById = new Map(tasks.map(entry => [entry.id, entry]))
+  // The cycle refusal is more specific than "dependencies unsatisfied" and is
+  // checked first, so a hopeless card reports WHY it can never become ready.
   const cycle = detectDependencyCycles(tasks)
   if (cycle.cycles.length > 0 && reachesCycle(taskId, tasksById, cycle.cycles)) {
     return refusal('delegation_cycle')
   }
+  // Readiness is part of the delegation decision: a card that is backlog,
+  // blocked, waiting for a human or missing a prerequisite must never open a
+  // worker session, whatever path proposed it (audit A01).
+  const readiness = taskReadinessOf(task, tasksById)
+  if (!readiness.ready) return refusal(readiness.reason)
 
   const parent = usage?.parentAssignment !== null && typeof usage?.parentAssignment === 'object'
     ? usage.parentAssignment
