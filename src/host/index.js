@@ -716,6 +716,13 @@ export function apply(ctx, config = {}) {
     // disabled and `requiresConfiguration` blocks resumes until the operator
     // confirms a real mandate. A v2 document is normalized and kept as-is.
     if (Number(state.schemaVersion) < 2 || state.mandate === undefined || state.mandate === null) {
+      // Rollback safety: preserve the pre-upgrade document BEFORE rewriting it.
+      // The previous release cannot read v2 and overwrites it with defaults
+      // (verified empirically), so `state.json.v1-backup` is the way back.
+      if (isPrimary) {
+        const backedUp = await store.backupBeforeMigration().catch(() => false)
+        if (backedUp === true) audit({ type: 'state_backed_up', at: Date.now(), reason: 'pre_v2_migration', file: 'state.json.v1-backup' })
+      }
       const migration = migrateLegacyPolicy({ policy: state.policy, mode: state.mode, now: Date.now() })
       state.mandate = migration.mandate
       audit(migration.audit)

@@ -158,11 +158,30 @@ and Agent Board displays exactly that.
 
 ### 8.3 Migration and rollback v1 → v2
 
-1. Back up `%USERPROFILE%\.dsh\agent-board\state.json` and `journal.jsonl`.
-2. Start DSH: the v1 document is migrated once (`mandate_migrated` in the audit)
-   and **no launch is possible** until a mandate is confirmed
-   (`requiresConfiguration`).
-3. To roll back: stop DSH, `git checkout <previous-branch-or-sha>`, restore the
-   backed-up `state.json`/`journal.jsonl`, restart. The old build requires schema
-   v1; the v2 document is not silently downgraded (the store preserves an
-   unreadable document instead of overwriting it).
+The upgrade is automatic and guarded. **Before** rewriting a v1 document, the
+host copies it to `state.json.v1-backup` (once, never overwritten) and records
+`state_backed_up`; it then migrates once (`mandate_migrated`) to
+`scopeMode:'none'`, L0, `requiresConfiguration:true`. The real-host E2E `m0–m4`
+proves this, including the backup file.
+
+To roll back:
+
+1. Stop DSH **completely**.
+2. `git checkout <previous-branch-or-sha>` and reinstall the plugin.
+3. Restore the pre-upgrade state:
+
+   ```powershell
+   Copy-Item "$env:USERPROFILE\.dsh\agent-board\state.json.v1-backup" `
+             "$env:USERPROFILE\.dsh\agent-board\state.json" -Force
+   ```
+
+   (or your own copy if you upgraded before this guard existed).
+4. Start DSH.
+
+**Why step 3 is mandatory (verified, not assumed):** the v1-era store treats any
+document with `schemaVersion !== 1` as invalid and **overwrites it with v1
+defaults, without a backup**. A downgrade without restoring v1 silently loses
+the mandate, assignments, directives and decisions (mode resets to `off`). The
+Task Board ledger is never touched either way.
+
+`audit.jsonl` / `journal.jsonl` is append-only and may be kept or removed.

@@ -13,7 +13,7 @@
  * @module dsh-agent-board/orchestrator/journal
  */
 
-import { appendFile, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { access, appendFile, copyFile, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -284,6 +284,27 @@ export class StateStore {
       } catch {
         /* best effort */
       }
+      return false
+    }
+  }
+
+  /**
+   * Keep the pre-v2 document before the host rewrites it (`state.json.v1-backup`).
+   *
+   * Verified against the previous release: its store treats any document whose
+   * `schemaVersion !== 1` as invalid and OVERWRITES it with v1 defaults, without
+   * a backup. This file is therefore the only way back from a downgrade; it is
+   * written once and never overwritten.
+   */
+  async backupBeforeMigration() {
+    const target = `${this.statePath}.v1-backup`
+    const exists = await access(target).then(() => true, () => false)
+    if (exists) return false
+    try {
+      await copyFile(this.statePath, target)
+      return true
+    } catch {
+      // No state file (fresh install) or an unreadable one: nothing to preserve.
       return false
     }
   }

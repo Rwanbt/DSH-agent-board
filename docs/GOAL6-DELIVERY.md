@@ -6,7 +6,7 @@
 - **PR #3** (empilée, non fusionnée) : https://github.com/Rwanbt/DSH-agent-board/pull/3 → base `feat/agent-board-responsive-cockpit`
 - Dépôt Agent Board : `Rwanbt/DSH-agent-board`
 - Dépôt Task Board : `Rwanbt/dsh-taskboard`, branche `feat/universal-sync`, HEAD `e6aaece`, version **0.12.0**
-- Suite Agent Board : **570 / 570 tests passent**, 0 échec (`node --test tests/`)
+- Suite Agent Board : **571 / 571 tests passent**, 0 échec (`node --test tests/`)
 - Bundle client reconstruit : `src/client.js` (603 799 octets, 23 modules)
 - E2E hôte réel : **scénarios 0, a, b, c verts** (`node scripts/e2e/run-e2e.mjs`)
 
@@ -64,7 +64,7 @@ dans `D:\App\dsh-taskboard` (aucun défaut bloquant trouvé côté Task Board).
 | P0-A : décalage hôte/client visible (F0) | `host.build {version, schemaVersion, features[], startedAt, pid, source}` publié ; le client compare et dit « hôte plus ancien » | `tests/goal6-host-gate.test.js` (build/schema/features), E2E 0.7 | Livré |
 | P0-B : `[]` ≠ « tous » (F1) | `scopeMode: 'none'\|'selected'\|'all'`, défaut `none`, `all` exige `allConsent{text:'ALL_PROJECTS',at}` | `tests/mandate.test.js` (20 cas), `goal6-host-gate` (migration + restart + L4), E2E 0a/0f | Livré |
 | P0-B : migration dangereuse | `migrateLegacyPolicy` : ancien autonome + liste vide → `none`, L1, actions `false`, `requiresConfiguration:true`, audit unique | `goal6-host-gate` « v1 migration… » ; **E2E m0–m3 (état v1 semé avant démarrage du vrai hôte)** ; profil desktop réel migré | Livré |
-| P0-B : gate central | `effectivePolicyOf` appelé par tick, `/dispatch`, approbation, reprise, failover/handoff, retry, Super Agent | `tests/mandate.test.js`, `goal6-superagent-host`, `goal6-host-gate` (handoff après retrait du projet), 570 tests | Livré |
+| P0-B : gate central | `effectivePolicyOf` appelé par tick, `/dispatch`, approbation, reprise, failover/handoff, retry, Super Agent | `tests/mandate.test.js`, `goal6-superagent-host`, `goal6-host-gate` (handoff après retrait du projet), 571 tests | Livré |
 | P0-C F2 : capacités véridiques | `capabilities.<action> = {state,reason,source}` dérivé de l'état réel ; jamais `available` si refus | `goal6-host-gate` « capabilities are truthful in OFF and after a Stop » | Livré |
 | P0-C F3 : Stop lisible + Reprendre | `stoppedAt` explicite, `POST /resume`, bandeau « Arrêté (observation) » + Reprendre | hôte : test Stop/Resume ; UI : `cockpit-superagent` | Livré |
 | P0-C F4 : recommandations en Arrêt | une seule ligne explicite en OFF/Stop, compteurs conservés | `tests/cockpit-superagent.test.js` | Livré |
@@ -169,7 +169,7 @@ aucune session (prouvé par test).
 ## 6. Preuves exécutées (commandes exactes)
 
 ```powershell
-node --test tests/                       # 570/570, 0 fail
+node --test tests/                       # 571/571, 0 fail
 node --check src/host/index.js           # OK
 node scripts/build-client.mjs            # built 603 799 bytes, 23 modules
 node scripts/e2e/run-e2e.mjs             # 0/a/b/c verts sur un vrai process DSH
@@ -206,11 +206,18 @@ Interprétation : l'upgrade a migré l'état réel **une fois** et l'installatio
 restée **inerte** (aucun projet, aucun lancement). C'est la garantie P0 vérifiée sur
 l'installation de production, pas seulement sur un profil jetable.
 
-Upgrade réellement **rejoué** par l'E2E (`m0`–`m3`) : un `state.json` **v1** est écrit
+Upgrade réellement **rejoué** par l'E2E (`m0`–`m4`) : un `state.json` **v1** est écrit
 avant le démarrage du vrai hôte ; au boot il devient `schemaVersion:2`, mandat
-`none/L0/requiresConfiguration:true`, audit `mandate_migrated`, et **tous les
-scénarios 0/a/b/c passent ensuite sur cette installation migrée** — la migration ne
-casse donc pas le comportement normal.
+`none/L0/requiresConfiguration:true`, audit `mandate_migrated`, la copie
+`state.json.v1-backup` est créée (`m4`), et **tous les scénarios 0/a/b/c passent
+ensuite sur cette installation migrée** — la migration ne casse donc pas le
+comportement normal.
+
+**Rollback vérifié, pas supposé** : exécuté contre le code réel de la version
+précédente (`afd7a66`), un `state.json` v2 est traité comme invalide et **écrasé
+par les défauts v1, sans sauvegarde**. D'où la garde ajoutée (copie automatique
+avant migration) et la procédure obligatoire de restauration dans
+`docs/INSTALL-ROLLBACK.md` §8.3.
 
 Performance (sections GOAL 6) : projection `live-150` p50 0,164 ms / `history-1000`
 p50 1,020 ms (plus rapide que la baseline documentée, aucun signe de régression) ;
