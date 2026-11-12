@@ -352,6 +352,7 @@ node scripts/mascot-gallery.mjs # write an HTML gallery of the 32 approved SVGs
 node scripts/smoke-host.mjs   # fast module/DAG smoke check
 node scripts/e2e/run-e2e.mjs  # isolated real DSH host: migration + gate + failover + 3 projects
 node scripts/e2e/github-live.mjs  # LIVE GitHub writes (needs GITHUB_TOKEN + a disposable repo)
+node scripts/verify-live.mjs      # read-only status of both live integrations + real state
 node scripts/bench/projection-bench.mjs   # 5/20/50/150 agents, 1000 sessions
 node scripts/bench/payload-bench.mjs      # additive /state size (bounded sections)
 ```
@@ -373,6 +374,7 @@ node scripts/bench/payload-bench.mjs      # additive /state size (bounded sectio
 - [GOAL 3 delivery report](docs/GOAL3-DELIVERY.md)
 - [Independent reviews](docs/REVIEW-GOAL3-BACKEND.md) · [supervision/UI](docs/REVIEW-GOAL3-SUPERVISION.md)
 - [Install, configure, roll back](docs/INSTALL-ROLLBACK.md)
+- [Operator next steps (live integrations, cleanup, real LLM cycle)](docs/OPERATOR-NEXT-STEPS.md)
 - [Provenance & compatibility](docs/PROVENANCE.md)
 - [Test report](docs/TEST-REPORT.md)
 - [Known limitations & backlog](docs/LIMITATIONS.md)
