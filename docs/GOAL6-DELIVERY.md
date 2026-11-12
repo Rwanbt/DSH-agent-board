@@ -6,7 +6,7 @@
 - **PR #3** (empilée, non fusionnée) : https://github.com/Rwanbt/DSH-agent-board/pull/3 → base `feat/agent-board-responsive-cockpit`
 - Dépôt Agent Board : `Rwanbt/DSH-agent-board`
 - Dépôt Task Board : `Rwanbt/dsh-taskboard`, branche `feat/universal-sync`, HEAD `e6aaece`, version **0.12.0**
-- Suite Agent Board : **554 / 554 tests passent**, 0 échec (`node --test tests/`)
+- Suite Agent Board : **560 / 560 tests passent**, 0 échec (`node --test tests/`)
 - Bundle client reconstruit : `src/client.js` (603 799 octets, 23 modules)
 - E2E hôte réel : **scénarios 0, a, b, c verts** (`node scripts/e2e/run-e2e.mjs`)
 
@@ -59,7 +59,7 @@ dans `D:\App\dsh-taskboard` (aucun défaut bloquant trouvé côté Task Board).
 | P0-A : décalage hôte/client visible (F0) | `host.build {version, schemaVersion, features[], startedAt, pid, source}` publié ; le client compare et dit « hôte plus ancien » | `tests/goal6-host-gate.test.js` (build/schema/features), E2E 0.7 | Livré |
 | P0-B : `[]` ≠ « tous » (F1) | `scopeMode: 'none'\|'selected'\|'all'`, défaut `none`, `all` exige `allConsent{text:'ALL_PROJECTS',at}` | `tests/mandate.test.js` (20 cas), `goal6-host-gate` (migration + restart + L4), E2E 0a/0f | Livré |
 | P0-B : migration dangereuse | `migrateLegacyPolicy` : ancien autonome + liste vide → `none`, L1, actions `false`, `requiresConfiguration:true`, audit unique | `goal6-host-gate` « v1 migration… » ; E2E 0a | Livré |
-| P0-B : gate central | `effectivePolicyOf` appelé par tick, `/dispatch`, approbation, reprise, failover, Super Agent, forge (prévu) | `tests/mandate.test.js`, `goal6-superagent-host`, suite hôte 554 tests | Livré |
+| P0-B : gate central | `effectivePolicyOf` appelé par tick, `/dispatch`, approbation, reprise, failover/handoff, retry, Super Agent | `tests/mandate.test.js`, `goal6-superagent-host`, `goal6-host-gate` (handoff après retrait du projet), 560 tests | Livré |
 | P0-C F2 : capacités véridiques | `capabilities.<action> = {state,reason,source}` dérivé de l'état réel ; jamais `available` si refus | `goal6-host-gate` « capabilities are truthful in OFF and after a Stop » | Livré |
 | P0-C F3 : Stop lisible + Reprendre | `stoppedAt` explicite, `POST /resume`, bandeau « Arrêté (observation) » + Reprendre | hôte : test Stop/Resume ; UI : `cockpit-superagent` | Livré |
 | P0-C F4 : recommandations en Arrêt | une seule ligne explicite en OFF/Stop, compteurs conservés | `tests/cockpit-superagent.test.js` | Livré |
@@ -72,9 +72,9 @@ dans `D:\App\dsh-taskboard` (aucun défaut bloquant trouvé côté Task Board).
 | P1 : identité IA durable | `state.superagent.identity` (`agentId`, modèle, niveau, génération) + session recyclable | `goal6-superagent-host` : identité conservée après redémarrage, session recyclée | Livré |
 | P1 : modèle réel | découverte `ctx.llm.listProviders()/listModels()` + `agentDefaultModel` ; `/superagent/model` refuse un modèle non enregistré | `goal6-host-gate` « model discovery is honest », probe | Livré |
 | P1 : directives persistantes | `POST/GET /superagent/directives`, révocation auditée, injectées dans le prompt | `goal6-superagent-host` : la directive apparaît dans le prompt | Livré |
-| P1 : décisions rares | DecisionInbox dédupliquée, expiration, une réponse débloque **une** occurrence | tests `superagent-decisions` + `goal6-superagent-host` (pas de doublon) | Livré |
+| P1 : décisions rares | DecisionInbox dédupliquée, expiration, une réponse débloque **une** occurrence (marqueur `usedAt` persisté) | tests `superagent-decisions` + `goal6-host-gate` (une approbation → un seul lancement, puis `approval_required`) | Livré |
 | P1 : L0–L4 | table §4, `actions.<action>` + niveau + plafond projet + plafond intégration | `tests/mandate.test.js` | Livré |
-| P2 : planification multi-projets | `plan/portfolio.js` + `plan/scheduler.js` (priorité → anti-famine → moins servi → id) branchés sur le tick | `goal6-portfolio` (9 tests) ; E2E c1/c2 | Livré |
+| P2 : planification multi-projets | `plan/portfolio.js` + `plan/scheduler.js` (priorité → anti-famine → moins servi → id) branchés sur le tick, avec **interleave round-robin** entre projets | `goal6-portfolio` (10 tests, dont « un projet ne prend pas les 2 slots ») ; E2E c1/c2 | Livré |
 | P2 : reprise / idempotence | journal v2, lease/fencing existants, réconciliation au démarrage, décision consommée une fois | suite existante + `goal6-superagent-host` (restart) | Livré |
 | P3 : Task Board canonique | lecture via connecteur existant ; adaptateur public-v1 complet ; sonde réelle | `taskboard-public` (11 tests), `goal6-taskboard-probe` (3), audit live | Partiel (voir §10) |
 | P3 : `in_review`, jamais `done` | conservé et testé (E2E a5, b6) | E2E | Livré |
@@ -162,7 +162,7 @@ aucune session (prouvé par test).
 ## 6. Preuves exécutées (commandes exactes)
 
 ```powershell
-node --test tests/                       # 554/554, 0 fail
+node --test tests/                       # 560/560, 0 fail
 node --check src/host/index.js           # OK
 node scripts/build-client.mjs            # built 603 799 bytes, 23 modules
 node scripts/e2e/run-e2e.mjs             # 0/a/b/c verts sur un vrai process DSH
@@ -220,10 +220,15 @@ Cela prouve la lecture réelle (API GitHub, pagination, normalisation) ; **aucun
   (client public-v1) ; `done` reste interdit au board.
 - Contenu externe balisé comme donnée non fiable dans le prompt du Super Agent ;
   il ne peut pas élargir le mandat.
-- Une décision humaine est liée à l'action/au projet/à la tâche et consommée une fois.
+- Une décision humaine est liée à l'action/au projet/à la tâche et consommée une fois
+  (`usedAt` survit à la normalisation : une approbation ne peut pas autoriser deux
+  lancements, prouvé par un test hôte).
 - Les réveils du Super Agent sont coalescés (timer + opérateur + événement ne peuvent pas
   lancer deux cycles concurrents) et un assessment inutilisable déclenche un backoff
-  exponentiel au lieu d'une boucle de réessai.
+  exponentiel au lieu d'une boucle de réessai ; la cadence `nextWakeAt` est réellement
+  consommée par le timer, et les budgets cycles/appels sont contrôlés, y compris en échec.
+- Un `state.json` d'une version inconnue est mis de côté (`.unsupported-<ts>`), jamais
+  écrasé par les valeurs par défaut.
 - Migration : un état v1 n'autorise rien, un état v2 n'est jamais écrasé (le store
   accepte v1 et v2 ; une version inconnue préserve le fichier au lieu de le remplacer).
 

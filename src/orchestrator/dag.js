@@ -69,7 +69,7 @@ export function orderCandidates(tasks, tasksById, projectRank = null) {
   // project the historical rule applies (urgency, then DAG depth, then id).
   const rank = projectRank instanceof Map ? projectRank : null
   const rankOf = task => (rank === null ? 0 : (rank.get(String(task?.workspaceId ?? '')) ?? Number.MAX_SAFE_INTEGER))
-  return [...tasks].sort((a, b) => {
+  const sorted = [...tasks].sort((a, b) => {
     const project = rankOf(a) - rankOf(b)
     if (project !== 0) return project
     const urgency = (URGENCY_WEIGHT[a.urgency] ?? 1) - (URGENCY_WEIGHT[b.urgency] ?? 1)
@@ -78,6 +78,29 @@ export function orderCandidates(tasks, tasksById, projectRank = null) {
     if (depth !== 0) return depth
     return String(a.id).localeCompare(String(b.id))
   })
+  if (rank === null) return sorted
+  // Round-robin interleave across projects: with two free slots and four cards
+  // in a high-priority project, the second slot must go to the next project, not
+  // to the same one. A single project therefore cannot monopolize concurrency.
+  const queues = new Map()
+  for (const task of sorted) {
+    const projectId = String(task?.workspaceId ?? '')
+    const queue = queues.get(projectId)
+    if (queue === undefined) queues.set(projectId, [task])
+    else queue.push(task)
+  }
+  const interleaved = []
+  let progressed = true
+  while (progressed) {
+    progressed = false
+    for (const queue of queues.values()) {
+      const next = queue.shift()
+      if (next === undefined) continue
+      interleaved.push(next)
+      progressed = true
+    }
+  }
+  return interleaved
 }
 
 export function countRunning(assignments) {

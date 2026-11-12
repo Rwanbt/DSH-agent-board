@@ -380,7 +380,7 @@ test('a handoff obeys the workspace mandate enforced after the launch', async ()
     await new Promise(resolve => setTimeout(resolve, 80))
     assert.equal(created.length, 1, 'the handoff must not bypass the workspace mandate')
     const state = await callJson(handler(), 'GET', '/state')
-    assert.match(state.body.value.assignments[0].error, /handoff_suppressed:workspace_not_in_mandate/)
+    assert.match(state.body.value.assignments[0].error, /handoff_suppressed:(project_not_selected|workspace_not_in_mandate)/)
   })
 })
 

@@ -1227,16 +1227,37 @@ export function apply(ctx, config = {}) {
   }
 
   const CAPABILITY_ACTIONS = Object.freeze(['delegate', 'launch', 'create_task', 'update_task', 'comment', 'open_pr', 'merge', 'push_branch', 'delete_task', 'schedule'])
+  // Only `launch` has an executor in this build. Declaring the others "available"
+  // because the mandate allows them was a fiction: the deterministic gate would
+  // authorize them and then nothing would happen. They are published as
+  // unavailable with an explicit reason until a real adapter exists.
+  const IMPLEMENTED_ACTIONS = Object.freeze(new Set(['launch']))
+
+  /** Can this host actually open a worker session for the configured backend? */
+  function backendReadiness() {
+    const backend = state.policy.executionBackend
+    if (backend === 'contract') {
+      return contractWritesReady() ? { ok: true, reason: null } : { ok: false, reason: 'contract_unavailable' }
+    }
+    if (typeof ctx.agents?.create !== 'function') return { ok: false, reason: 'runtime_unavailable' }
+    return { ok: true, reason: null }
+  }
 
   /**
-   * Truthful capability matrix (defect F2): states are `available` (at least one
-   * selected project would be allowed right now), `gated` (only a human approval
-   * or a configuration step stands between the operator and the action), or
-   * `unavailable` with the real refusal reason. Never a decorative "sous
-   * conditions" while OFF/Stop.
+   * Truthful capability matrix (defect F2): `available` only when a real adapter
+   * exists AND the gate would allow the action right now; `gated` when only a
+   * human approval or a configuration step stands in the way; `unavailable` with
+   * the real reason otherwise. Never a decorative "sous conditions" while OFF.
    */
   function capabilityOf(action) {
-    if ((action === 'launch' || action === 'delegate') && typeof ctx.agents?.create !== 'function') {
+    if (!IMPLEMENTED_ACTIONS.has(action)) {
+      return { state: 'unavailable', reason: 'no_adapter_for_action', source: 'host' }
+    }
+    if (action === 'launch') {
+      const backend = backendReadiness()
+      if (!backend.ok) return { state: 'unavailable', reason: backend.reason, source: 'backend' }
+    }
+    if (action === 'delegate' && typeof ctx.agents?.create !== 'function') {
       return { state: 'unavailable', reason: 'runtime_unavailable', source: 'runtime' }
     }
     const mandate = state.mandate
@@ -1365,6 +1386,14 @@ export function apply(ctx, config = {}) {
     if (pinned !== null && pinned !== undefined && typeof pinned.provider === 'string' && typeof pinned.model === 'string') {
       return { provider: pinned.provider, model: pinned.model, reasoningEffort: pinned.reasoningEffort, locality: pinned.locality ?? 'remote' }
     }
+    // A project-level model override is a real operator choice, not decoration:
+    // it applies to every card of that project unless the card pins its own.
+    const projectOverride = typeof task?.workspaceId === 'string'
+      ? state.mandate?.projects?.[task.workspaceId]?.model ?? null
+      : null
+    if (projectOverride !== null && projectOverride !== undefined && typeof projectOverride.provider === 'string' && typeof projectOverride.model === 'string') {
+      return { ...projectOverride, locality: projectOverride.locality ?? 'remote' }
+    }
     const policy = effectiveRoutePolicy(task)
     // Return to the PRIMARY route at a safe boundary: a task whose last attempt
     // was handed off to a fallback route goes back to the operator's first
@@ -1439,6 +1468,16 @@ export function apply(ctx, config = {}) {
       // Board executor must not grant a level this operator forbade.
       if (typeof task?.permission === 'string' && task.permission !== '' && allowedPermissionOf(state.policy, task.permission) === null) {
         return { ok: false, reason: `permission_not_allowed:${task.permission}`, decision: gate }
+      }
+      // Per-project hourly quota: the advertised budget is enforced on the real
+      // launch counter, not only when it is zero.
+      const projectBudget = Number(projectPolicyOf(projectId ?? '')?.budget?.maxTasksPerHour)
+      if (Number.isFinite(projectBudget) && projectBudget > 0) {
+        const now = Date.now()
+        const startedInProject = state.assignments.filter(assignment => String(assignment.workspaceId ?? '') === projectId
+          && Number.isFinite(Number(assignment.startedAt))
+          && now - Number(assignment.startedAt) < 60 * 60 * 1000).length
+        if (startedInProject >= projectBudget) return { ok: false, reason: 'project_budget_exhausted', decision: gate }
       }
       if (backend === 'taskboard') {
         // The Task Board executor honours isolation, permission, preset and
@@ -2081,6 +2120,28 @@ export function apply(ctx, config = {}) {
   }
 
   /**
+   * A handoff or a retry creates/continues work outside the normal launch path.
+   * It must obey the SAME mandate as a fresh launch: withdrawing a project from
+   * the scope, pausing, stopping or lowering the level immediately suppresses
+   * the continuation. The earlier approval still holds (it is the same
+   * execution), so only the approval clause is pre-satisfied; concurrency
+   * excludes the assignment being continued.
+   */
+  function continuationGate(assignment) {
+    return effectivePolicyOf({
+      mandate: state.mandate,
+      action: 'launch',
+      projectId: typeof assignment?.workspaceId === 'string' ? assignment.workspaceId : undefined,
+      mode: state.mode,
+      stopped: state.stoppedAt !== null,
+      paused: state.mandate?.paused === true,
+      running: Math.max(0, countRunning(state.assignments) - 1),
+      maxConcurrent: state.policy.maxConcurrent,
+      approved: true,
+    })
+  }
+
+  /**
    * A handoff creates a session outside the normal launch gate. It must obey
    * the SAME operator mandate as a fresh launch, and it must not continue a
    * task that the Task Board no longer expects it to run.
@@ -2093,8 +2154,11 @@ export function apply(ctx, config = {}) {
       isolation: assignment.taskIsolation ?? null,
       model: assignment.model,
     }
-    const mandate = mandateCheck(synthetic, state.policy)
-    if (!mandate.ok) return { ok: false, reason: mandate.reason }
+    const continuation = continuationGate(assignment)
+    if (!continuation.allowed) {
+      audit({ type: 'handoff_suppressed', assignmentId: assignment.id, taskId: assignment.taskId, reason: continuation.reason })
+      return { ok: false, reason: continuation.reason }
+    }
     const routePolicy = effectiveRoutePolicy(synthetic)
     if (routePolicy.providersConflict) return { ok: false, reason: 'route_policy_conflict' }
     if (typeof synthetic.permission === 'string' && synthetic.permission !== '' && allowedPermissionOf(state.policy, synthetic.permission) === null) {
@@ -2334,6 +2398,15 @@ export function apply(ctx, config = {}) {
         if (!isPrimary || state.mode === MODES.OFF || isStopped() || assignment.status !== LEASE_STATUS.RUNNING) {
           assignment.retryAt = null
           audit({ type: 'retry_suppressed', assignmentId: assignment.id, taskId: assignment.taskId, reason: 'delegation_stopped' })
+          touch()
+          return
+        }
+        // Same mandate as a fresh launch: a revoked scope/pause/level also stops
+        // the automatic retry of an in-flight execution.
+        const continuation = continuationGate(assignment)
+        if (!continuation.allowed) {
+          assignment.retryAt = null
+          audit({ type: 'retry_suppressed', assignmentId: assignment.id, taskId: assignment.taskId, reason: continuation.reason })
           touch()
           return
         }
@@ -2726,7 +2799,20 @@ export function apply(ctx, config = {}) {
       timer = setTimeout(() => resolve({ ok: false, reason: 'timeout' }), timeoutMs)
       timer.unref?.()
     })
-    return Promise.race([completion, timeout]).finally(() => {
+    return Promise.race([completion, timeout]).then(result => {
+      if (result.ok !== true && result.reason === 'timeout') {
+        // The turn is still running in the DSH session. Stop it and recycle the
+        // session so a later turn/end from the old run can never be consumed as
+        // the answer of a future cycle.
+        try { handle.cancel?.({ kind: 'user' }) } catch { /* already gone */ }
+        agent.identity = requestRecycle(agent.identity, 'cycle_timeout')
+        agent.identity.session.active = false
+        agent.identity.session.endedAt = Date.now()
+        agent.runtime = { ...agent.runtime, available: false, reason: 'cycle_timeout' }
+        audit({ type: 'superagent_session_recycled', at: Date.now(), reason: 'cycle_timeout', sessionId })
+      }
+      return result
+    }).finally(() => {
       if (timer !== null) clearTimeout(timer)
       superagentWaiter.sessionId = null
       superagentWaiter.resolve = null
@@ -2775,6 +2861,12 @@ export function apply(ctx, config = {}) {
     if (Number(agent.budget.cyclesThisHour) >= Number(agent.budget.cyclesPerHour)) {
       return { ok: false, ran: false, reason: 'cycle_budget_exhausted' }
     }
+    if (Number(agent.budget.modelCallsThisHour) >= Number(agent.budget.modelCallsPerHour)) {
+      // The advertised per-hour model budget is enforced, not decorative.
+      agent.nextWakeAt = Date.now() + 15 * 60 * 1000
+      audit({ type: 'superagent_budget_exhausted', at: Date.now(), calls: Number(agent.budget.modelCallsThisHour), limit: Number(agent.budget.modelCallsPerHour) })
+      return { ok: false, ran: false, reason: 'model_call_budget_exhausted' }
+    }
     const startedAt = Date.now()
     const started = await ensureSuperAgentSession()
     if (!started.ok) {
@@ -2816,7 +2908,7 @@ export function apply(ctx, config = {}) {
       })),
       external: [],
     })
-    agent.budget = { ...agent.budget, modelCallsThisHour: Number(agent.budget.modelCallsThisHour) + 1 }
+    agent.budget = { ...agent.budget, cyclesThisHour: Number(agent.budget.cyclesThisHour) + 1, modelCallsThisHour: Number(agent.budget.modelCallsThisHour) + 1 }
     const response = await askSuperAgent(`Return ONLY the JSON assessment.\n\n${prompt.system}\n\n${prompt.user}`, { timeoutMs: 120_000 })
     if (!response.ok) {
       agent.identity.status = 'error'
@@ -2932,7 +3024,6 @@ export function apply(ctx, config = {}) {
     }
     agent.identity = markCycle(agent.identity, { at: Date.now(), outcome: applied > 0 ? 'applied' : (authorized.length > 0 ? 'prepared' : 'noop') })
     agent.identity.status = 'idle'
-    agent.budget = { ...agent.budget, cyclesThisHour: Number(agent.budget.cyclesThisHour) + 1 }
     agent.lastCycle = {
       at: startedAt,
       trigger,
@@ -3831,8 +3922,11 @@ export function apply(ctx, config = {}) {
       if (state.mandate?.paused === true || state.mandate?.scopeMode === 'none') return
       const agent = state.superagent
       if (agent === null || agent === undefined || agent.identity.status === 'paused' || agent.identity.status === 'stopped') return
-      if (agent.dirty !== true) return
-      void runSuperAgentCycle('scheduled').catch(error => warn(`superagent cycle failed: ${String(error)}`))
+      // Two wake-up sources: a real event (dirty) or the durable cadence
+      // (`nextWakeAt`), so the agent keeps advancing without a human action.
+      const due = Number.isFinite(Number(agent.nextWakeAt)) && Date.now() >= Number(agent.nextWakeAt)
+      if (agent.dirty !== true && !due) return
+      void runSuperAgentCycle(due ? 'scheduled' : 'event').catch(error => warn(`superagent cycle failed: ${String(error)}`))
     } catch { /* the runtime timer must never break the board */ }
   }, 60_000)
   superagentTimer.unref?.()

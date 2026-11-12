@@ -207,6 +207,10 @@ export function normalizeDecision(raw, { now } = {}) {
     createdAt,
     answeredAt,
     answer,
+    // Single-use marker: the host sets it when an answered approval has been
+    // spent. It MUST survive normalization, otherwise expireDecisions() would
+    // erase it and one human answer could authorize several launches.
+    usedAt: finiteInt(source.usedAt, null),
     resumeHint: boundedText(source.resumeHint, 200) || null,
     askedCount: clampInt(source.askedCount, 1, 99, 1),
   }
