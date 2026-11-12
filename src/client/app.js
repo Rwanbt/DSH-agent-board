@@ -118,7 +118,10 @@ function dabMakePage(store, ctx) {
     const [nowBucket, setNowBucket] = React.useState(() => Math.floor(Date.now() / 60000))
     // Super Agent surfaces (GOAL 6): the 4-tab inspector and a dry-run result
     // that is rendered WITHOUT touching the shared state (a GET, no write).
+    // false when closed, otherwise the tab the inspector opens on.
     const [superagentOpen, setSuperagentOpen] = React.useState(false)
+    const openSuperagent = React.useCallback(() => setSuperagentOpen('overview'), [])
+    const openSuperagentProjects = React.useCallback(() => setSuperagentOpen('projects'), [])
     const [dryRun, setDryRun] = React.useState(null)
     const [dryRunBusy, setDryRunBusy] = React.useState(false)
     const rootRef = React.useRef(null)
@@ -417,8 +420,9 @@ function dabMakePage(store, ctx) {
       // Reprendre clears the operator Stop (`/resume`) when stoppedAt is set,
       // and resumes the session lifecycle otherwise.
       onResume: () => act('resume', () => (superContext.stopped ? store.resume() : store.resumeSuperagent())),
-      onOpenSuperagent: () => setSuperagentOpen(true),
-      onOpenDecisions: () => setSuperagentOpen(true),
+      onOpenSuperagent: openSuperagent,
+      onOpenDecisions: openSuperagent,
+      onOpenProjects: openSuperagentProjects,
     })
 
     const filtersActiveAll = filtersActive || ui.project !== null || focus !== null
@@ -522,8 +526,10 @@ function dabMakePage(store, ctx) {
         narrow,
         taskboard: host.taskboardPublic ?? null,
         ui,
+        workspace: hierarchy.workspace,
+        initialTab: typeof superagentOpen === 'string' ? superagentOpen : 'overview',
         onClose: () => setSuperagentOpen(false),
-        onOpenDetail: () => setSuperagentOpen(true),
+        onOpenDetail: openSuperagent,
         onDryRun: runDryRun,
         onToggleProject: (projectId, enabled) => act('project', () => store.setProject(projectId, { enabled })),
         onSetProjectLevel: (projectId, level) => act('project-level', () => store.setProject(projectId, { level })),

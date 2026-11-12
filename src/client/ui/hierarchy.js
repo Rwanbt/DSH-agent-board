@@ -205,9 +205,9 @@ function dabCapabilityMatrix(h, capabilities, reasons, context) {
     h('span', { className: 'dab-cap-value', 'data-available': entry.available ? 'true' : 'false' }, dabT(entry.stateLabelKey)),
     entry.reasonKey === null && entry.reason === null
       ? null
-      : h('span', { className: 'dab-cap-reason' },
+      : h('span', { className: 'dab-cap-reason', title: entry.reason ?? undefined },
         h('span', { className: 'dab-cap-reason-label' }, `${dabT('supervisionCapabilityReason')} : `),
-        entry.reason ?? dabT(entry.reasonKey)))))
+        entry.reason === null ? dabT(entry.reasonKey) : dabReasonText(entry.reason)))))
 }
 
 /**
@@ -228,7 +228,7 @@ function DabSupervisionBody({ workspace, totals, projects, id = DAB_SUPERVISION_
     // A Task Board that cannot be read is REPORTED here, not silently missing.
     workspace.taskboard !== null && workspace.taskboard !== undefined && workspace.taskboard.available === false
       ? h('div', { className: 'dab-band-notice', title: String(workspace.taskboard.reason ?? '') },
-        `${dabT('taskboardUnavailable')}${workspace.taskboard.reason ? ` — ${String(workspace.taskboard.reason)}` : ''}`)
+        `${dabT('taskboardUnavailable')}${workspace.taskboard.reason ? ` — ${dabReasonText(String(workspace.taskboard.reason))}` : ''}`)
       : null,
     h('div', { className: 'dab-muted' }, dabT('supervisionSynthetic')),
     workspace.agent !== null && workspace.agent !== undefined
@@ -249,7 +249,7 @@ function DabSupervisionBody({ workspace, totals, projects, id = DAB_SUPERVISION_
       h('div', { className: 'dab-label' }, `${dabT('supervisionRecommendations')} (${recommendationCount})`),
       modeBlocked
         ? h('div', { className: 'dab-band-notice', 'data-refused': 'true', role: 'note' },
-          `${dabT('supervisionStopNoAction')}${context.stopped === true ? ' (stopped_by_operator)' : ' (mode_off)'}`)
+          context.stopped === true ? dabReasonText('stopped_by_operator') : dabT('supervisionStopNoAction'))
         : dabRecommendationList(h, workspace.recommendations, projects)),
     h('div', { className: 'dab-band-section' },
       h('div', { className: 'dab-label' }, `${dabT('supervisionBlocks')} (${Array.isArray(workspace.blocks) ? workspace.blocks.length : 0})`),

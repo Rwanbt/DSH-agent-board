@@ -85,7 +85,7 @@ return {
   DabSuperagentDirectives, DabSuperagentSettings, DabSuperagentDecisions, DabAllProjectsConfirm,
   dabSuperagentFacts, dabProjectPolicyRows, dabEffectiveCapabilities, dabCapabilityEntry,
   dabActionRefusalReason, dabSuperagentPortfolio, dabDecisionGroups, dabAllProjectsConfirmValid,
-  dabSaBound,
+  dabSaBound, dabReasonText,
 }`
 
 const cockpit = new Function('React', CODE)(React)
@@ -251,14 +251,15 @@ test('old payload without superagent: no crash, honest fallbacks everywhere', ()
 
   const projects = render(cockpit.DabSuperagentProjects({ superagent: null, mandate: null, host: {}, context: { mode: 'off' } }))
   assert.ok(byClass(projects, 'dab-sa-unavailable').length >= 1)
-  assert.match(textOf(projects), /superagent_not_published/)
+  assert.match(textOf(projects), /Super Agent not published by the host/)
+  assert.ok(collect(projects, node => node.props?.title === 'superagent_not_published').length >= 1, 'raw code kept as a tooltip')
 
   const directives = render(cockpit.DabSuperagentDirectives({ superagent: null, portfolio: [] }))
   assert.match(textOf(directives), /No directive recorded/)
   assert.equal(byClass(directives, 'dab-sa-examples')[0] !== undefined, true)
 
   const settings = render(cockpit.DabSuperagentSettings({ superagent: null, mandate: null, host: {}, context: { mode: 'off' }, ui: {}, taskboard: null }))
-  assert.match(textOf(settings), /models_not_discovered/)
+  assert.match(textOf(settings), /models not discovered yet/)
   assert.match(textOf(settings), /not available/)
 
   // The store accepts the same old frame: normalized fields are null, no crash.
@@ -276,10 +277,14 @@ test('inactive session is never rendered as active; active state is distinct', (
   const inactiveTree = band()
   assert.equal(byClass(inactiveTree, 'dab-super-ai')[0].props['data-session-active'], 'false')
   assert.match(textOf(byClass(inactiveTree, 'dab-super-ai-state')[0]), /session not started/)
-  // Pause is disabled while nothing runs; Start and Stop stay available.
+  // Nothing runs: Start is the single primary action, Pause is not offered,
+  // Resume is not shown next to Start, and Stop stays reachable.
   const controls = collect(inactiveTree, node => node.props?.['data-action'] !== undefined)
-  assert.equal(controls.find(node => node.props['data-action'] === 'pause').props.disabled, true)
+  assert.equal(controls.find(node => node.props['data-action'] === 'pause'), undefined)
+  assert.equal(controls.find(node => node.props['data-action'] === 'resume'), undefined)
   assert.equal(controls.find(node => node.props['data-action'] === 'start').props.disabled, false)
+  assert.equal(controls.find(node => node.props['data-action'] === 'start').props['data-primary'], 'true')
+  assert.equal(controls.filter(node => node.props['data-primary'] === 'true').length, 1)
   assert.equal(controls.find(node => node.props['data-action'] === 'stop').props.disabled, false)
 
   const thinking = cockpit.dabSuperagentFacts(makeActiveSuperagent('thinking'), makeMandate(), {})
@@ -333,7 +338,9 @@ test('capability matrix is derived from the real payload: a refusal is never gre
   const delegateRow = byClass(body, 'dab-cap-row').find(row => row.props['data-capability'] === 'delegate')
   assert.equal(delegateRow.props['data-available'], 'false')
   assert.equal(delegateRow.props['data-refused'], 'true')
-  assert.match(textOf(delegateRow), /mode_off/)
+  assert.match(textOf(delegateRow), /Observe mode: switch to Supervised or Autonomous/)
+  assert.doesNotMatch(textOf(delegateRow), /mode_off/)
+  assert.equal(collect(delegateRow, node => node.props?.title === 'mode_off').length, 1, 'raw code kept as a tooltip')
   // F4/F9: the real count stays visible, the 50 inapplicable rows do not.
   assert.match(textOf(body), /Recommendations \(50\)/)
   assert.match(textOf(body), /Stop mode — no action possible/)
@@ -555,7 +562,7 @@ test('the dry-run is a GET with no side effect and its result is rendered read-o
     superagent: makeInactiveSuperagent(), mandate: makeMandate(), host: makeHost(), context: { mode: 'supervised' },
     dryRun: { unavailable: 'dry_run_failed' }, onDryRun: () => {},
   }))
-  assert.match(textOf(unavailable), /dry_run_failed/)
+  assert.match(textOf(unavailable), /dry run failed/)
 })
 
 // ---------------------------------------------------------------- truncation
@@ -630,7 +637,8 @@ test('settings show model discovery, refusal reasons per action, connector and l
   // Stop refuses every action, with the real reason, on every row.
   const permission = byClass(tree, 'dab-sa-permission').find(node => node.props['data-action'] === 'merge')
   assert.equal(permission.props['data-granted'], 'false')
-  assert.match(textOf(permission), /stopped_by_operator/)
+  assert.match(textOf(permission), /stopped by you: use Resume/)
+  assert.equal(byClass(permission, 'dab-sa-permission-reason')[0].props.title, 'stopped_by_operator')
   assert.equal(byClass(tree, 'dab-sa-permission-reason').length, 13)
   assert.equal(byClass(tree, 'dab-sa-stop').length, 1)
   assert.equal(byClass(tree, 'dab-sa-resume').length, 1)
@@ -640,7 +648,7 @@ test('settings show model discovery, refusal reasons per action, connector and l
   const hidden = render(cockpit.DabSuperagentSettings({
     superagent: makeInactiveSuperagent(), mandate: makeMandate(), host: { models: { discovered: false, reason: 'model_discovery_unavailable' } }, context: {}, ui: {},
   }))
-  assert.match(textOf(hidden), /model_discovery_unavailable/)
+  assert.match(textOf(hidden), /model list unavailable/)
   assert.equal(byClass(hidden, 'dab-sa-models-discovered').length, 0)
 
   // Per-action reasons follow the effective mandate, not a static map.
@@ -659,7 +667,7 @@ test('settings show model discovery, refusal reasons per action, connector and l
     superagent: makeInactiveSuperagent(), mandate: makeMandate(), host: { taskboardPublic: { configured: false, reachable: false, reason: 'public_api_disabled' } }, context: {}, ui: {},
   }))
   assert.match(textOf(connector), /Not configured/)
-  assert.match(textOf(connector), /public_api_disabled/)
+  assert.match(textOf(connector), /Task Board API disabled: restart DSH/)
 })
 
 // ---------------------------------------------------------------- store payload
@@ -706,3 +714,42 @@ function fakeFetch({ state = { mode: 'supervised', acks: {}, assignments: [], pr
 function json(value) {
   return { ok: true, status: 200, json: async () => value }
 }
+
+// ---------------------------------------------------------------- UX polish
+test('no enabled project: the band shows one call to action that opens the Projects tab', () => {
+  let opened = null
+  const mandate = makeMandate({ scopeMode: 'none', selectedWorkspaces: [], projects: {} })
+  const tree = band({ mandate, totals: { ...TOTALS, projects: 5 }, onOpenProjects: () => { opened = 'projects' } })
+  const cta = byClass(tree, 'dab-super-cta')
+  assert.equal(cta.length, 1)
+  cta[0].props.onClick()
+  assert.equal(opened, 'projects')
+  // The enabled count falls back to the real project count instead of "unavailable".
+  assert.match(textOf(byClass(tree, 'dab-super-enabled')[0]), /0\/5/)
+
+  const enabled = band({ mandate: makeMandate() })
+  assert.equal(byClass(enabled, 'dab-super-cta').length, 0, 'no call to action once a project is enabled')
+})
+
+test('no pinned model reads as the DSH default model, never "unresolved"', () => {
+  const superagent = makeInactiveSuperagent()
+  superagent.identity.model = null
+  const tree = band({ superagent })
+  assert.match(textOf(byClass(tree, 'dab-super-model')[0]), /DSH default model/)
+})
+
+test('stopped: Resume is the single primary action and Start is not offered beside it', () => {
+  const tree = band({ stopped: true })
+  const controls = collect(tree, node => node.props?.['data-action'] !== undefined)
+  assert.equal(controls.find(node => node.props['data-action'] === 'start'), undefined)
+  assert.equal(controls.find(node => node.props['data-action'] === 'resume').props['data-primary'], 'true')
+  assert.equal(controls.filter(node => node.props['data-primary'] === 'true').length, 1)
+  assert.equal(controls.find(node => node.props['data-action'] === 'stop').props.disabled, false, 'Stop stays reachable')
+})
+
+test('reason codes render as sentences with the raw code kept as a tooltip', () => {
+  assert.equal(cockpit.dabReasonText('scope_none'), 'no project allowed: enable one in the Projects tab')
+  assert.equal(cockpit.dabReasonText('some_new_code'), 'some new code', 'unknown codes are spaced, never invented')
+  assert.equal(cockpit.dabReasonText('Already a sentence.'), 'Already a sentence.')
+  assert.equal(cockpit.dabReasonText(''), '')
+})

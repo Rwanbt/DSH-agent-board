@@ -4836,6 +4836,12 @@ const DAB_STRINGS = {
     superUnavailable: 'Super Agent non publié par l’hôte',
     superUnavailableReason: 'hôte : superagent non publié',
     superModelUnavailable: 'modèle non résolu',
+    superModelHostDefault: 'modèle par défaut de DSH',
+    superNoObjectiveYet: 'Aucun objectif : démarrez le Super Agent après avoir choisi des projets.',
+    superModelInherited: 'hérité du Super Agent',
+    superBudgetGlobal: 'budget global',
+    superChooseProjects: 'Choisir les projets à piloter →',
+    superChooseProjectsHint: 'Aucun projet n’est autorisé : le Super Agent observe sans agir tant que vous n’en activez pas.',
     superLevel: 'Niveau {level}',
     superLevelLabel: 'Niveau',
     superLevelUnavailable: 'niveau non disponible',
@@ -4855,7 +4861,7 @@ const DAB_STRINGS = {
     superDetailsOpen: 'Ouvrir le détail du Super Agent',
     superDecisionsPending: '{n} décisions en attente',
     supervisionStatusStopped: 'Arrêté (observation)',
-    supervisionStopNoAction: 'Mode Arrêt — aucune action possible sans passer en Supervisé ou Autonome',
+    supervisionStopNoAction: 'Mode Observation — aucune action tant que vous ne passez pas en Supervisé ou Autonome',
     superTabs: 'Sections du Super Agent',
     superTabOverview: 'Vue d’ensemble',
     superTabProjects: 'Projets',
@@ -5265,6 +5271,12 @@ const DAB_STRINGS = {
     superUnavailable: 'Super Agent not published by the host',
     superUnavailableReason: 'host: superagent not published',
     superModelUnavailable: 'unresolved model',
+    superModelHostDefault: 'DSH default model',
+    superNoObjectiveYet: 'No objective yet: start the Super Agent once projects are chosen.',
+    superModelInherited: 'inherited from the Super Agent',
+    superBudgetGlobal: 'global budget',
+    superChooseProjects: 'Choose projects to drive →',
+    superChooseProjectsHint: 'No project is allowed: the Super Agent observes without acting until you enable one.',
     superLevel: 'Level {level}',
     superLevelLabel: 'Level',
     superLevelUnavailable: 'level unavailable',
@@ -5596,6 +5608,126 @@ function dabModelChipText(model) {
   const name = typeof model.model === 'string' && model.model !== '' ? model.model : '?'
   const effort = typeof model.reasoningEffort === 'string' && model.reasoningEffort !== '' ? ` · ${model.reasoningEffort}` : ''
   return `${provider}/${name}${effort}`
+}
+
+/**
+ * Plain-language text for the machine reason codes the host publishes
+ * (capabilities, refusals, runtime, Task Board, projects). The cockpit shows
+ * the sentence; the raw code stays available as a tooltip for diagnostics.
+ * Unknown codes fall back to the code with spaces, never to an invented text.
+ */
+const DAB_REASON_TEXT = {
+  fr: {
+    mode_off: 'mode Observation : passez en Supervisé ou Autonome pour agir',
+    scope_none: 'aucun projet autorisé : activez-en un dans l’onglet Projets',
+    project_not_selected: 'projet hors périmètre : activez-le dans l’onglet Projets',
+    project_not_in_scope: 'projet hors périmètre : activez-le dans l’onglet Projets',
+    project_disabled: 'projet désactivé',
+    requires_configuration: 'configuration requise : choisissez les projets autorisés',
+    paused_by_operator: 'en pause à votre demande',
+    stopped_by_operator: 'arrêté à votre demande : utilisez Reprendre',
+    level_too_low: 'niveau d’autonomie trop bas pour cette action',
+    action_disabled: 'action désactivée dans les paramètres',
+    approval_required: 'votre approbation est nécessaire',
+    decision_missing: 'en attente de votre décision',
+    decision_expired: 'décision expirée',
+    critical_action_not_granted: 'action critique non autorisée',
+    budget_exhausted: 'budget épuisé pour cette heure',
+    project_budget_exhausted: 'budget du projet épuisé pour cette heure',
+    autonomy_budget_exhausted: 'budget d’autonomie épuisé pour cette heure',
+    cycle_budget_exhausted: 'nombre maximal de cycles atteint pour cette heure',
+    model_call_budget_exhausted: 'nombre maximal d’appels au modèle atteint',
+    integration_unavailable: 'intégration indisponible',
+    concurrency_limit: 'nombre maximal d’agents simultanés atteint',
+    no_candidate_work: 'aucune tâche prête dans le périmètre',
+    no_adapter_for_action: 'pas encore pris en charge dans cette version',
+    contract_unavailable: 'Task Board ne propose pas encore le contrat d’exécution',
+    taskboard_write_api_unavailable: 'Task Board accessible en lecture seule pour l’instant',
+    public_api_disabled: 'API Task Board désactivée : redémarrez DSH',
+    public_v1_not_configured: 'API publique Task Board non configurée',
+    token_not_configured: 'jeton Task Board absent : redémarrez DSH',
+    no_inbound_orchestrator_report_channel: 'les orchestrateurs ne remontent pas encore de rapports',
+    github_not_configured: 'GitHub non configuré',
+    github_writes_disabled: 'écritures GitHub désactivées',
+    not_started: 'le Super Agent n’a pas encore démarré',
+    runtime_unavailable: 'moteur du Super Agent indisponible',
+    llm_service_unavailable: 'service de modèles DSH indisponible',
+    model_discovery_unavailable: 'liste des modèles indisponible',
+    models_not_discovered: 'modèles pas encore découverts',
+    objective_not_published: 'aucun objectif pour l’instant',
+    activity_not_published: 'aucune activité pour l’instant',
+    superagent_not_published: 'Super Agent non publié par l’hôte : redémarrez DSH',
+    budget_not_published: 'budget non publié',
+    options_missing: 'aucune option proposée',
+    secondary_instance: 'une autre fenêtre DSH pilote déjà le board',
+    not_primary: 'une autre fenêtre DSH pilote déjà le board',
+    unreachable: 'service injoignable',
+    rate_limited: 'limite de requêtes atteinte, nouvel essai plus tard',
+    credentials_rejected: 'identifiants refusés',
+    unsupported_version: 'version non prise en charge',
+  },
+  en: {
+    mode_off: 'Observe mode: switch to Supervised or Autonomous to act',
+    scope_none: 'no project allowed: enable one in the Projects tab',
+    project_not_selected: 'project out of scope: enable it in the Projects tab',
+    project_not_in_scope: 'project out of scope: enable it in the Projects tab',
+    project_disabled: 'project disabled',
+    requires_configuration: 'configuration needed: choose the allowed projects',
+    paused_by_operator: 'paused by you',
+    stopped_by_operator: 'stopped by you: use Resume',
+    level_too_low: 'autonomy level too low for this action',
+    action_disabled: 'action disabled in settings',
+    approval_required: 'your approval is needed',
+    decision_missing: 'waiting for your decision',
+    decision_expired: 'decision expired',
+    critical_action_not_granted: 'critical action not granted',
+    budget_exhausted: 'budget used up for this hour',
+    project_budget_exhausted: 'project budget used up for this hour',
+    autonomy_budget_exhausted: 'autonomy budget used up for this hour',
+    cycle_budget_exhausted: 'maximum cycles reached for this hour',
+    model_call_budget_exhausted: 'maximum model calls reached',
+    integration_unavailable: 'integration unavailable',
+    concurrency_limit: 'maximum concurrent agents reached',
+    no_candidate_work: 'no ready task in scope',
+    no_adapter_for_action: 'not supported yet in this version',
+    contract_unavailable: 'Task Board does not offer the execution contract yet',
+    taskboard_write_api_unavailable: 'Task Board is read-only for now',
+    public_api_disabled: 'Task Board API disabled: restart DSH',
+    public_v1_not_configured: 'Task Board public API not configured',
+    token_not_configured: 'Task Board token missing: restart DSH',
+    no_inbound_orchestrator_report_channel: 'orchestrators do not send reports yet',
+    github_not_configured: 'GitHub not configured',
+    github_writes_disabled: 'GitHub writes disabled',
+    not_started: 'the Super Agent has not started yet',
+    runtime_unavailable: 'Super Agent runtime unavailable',
+    llm_service_unavailable: 'DSH model service unavailable',
+    model_discovery_unavailable: 'model list unavailable',
+    models_not_discovered: 'models not discovered yet',
+    objective_not_published: 'no objective yet',
+    activity_not_published: 'no activity yet',
+    superagent_not_published: 'Super Agent not published by the host: restart DSH',
+    budget_not_published: 'budget not published',
+    options_missing: 'no option offered',
+    secondary_instance: 'another DSH window already drives the board',
+    not_primary: 'another DSH window already drives the board',
+    unreachable: 'service unreachable',
+    rate_limited: 'rate limited, retrying later',
+    credentials_rejected: 'credentials rejected',
+    unsupported_version: 'unsupported version',
+  },
+}
+
+/** True when `value` looks like a machine code (snake_case), not a sentence. */
+function dabIsReasonCode(value) {
+  return typeof value === 'string' && /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/.test(value)
+}
+
+/** Sentence for a reason code; free text from the host is returned unchanged. */
+function dabReasonText(value) {
+  if (typeof value !== 'string' || value === '') return ''
+  if (!dabIsReasonCode(value)) return value
+  const table = DAB_REASON_TEXT[DAB_LANG] ?? DAB_REASON_TEXT.en
+  return table[value] ?? DAB_REASON_TEXT.en[value] ?? value.replace(/_/g, ' ')
 }
 
 
@@ -6273,6 +6405,15 @@ const DAB_CSS = `
 .dab-super-ctrl:hover:not([disabled]) { background: var(--dsw-alias-interactive-bg-hover); }
 .dab-super-ctrl[disabled] { opacity: .45; cursor: not-allowed; }
 .dab-super-ctrl[data-danger="true"] { color: var(--dsw-alias-state-error-primary); }
+/* Inverted button: the DSH brand token is the text colour itself (white in dark, dark in light). */
+.dab-super-ctrl[data-primary="true"] { background: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-base, #000); font-weight: 600; }
+.dab-super-ctrl[data-primary="true"]:hover:not([disabled]) { background: var(--dsw-alias-label-primary); opacity: .88; }
+.dab-super-cta { display: inline-flex; align-items: center; min-height: 28px; padding: 4px 12px; flex: none;
+  border-radius: var(--dsw-radius-sm); border: 1px dashed var(--dsw-alias-brand-primary);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); color: var(--dsw-alias-brand-primary);
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.dab-super-cta:hover { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 20%, transparent); }
+.dab-super-cta:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 .dab-super-decisions { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 0 8px;
   border-radius: 999px; corner-shape: round; border: 1px solid var(--dsw-alias-state-warn-primary);
   background: transparent; color: var(--dsw-alias-state-warn-primary); font: inherit; font-size: 11px; cursor: pointer; }
@@ -7055,9 +7196,9 @@ function dabCapabilityMatrix(h, capabilities, reasons, context) {
     h('span', { className: 'dab-cap-value', 'data-available': entry.available ? 'true' : 'false' }, dabT(entry.stateLabelKey)),
     entry.reasonKey === null && entry.reason === null
       ? null
-      : h('span', { className: 'dab-cap-reason' },
+      : h('span', { className: 'dab-cap-reason', title: entry.reason ?? undefined },
         h('span', { className: 'dab-cap-reason-label' }, `${dabT('supervisionCapabilityReason')} : `),
-        entry.reason ?? dabT(entry.reasonKey)))))
+        entry.reason === null ? dabT(entry.reasonKey) : dabReasonText(entry.reason)))))
 }
 
 /**
@@ -7078,7 +7219,7 @@ function DabSupervisionBody({ workspace, totals, projects, id = DAB_SUPERVISION_
     // A Task Board that cannot be read is REPORTED here, not silently missing.
     workspace.taskboard !== null && workspace.taskboard !== undefined && workspace.taskboard.available === false
       ? h('div', { className: 'dab-band-notice', title: String(workspace.taskboard.reason ?? '') },
-        `${dabT('taskboardUnavailable')}${workspace.taskboard.reason ? ` — ${String(workspace.taskboard.reason)}` : ''}`)
+        `${dabT('taskboardUnavailable')}${workspace.taskboard.reason ? ` — ${dabReasonText(String(workspace.taskboard.reason))}` : ''}`)
       : null,
     h('div', { className: 'dab-muted' }, dabT('supervisionSynthetic')),
     workspace.agent !== null && workspace.agent !== undefined
@@ -7099,7 +7240,7 @@ function DabSupervisionBody({ workspace, totals, projects, id = DAB_SUPERVISION_
       h('div', { className: 'dab-label' }, `${dabT('supervisionRecommendations')} (${recommendationCount})`),
       modeBlocked
         ? h('div', { className: 'dab-band-notice', 'data-refused': 'true', role: 'note' },
-          `${dabT('supervisionStopNoAction')}${context.stopped === true ? ' (stopped_by_operator)' : ' (mode_off)'}`)
+          context.stopped === true ? dabReasonText('stopped_by_operator') : dabT('supervisionStopNoAction'))
         : dabRecommendationList(h, workspace.recommendations, projects)),
     h('div', { className: 'dab-band-section' },
       h('div', { className: 'dab-label' }, `${dabT('supervisionBlocks')} (${Array.isArray(workspace.blocks) ? workspace.blocks.length : 0})`),
@@ -7804,13 +7945,14 @@ function dabSuperStatusLabel(status, facts) {
 }
 
 function dabSuperControl(h, props) {
-  const { key, action, label, title, disabled, onClick, danger } = props
+  const { key, action, label, title, disabled, onClick, danger, primary } = props
   return h('button', {
     key,
     type: 'button',
     className: 'dab-super-ctrl',
     'data-action': action,
     'data-danger': danger === true ? 'true' : undefined,
+    'data-primary': primary === true ? 'true' : undefined,
     'aria-label': title,
     title,
     disabled: disabled === true,
@@ -7820,7 +7962,7 @@ function dabSuperControl(h, props) {
 
 function DabSuperOrchestratorBarImpl({
   workspace, totals, projects, orchestrators: orchestratorList, mode, open, onToggle, onSelect, compact,
-  superagent, mandate, capabilities, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions,
+  superagent, mandate, capabilities, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenProjects,
 }) {
   const h = React.createElement
   // Prefer the real, filter-independent orchestrator list from the hierarchy.
@@ -7856,11 +7998,15 @@ function DabSuperOrchestratorBarImpl({
   const layerTone = stoppedByOperator ? 'waiting' : (workspace?.status === 'active' ? 'running' : workspace?.status === 'blocked' ? 'failed' : 'idle')
 
   const canPause = facts.sessionActive === true && facts.paused !== true
-  const canResume = stoppedByOperator || facts.paused === true || (facts.sessionActive === false && facts.available === true)
-  const modelText = facts.modelText ?? (facts.available ? dabT('superModelUnavailable') : null)
+  const canResume = stoppedByOperator || facts.paused === true
+  const canStart = facts.sessionActive === false && !canResume
+  // No pinned model means the runtime uses the DSH default model (host contract).
+  const modelText = facts.modelText ?? (facts.available ? dabT('superModelHostDefault') : null)
+  const totalProjects = facts.totalProjects > 0 ? facts.totalProjects : projectCount
+  const needsProjects = facts.available && facts.enabledProjects === 0 && totalProjects > 0
   const levelText = facts.level === null ? dabT('superLevelUnavailable') : dabT('superLevel', { level: facts.level })
-  const projectsText = facts.totalProjects > 0
-    ? dabT('superProjectsEnabled', { enabled: facts.enabledProjects, total: facts.totalProjects })
+  const projectsText = totalProjects > 0
+    ? dabT('superProjectsEnabled', { enabled: facts.enabledProjects, total: totalProjects })
     : (facts.available ? dabT('superProjectsUnavailable') : null)
   const activityText = facts.activitySummary !== null
     ? facts.activitySummary
@@ -7869,25 +8015,28 @@ function DabSuperOrchestratorBarImpl({
   const controls = h('span', { className: 'dab-super-controls', role: 'group', 'aria-label': dabT('superControls') },
     // The start action is explicit when no session runs: the band never fakes
     // an active agent (contract §7).
-    facts.sessionActive === false
+    // Exactly one primary action for the current state: Start, Resume or Pause.
+    canResume
       ? dabSuperControl(h, {
-        key: 'start', action: 'start', label: `▶ ${dabT('superStartShort')}`, title: dabT('superStart'),
+        key: 'resume', action: 'resume', label: `▶ ${dabT('resume')}`, title: dabT('superResume'), primary: true, disabled: busy === true, onClick: onResume,
+      })
+      : null,
+    canStart
+      ? dabSuperControl(h, {
+        key: 'start', action: 'start', label: `▶ ${dabT('superStartShort')}`, title: dabT('superStart'), primary: true,
         disabled: busy === true, onClick: onStart,
       })
       : null,
-    dabSuperControl(h, {
-      key: 'pause', action: 'pause', label: `⏸ ${dabT('superPauseShort')}`, title: canPause ? dabT('superPause') : dabT('superPauseUnavailable'),
-      disabled: busy === true || canPause !== true, onClick: onPause,
-    }),
+    canPause
+      ? dabSuperControl(h, {
+        key: 'pause', action: 'pause', label: `⏸ ${dabT('superPauseShort')}`, title: dabT('superPause'),
+        disabled: busy === true, onClick: onPause,
+      })
+      : null,
     dabSuperControl(h, {
       key: 'stop', action: 'stop', label: `⏹ ${dabT('superStopShort')}`, title: dabT('superStop'), danger: true,
       disabled: busy === true, onClick: onStop,
     }),
-    canResume
-      ? dabSuperControl(h, {
-        key: 'resume', action: 'resume', label: `▶ ${dabT('resume')}`, title: dabT('superResume'), disabled: busy === true, onClick: onResume,
-      })
-      : null,
     onOpenSuperagent !== undefined && onOpenSuperagent !== null
       ? dabSuperControl(h, {
         key: 'details', action: 'details', label: dabT('superDetailsShort'), title: dabT('superDetailsOpen'),
@@ -7948,7 +8097,7 @@ function DabSuperOrchestratorBarImpl({
     h('span', { className: 'dab-super-ai-name' }, dabT('superAgent')),
     h('span', { className: 'dab-super-ai-sep', 'aria-hidden': 'true' }, ' · '),
     h('span', { className: 'dab-super-ai-state' }, dabT(facts.stateLabelKey))),
-  facts.available ? null : h('span', { className: 'dab-super-ai-reason' }, facts.stateReason ?? dabT('superUnavailableReason'))),
+  facts.available ? null : h('span', { className: 'dab-super-ai-reason', title: facts.stateReason ?? undefined }, facts.stateReason === null ? dabT('superUnavailableReason') : dabReasonText(facts.stateReason))),
 
   facts.available
     ? h('span', { className: 'dab-super-facts' },
@@ -7972,6 +8121,16 @@ function DabSuperOrchestratorBarImpl({
     : null,
 
   controls,
+
+  needsProjects
+    ? h('button', {
+      type: 'button',
+      className: 'dab-super-cta',
+      'data-cta': 'choose-projects',
+      title: dabT('superChooseProjectsHint'),
+      onClick: () => (onOpenProjects ?? onOpenSuperagent)?.(),
+    }, dabT('superChooseProjects'))
+    : null,
 
   // Mini orchestrator avatars: real agents only. A project without a declared
   // orchestrator is not rendered as a fake avatar.
@@ -8017,6 +8176,7 @@ const DabSuperOrchestratorBar = React.memo(DabSuperOrchestratorBarImpl, (a, b) =
   && a.onResume === b.onResume
   && a.onOpenSuperagent === b.onOpenSuperagent
   && a.onOpenDecisions === b.onOpenDecisions
+  && a.onOpenProjects === b.onOpenProjects
   && a.superagent === b.superagent
   && a.mandate === b.mandate
   && a.capabilities === b.capabilities
@@ -8500,7 +8660,7 @@ function dabSaExtraNode(h, extra) {
 function dabSaReason(h, reason, className = 'dab-sa-unavailable') {
   return h('div', { className, role: 'note' },
     h('span', { className: 'dab-sa-unavailable-label' }, dabT('superNotAvailable')),
-    typeof reason === 'string' && reason !== '' ? h('span', { className: 'dab-sa-unavailable-reason' }, ` — ${reason}`) : null)
+    typeof reason === 'string' && reason !== '' ? h('span', { className: 'dab-sa-unavailable-reason', title: reason }, ` — ${dabReasonText(reason)}`) : null)
 }
 
 function dabSaSection(h, key, title, ...children) {
@@ -8610,7 +8770,7 @@ function DabSuperagentDecisions({ superagent, filter = 'decisions', onFilter, on
 }
 
 /** Vue d'ensemble: objective, steps, factual result, capabilities, incidents. */
-function DabSuperagentOverview({ superagent, mandate, capabilities, host, context, onOpenDetail, onAnswer, decisionFilter, onDecisionFilter, busy }) {
+function DabSuperagentOverview({ superagent, mandate, capabilities, host, context, workspace, onOpenDetail, onAnswer, decisionFilter, onDecisionFilter, busy }) {
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
   const plan = facts.plan ?? {}
@@ -8620,7 +8780,9 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
   const steps = dabSaBound([...activity].reverse(), 6)
   const lastCycle = facts.lastCycle
   const incidents = []
-  if (facts.runtime?.available === false && typeof facts.runtime.reason === 'string') incidents.push(`${dabT('superOverviewRuntime')} : ${facts.runtime.reason}`)
+  if (facts.runtime?.available === false && typeof facts.runtime.reason === 'string' && facts.runtime.reason !== 'not_started') {
+    incidents.push(`${dabT('superOverviewRuntime')} : ${dabReasonText(facts.runtime.reason)}`)
+  }
   if (lastCycle !== null && typeof lastCycle.outcome === 'string' && /refus|fail|error|blocked/i.test(lastCycle.outcome)) {
     incidents.push(`${lastCycle.outcome}${typeof lastCycle.reason === 'string' ? ` — ${lastCycle.reason}` : ''}`)
   }
@@ -8639,7 +8801,7 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
     dabSaSection(h, 'objective', dabT('superOverviewObjective'),
       objectives.length === 0
         ? (typeof plan.idleReason === 'string' && plan.idleReason !== ''
-          ? h('div', { className: 'dab-muted' }, `${dabT('superNoObjective')} — ${plan.idleReason}`)
+          ? h('div', { className: 'dab-muted', title: plan.idleReason }, plan.idleReason === 'not_started' ? dabT('superNoObjectiveYet') : `${dabT('superNoObjective')} — ${dabReasonText(plan.idleReason)}`)
           : dabSaReason(h, facts.available ? 'objective_not_published' : 'superagent_not_published'))
         : h('ul', { className: 'dab-sa-list' }, dabSaBound(objectives, 2).shown.map(objective => h('li', { key: String(objective.id) },
           h('span', { className: 'dab-sa-list-title' }, String(objective.title ?? objective.id)),
@@ -8647,7 +8809,7 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
           typeof objective.source === 'string' ? h('span', { className: 'dab-muted' }, ` · ${objective.source}`) : null)))),
     dabSaSection(h, 'steps', dabT('superOverviewSteps'),
       steps.shown.length === 0
-        ? dabSaReason(h, facts.available ? 'activity_not_published' : 'superagent_not_published')
+        ? (facts.available ? h('div', { className: 'dab-muted' }, dabReasonText('activity_not_published')) : dabSaReason(h, 'superagent_not_published'))
         : h('ol', { className: 'dab-sa-steps' }, steps.shown.map(entry => h('li', { key: `${entry.at}-${entry.kind}` },
           h('span', { className: 'dab-sa-step-time' }, dabSaMoment(entry.at) ?? ''), h('span', { className: 'dab-grow' }, String(entry.summary ?? entry.kind ?? '?')),
           typeof entry.kind === 'string' ? h('span', { className: 'dab-tag' }, entry.kind) : null))),
@@ -8663,7 +8825,9 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
           h('dt', null, dabT('superOverviewAt')), h('dd', null, dabSaMoment(lastCycle.at) ?? dabT('superNotAvailable')),
           h('dt', null, dabT('superOverviewDuration')), h('dd', null, `${Number(lastCycle.durationMs) || 0} ms`))),
     dabSaSection(h, 'capabilities', dabT('superOverviewCapabilities'),
-      dabCapabilityMatrix(h, capabilities, null, context)),
+      workspace !== null && workspace !== undefined && workspace.capabilities !== undefined
+        ? dabCapabilityMatrix(h, workspace.capabilities, workspace.capabilityReasons, context)
+        : dabCapabilityMatrix(h, capabilities, null, context)),
     dabSaSection(h, 'incidents', dabT('superOverviewIncidents'),
       incidents.length === 0
         ? h('div', { className: 'dab-muted' }, dabT('superNoIncidents'))
@@ -8755,10 +8919,12 @@ function DabSuperagentProjects({
             onChange: event => onSetProjectPriority?.(row.id, Number(event?.target?.value)),
           }))),
       h('div', { className: 'dab-sa-project-facts' },
-        h('span', { className: 'dab-sa-model' }, `${dabT('model')} : ${row.model === null ? dabT('superNotAvailable') : `${row.model.provider ?? '?'}/${row.model.model ?? '?'}`}`),
-        h('span', { className: 'dab-sa-budget' }, `${dabT('superProjectBudget')} : ${row.budget === null || row.budget.maxTasksPerHour === undefined ? dabT('superNotAvailable') : `${row.budget.maxTasksPerHour}/h`}`),
-        h('span', { className: 'dab-sa-source' }, `${dabT('superProjectSource')} : ${row.source ?? dabT('superNotAvailable')}`)),
-      row.reason === null ? null : h('div', { className: 'dab-sa-reason' }, `${dabT('superReason')} : ${row.reason}`))),
+        h('span', { className: 'dab-sa-model' }, `${dabT('model')} : ${row.model === null ? dabT('superModelInherited') : `${row.model.provider ?? '?'}/${row.model.model ?? '?'}`}`),
+        h('span', { className: 'dab-sa-budget' }, `${dabT('superProjectBudget')} : ${row.budget === null || row.budget.maxTasksPerHour === undefined ? dabT('superBudgetGlobal') : `${row.budget.maxTasksPerHour}/h`}`),
+        row.source === null || row.source === undefined ? null : h('span', { className: 'dab-sa-source' }, `${dabT('superProjectSource')} : ${row.source}`)),
+      // The "scope_none" reason is already said once by the scope line above;
+      // repeating it on every row was noise.
+      row.reason === null || row.reason === 'scope_none' ? null : h('div', { className: 'dab-sa-reason', title: row.reason }, dabReasonText(row.reason)))),
       dabSaExtraNode(h, bound.extra)),
     h('div', { className: 'dab-sa-dryrun-head' },
       h('button', {
@@ -8928,7 +9094,7 @@ function DabSuperagentSettings({
           h('dt', null, dabT('superBudgetTokens')), h('dd', null, budget.tokenBudget === null || budget.tokenBudget === undefined ? dabT('superUnavailableMetric') : String(budget.tokenBudget)),
           h('dt', null, dabT('superSettingsDelegation')), h('dd', null, `${Number(budget.concurrentAgents) || 0}/${Number(budget.maxConcurrentAgents) || 0}`))),
     dabSaSection(h, 'wake', dabT('superSettingsWake'),
-      facts.nextWakeAt === null
+      dabSaMoment(facts.nextWakeAt) === null
         ? h('div', { className: 'dab-muted' }, dabT('superWakeNever'))
         : h('div', { className: 'dab-sa-wake' }, `${dabT('superWakeAt')} : ${dabSaMoment(facts.nextWakeAt)}`)),
     dabSaSection(h, 'notifications', dabT('superSettingsNotifications'),
@@ -8957,13 +9123,13 @@ function DabSuperagentSettings({
           h('label', { className: 'dab-sa-check' },
             h('input', {
               type: 'checkbox', className: 'dab-sa-permission-toggle', checked: granted,
-              'aria-label': `${dabT(labelKey)}${reason === null ? '' : ` — ${reason}`}`,
+              'aria-label': `${dabT(labelKey)}${reason === null ? '' : ` — ${dabReasonText(reason)}`}`,
               onChange: event => onSetAction?.(action, event?.target?.checked === true),
             }),
             h('span', null, dabT(labelKey))),
           reason === null
             ? h('span', { className: 'dab-sa-permission-ok' }, dabT('superActionGranted'))
-            : h('span', { className: 'dab-sa-permission-reason' }, `${dabT('superReason')} : ${reason}`))
+            : h('span', { className: 'dab-sa-permission-reason', title: reason }, dabReasonText(reason)))
       })),
       h('div', { className: 'dab-muted' }, dabT('superPermissionsHint'))),
     dabSaSection(h, 'diagnostics', dabT('superSettingsDiagnostics'),
@@ -8973,7 +9139,7 @@ function DabSuperagentSettings({
     dabSaSection(h, 'taskboard', dabT('superSettingsTaskboard'),
       h('div', { className: 'dab-sa-connector' },
         h('span', { className: 'dab-sa-connector-state', 'data-reachable': connector?.reachable === true ? 'true' : 'false' }, connectorState),
-        connectorReason === null ? null : h('span', { className: 'dab-sa-connector-reason' }, `${dabT('superReason')} : ${connectorReason}`))),
+        connectorReason === null ? null : h('span', { className: 'dab-sa-connector-reason', title: connectorReason }, dabReasonText(connectorReason)))),
     h('div', { className: 'dab-sa-lifecycle' },
       h('button', { type: 'button', className: 'dab-btn dab-sa-stop', 'data-danger': 'true', disabled: busy === true, onClick: onStop }, dabT('superStop')),
       h('button', { type: 'button', className: 'dab-btn dab-sa-resume', disabled: busy === true, onClick: onResume }, dabT('resume'))))
@@ -8983,12 +9149,12 @@ function DabSuperagentSettings({
 function DabSuperagentInspector(props) {
   const h = React.createElement
   const {
-    superagent, mandate, capabilities, portfolio, host, context, dryRun, dryRunBusy, busy, narrow, taskboard, ui,
+    superagent, mandate, capabilities, portfolio, host, context, dryRun, dryRunBusy, busy, narrow, taskboard, ui, workspace, initialTab,
     onClose, onOpenDetail, onDryRun, onToggleProject, onSetProjectLevel, onSetProjectPriority, onConfirmAllProjects,
     onAddDirective, onRevokeDirective, onAnswerDecision, onSetLevel, onSetAction, onToggleNotifications, onStop, onResume,
   } = props
   const facts = dabSuperagentFacts(superagent, mandate, context)
-  const [tab, setTab] = React.useState('overview')
+  const [tab, setTab] = React.useState(typeof initialTab === 'string' ? initialTab : 'overview')
   const [decisionFilter, setDecisionFilter] = React.useState('decisions')
   const panelRef = React.useRef(null)
   const activeTab = DAB_SUPER_TABS.some(entry => entry[0] === tab) ? tab : 'overview'
@@ -9046,7 +9212,7 @@ function DabSuperagentInspector(props) {
           onSetLevel, onSetAction, onToggleNotifications, onStop, onResume,
         })
         : h(DabSuperagentOverview, {
-          superagent, mandate, capabilities, host, context, busy,
+          superagent, mandate, capabilities, host, context, busy, workspace,
           onOpenDetail, onAnswer: onAnswerDecision, decisionFilter, onDecisionFilter: setDecisionFilter,
         })
 
@@ -9653,7 +9819,10 @@ function dabMakePage(store, ctx) {
     const [nowBucket, setNowBucket] = React.useState(() => Math.floor(Date.now() / 60000))
     // Super Agent surfaces (GOAL 6): the 4-tab inspector and a dry-run result
     // that is rendered WITHOUT touching the shared state (a GET, no write).
+    // false when closed, otherwise the tab the inspector opens on.
     const [superagentOpen, setSuperagentOpen] = React.useState(false)
+    const openSuperagent = React.useCallback(() => setSuperagentOpen('overview'), [])
+    const openSuperagentProjects = React.useCallback(() => setSuperagentOpen('projects'), [])
     const [dryRun, setDryRun] = React.useState(null)
     const [dryRunBusy, setDryRunBusy] = React.useState(false)
     const rootRef = React.useRef(null)
@@ -9952,8 +10121,9 @@ function dabMakePage(store, ctx) {
       // Reprendre clears the operator Stop (`/resume`) when stoppedAt is set,
       // and resumes the session lifecycle otherwise.
       onResume: () => act('resume', () => (superContext.stopped ? store.resume() : store.resumeSuperagent())),
-      onOpenSuperagent: () => setSuperagentOpen(true),
-      onOpenDecisions: () => setSuperagentOpen(true),
+      onOpenSuperagent: openSuperagent,
+      onOpenDecisions: openSuperagent,
+      onOpenProjects: openSuperagentProjects,
     })
 
     const filtersActiveAll = filtersActive || ui.project !== null || focus !== null
@@ -10057,8 +10227,10 @@ function dabMakePage(store, ctx) {
         narrow,
         taskboard: host.taskboardPublic ?? null,
         ui,
+        workspace: hierarchy.workspace,
+        initialTab: typeof superagentOpen === 'string' ? superagentOpen : 'overview',
         onClose: () => setSuperagentOpen(false),
-        onOpenDetail: () => setSuperagentOpen(true),
+        onOpenDetail: openSuperagent,
         onDryRun: runDryRun,
         onToggleProject: (projectId, enabled) => act('project', () => store.setProject(projectId, { enabled })),
         onSetProjectLevel: (projectId, level) => act('project-level', () => store.setProject(projectId, { level })),

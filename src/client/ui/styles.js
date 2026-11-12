@@ -671,6 +671,15 @@ const DAB_CSS = `
 .dab-super-ctrl:hover:not([disabled]) { background: var(--dsw-alias-interactive-bg-hover); }
 .dab-super-ctrl[disabled] { opacity: .45; cursor: not-allowed; }
 .dab-super-ctrl[data-danger="true"] { color: var(--dsw-alias-state-error-primary); }
+/* Inverted button: the DSH brand token is the text colour itself (white in dark, dark in light). */
+.dab-super-ctrl[data-primary="true"] { background: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-base, #000); font-weight: 600; }
+.dab-super-ctrl[data-primary="true"]:hover:not([disabled]) { background: var(--dsw-alias-label-primary); opacity: .88; }
+.dab-super-cta { display: inline-flex; align-items: center; min-height: 28px; padding: 4px 12px; flex: none;
+  border-radius: var(--dsw-radius-sm); border: 1px dashed var(--dsw-alias-brand-primary);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); color: var(--dsw-alias-brand-primary);
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.dab-super-cta:hover { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 20%, transparent); }
+.dab-super-cta:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 .dab-super-decisions { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 0 8px;
   border-radius: 999px; corner-shape: round; border: 1px solid var(--dsw-alias-state-warn-primary);
   background: transparent; color: var(--dsw-alias-state-warn-primary); font: inherit; font-size: 11px; cursor: pointer; }

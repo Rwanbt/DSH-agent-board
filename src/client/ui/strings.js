@@ -288,6 +288,12 @@ const DAB_STRINGS = {
     superUnavailable: 'Super Agent non publié par l’hôte',
     superUnavailableReason: 'hôte : superagent non publié',
     superModelUnavailable: 'modèle non résolu',
+    superModelHostDefault: 'modèle par défaut de DSH',
+    superNoObjectiveYet: 'Aucun objectif : démarrez le Super Agent après avoir choisi des projets.',
+    superModelInherited: 'hérité du Super Agent',
+    superBudgetGlobal: 'budget global',
+    superChooseProjects: 'Choisir les projets à piloter →',
+    superChooseProjectsHint: 'Aucun projet n’est autorisé : le Super Agent observe sans agir tant que vous n’en activez pas.',
     superLevel: 'Niveau {level}',
     superLevelLabel: 'Niveau',
     superLevelUnavailable: 'niveau non disponible',
@@ -307,7 +313,7 @@ const DAB_STRINGS = {
     superDetailsOpen: 'Ouvrir le détail du Super Agent',
     superDecisionsPending: '{n} décisions en attente',
     supervisionStatusStopped: 'Arrêté (observation)',
-    supervisionStopNoAction: 'Mode Arrêt — aucune action possible sans passer en Supervisé ou Autonome',
+    supervisionStopNoAction: 'Mode Observation — aucune action tant que vous ne passez pas en Supervisé ou Autonome',
     superTabs: 'Sections du Super Agent',
     superTabOverview: 'Vue d’ensemble',
     superTabProjects: 'Projets',
@@ -717,6 +723,12 @@ const DAB_STRINGS = {
     superUnavailable: 'Super Agent not published by the host',
     superUnavailableReason: 'host: superagent not published',
     superModelUnavailable: 'unresolved model',
+    superModelHostDefault: 'DSH default model',
+    superNoObjectiveYet: 'No objective yet: start the Super Agent once projects are chosen.',
+    superModelInherited: 'inherited from the Super Agent',
+    superBudgetGlobal: 'global budget',
+    superChooseProjects: 'Choose projects to drive →',
+    superChooseProjectsHint: 'No project is allowed: the Super Agent observes without acting until you enable one.',
     superLevel: 'Level {level}',
     superLevelLabel: 'Level',
     superLevelUnavailable: 'level unavailable',
@@ -1048,4 +1060,124 @@ function dabModelChipText(model) {
   const name = typeof model.model === 'string' && model.model !== '' ? model.model : '?'
   const effort = typeof model.reasoningEffort === 'string' && model.reasoningEffort !== '' ? ` · ${model.reasoningEffort}` : ''
   return `${provider}/${name}${effort}`
+}
+
+/**
+ * Plain-language text for the machine reason codes the host publishes
+ * (capabilities, refusals, runtime, Task Board, projects). The cockpit shows
+ * the sentence; the raw code stays available as a tooltip for diagnostics.
+ * Unknown codes fall back to the code with spaces, never to an invented text.
+ */
+const DAB_REASON_TEXT = {
+  fr: {
+    mode_off: 'mode Observation : passez en Supervisé ou Autonome pour agir',
+    scope_none: 'aucun projet autorisé : activez-en un dans l’onglet Projets',
+    project_not_selected: 'projet hors périmètre : activez-le dans l’onglet Projets',
+    project_not_in_scope: 'projet hors périmètre : activez-le dans l’onglet Projets',
+    project_disabled: 'projet désactivé',
+    requires_configuration: 'configuration requise : choisissez les projets autorisés',
+    paused_by_operator: 'en pause à votre demande',
+    stopped_by_operator: 'arrêté à votre demande : utilisez Reprendre',
+    level_too_low: 'niveau d’autonomie trop bas pour cette action',
+    action_disabled: 'action désactivée dans les paramètres',
+    approval_required: 'votre approbation est nécessaire',
+    decision_missing: 'en attente de votre décision',
+    decision_expired: 'décision expirée',
+    critical_action_not_granted: 'action critique non autorisée',
+    budget_exhausted: 'budget épuisé pour cette heure',
+    project_budget_exhausted: 'budget du projet épuisé pour cette heure',
+    autonomy_budget_exhausted: 'budget d’autonomie épuisé pour cette heure',
+    cycle_budget_exhausted: 'nombre maximal de cycles atteint pour cette heure',
+    model_call_budget_exhausted: 'nombre maximal d’appels au modèle atteint',
+    integration_unavailable: 'intégration indisponible',
+    concurrency_limit: 'nombre maximal d’agents simultanés atteint',
+    no_candidate_work: 'aucune tâche prête dans le périmètre',
+    no_adapter_for_action: 'pas encore pris en charge dans cette version',
+    contract_unavailable: 'Task Board ne propose pas encore le contrat d’exécution',
+    taskboard_write_api_unavailable: 'Task Board accessible en lecture seule pour l’instant',
+    public_api_disabled: 'API Task Board désactivée : redémarrez DSH',
+    public_v1_not_configured: 'API publique Task Board non configurée',
+    token_not_configured: 'jeton Task Board absent : redémarrez DSH',
+    no_inbound_orchestrator_report_channel: 'les orchestrateurs ne remontent pas encore de rapports',
+    github_not_configured: 'GitHub non configuré',
+    github_writes_disabled: 'écritures GitHub désactivées',
+    not_started: 'le Super Agent n’a pas encore démarré',
+    runtime_unavailable: 'moteur du Super Agent indisponible',
+    llm_service_unavailable: 'service de modèles DSH indisponible',
+    model_discovery_unavailable: 'liste des modèles indisponible',
+    models_not_discovered: 'modèles pas encore découverts',
+    objective_not_published: 'aucun objectif pour l’instant',
+    activity_not_published: 'aucune activité pour l’instant',
+    superagent_not_published: 'Super Agent non publié par l’hôte : redémarrez DSH',
+    budget_not_published: 'budget non publié',
+    options_missing: 'aucune option proposée',
+    secondary_instance: 'une autre fenêtre DSH pilote déjà le board',
+    not_primary: 'une autre fenêtre DSH pilote déjà le board',
+    unreachable: 'service injoignable',
+    rate_limited: 'limite de requêtes atteinte, nouvel essai plus tard',
+    credentials_rejected: 'identifiants refusés',
+    unsupported_version: 'version non prise en charge',
+  },
+  en: {
+    mode_off: 'Observe mode: switch to Supervised or Autonomous to act',
+    scope_none: 'no project allowed: enable one in the Projects tab',
+    project_not_selected: 'project out of scope: enable it in the Projects tab',
+    project_not_in_scope: 'project out of scope: enable it in the Projects tab',
+    project_disabled: 'project disabled',
+    requires_configuration: 'configuration needed: choose the allowed projects',
+    paused_by_operator: 'paused by you',
+    stopped_by_operator: 'stopped by you: use Resume',
+    level_too_low: 'autonomy level too low for this action',
+    action_disabled: 'action disabled in settings',
+    approval_required: 'your approval is needed',
+    decision_missing: 'waiting for your decision',
+    decision_expired: 'decision expired',
+    critical_action_not_granted: 'critical action not granted',
+    budget_exhausted: 'budget used up for this hour',
+    project_budget_exhausted: 'project budget used up for this hour',
+    autonomy_budget_exhausted: 'autonomy budget used up for this hour',
+    cycle_budget_exhausted: 'maximum cycles reached for this hour',
+    model_call_budget_exhausted: 'maximum model calls reached',
+    integration_unavailable: 'integration unavailable',
+    concurrency_limit: 'maximum concurrent agents reached',
+    no_candidate_work: 'no ready task in scope',
+    no_adapter_for_action: 'not supported yet in this version',
+    contract_unavailable: 'Task Board does not offer the execution contract yet',
+    taskboard_write_api_unavailable: 'Task Board is read-only for now',
+    public_api_disabled: 'Task Board API disabled: restart DSH',
+    public_v1_not_configured: 'Task Board public API not configured',
+    token_not_configured: 'Task Board token missing: restart DSH',
+    no_inbound_orchestrator_report_channel: 'orchestrators do not send reports yet',
+    github_not_configured: 'GitHub not configured',
+    github_writes_disabled: 'GitHub writes disabled',
+    not_started: 'the Super Agent has not started yet',
+    runtime_unavailable: 'Super Agent runtime unavailable',
+    llm_service_unavailable: 'DSH model service unavailable',
+    model_discovery_unavailable: 'model list unavailable',
+    models_not_discovered: 'models not discovered yet',
+    objective_not_published: 'no objective yet',
+    activity_not_published: 'no activity yet',
+    superagent_not_published: 'Super Agent not published by the host: restart DSH',
+    budget_not_published: 'budget not published',
+    options_missing: 'no option offered',
+    secondary_instance: 'another DSH window already drives the board',
+    not_primary: 'another DSH window already drives the board',
+    unreachable: 'service unreachable',
+    rate_limited: 'rate limited, retrying later',
+    credentials_rejected: 'credentials rejected',
+    unsupported_version: 'unsupported version',
+  },
+}
+
+/** True when `value` looks like a machine code (snake_case), not a sentence. */
+function dabIsReasonCode(value) {
+  return typeof value === 'string' && /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/.test(value)
+}
+
+/** Sentence for a reason code; free text from the host is returned unchanged. */
+function dabReasonText(value) {
+  if (typeof value !== 'string' || value === '') return ''
+  if (!dabIsReasonCode(value)) return value
+  const table = DAB_REASON_TEXT[DAB_LANG] ?? DAB_REASON_TEXT.en
+  return table[value] ?? DAB_REASON_TEXT.en[value] ?? value.replace(/_/g, ' ')
 }
