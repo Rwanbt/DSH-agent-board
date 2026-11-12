@@ -863,3 +863,11 @@ test('the card warns when the global level silently caps an enabled project', ()
   const fine = band({ mandate: makeMandate({ level: 'L4' }), projectRows: cockpit.dabProjectPolicyRows(makeHost(), makeInactiveSuperagent(), makeMandate({ level: 'L4' })), open: true })
   assert.equal(byClass(fine, 'dab-super-projects-capped').length, 0)
 })
+
+test('settings read the model catalog where /state and SSE publish it (host.host.models)', () => {
+  const nested = { ...makeHost(), models: undefined, host: { models: makeHost().models } }
+  const tree = render(cockpit.DabSuperagentSettings({
+    superagent: makeInactiveSuperagent(), mandate: makeMandate(), host: nested, context: { mode: 'supervised' }, ui: {}, taskboard: null,
+  }))
+  assert.equal(byClass(tree, 'dab-sa-model-provider').length, 1, 'the editor is offered from the nested catalog')
+})
