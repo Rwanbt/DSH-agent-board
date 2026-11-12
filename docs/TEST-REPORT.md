@@ -4,6 +4,15 @@ Run date: 2026-11-09 (Europe/Paris). Host: DSH `0.2.2-rc.1`, profile `desktop`,
 GUI `http://127.0.0.1:62337`. Everything below was executed on this machine; no
 result is inferred from a mock unless it says so.
 
+> **GOAL 6 update (2026-11-12, branch `feat/agent-board-superagent`).** The suite
+> is now **570 tests / 570 pass / 0 fail** (~2.5 s, `node --test tests/`).
+> Added coverage: mandate normalization/migration/gate (20), host gate including
+> handoff under a narrowed mandate and single-use approval (15), Super Agent host
+> runtime incl. concurrency/backoff (4), portfolio fairness (10), GitHub writes
+> incl. concurrent idempotence, hostile keys, project/type namespacing (6),
+> Task Board public client (11), pure Super Agent modules (30), cockpit UI (15),
+> audit rotation (1), plus the real-host E2E (`m0–m3`, 0/a/b/c; 33/33 assertions).
+
 > **GOAL 5 update (2026-11-11, branch `feat/agent-board-responsive-cockpit`).**
 > The suite is now **448 tests / 448 pass / 0 fail / 0 skipped** (~2.6 s,
 > `node --test tests/`), including the artifact check that rebuilds
