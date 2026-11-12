@@ -21,7 +21,7 @@ const MODULES = [
   'src/contracts/model.js', 'src/contracts/agent-roles.js', 'src/supervisor/projection.js',
   'src/supervisor/super-orchestrator.js', 'src/board/view.js', 'src/board/hierarchy.js',
   'src/board/overview.js', 'src/board/interaction.js', 'src/client/ui/strings.js',
-  'src/client/ui/styles.js', 'src/client/ui/agent-bots-assets.js', 'src/client/ui/avatar.js',
+  'src/client/ui/styles.js', 'src/client/ui/select.js', 'src/client/ui/agent-bots-assets.js', 'src/client/ui/avatar.js',
   'src/client/ui/card.js', 'src/client/ui/hierarchy.js', 'src/client/ui/overview.js',
   'src/client/ui/superbar.js', 'src/client/ui/tree.js', 'src/client/ui/preview.js',
   'src/client/ui/inspector.js',

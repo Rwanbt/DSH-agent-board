@@ -47,7 +47,7 @@ function dabSuperControl(h, props) {
 const DAB_SUPER_PROJECTS_SHOWN = 8
 
 /** Inline project switches: the first thing an operator configures. */
-function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, onOpenProjects, onOpenSettings, needsProjects, globalLevel }) {
+function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, onOpenProjects, onOpenSettings, needsProjects, globalLevel, launchGranted }) {
   const shown = rows.slice(0, DAB_SUPER_PROJECTS_SHOWN)
   // Effective level = the most restrictive of global and project: say so when
   // the global ceiling silently caps an enabled project.
@@ -62,6 +62,11 @@ function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, o
         ? h('button', { type: 'button', className: 'dab-super-projects-capped', onClick: () => (onOpenSettings ?? onOpenProjects)?.() },
           dabT('superProjectsCapped', { level: dabLevelLabel(globalLevel) }))
         : null,
+      // Enabled projects but no permission to launch: the agent can plan, never act.
+      rows.some(row => row.enabled) && launchGranted === false
+        ? h('button', { type: 'button', className: 'dab-super-projects-warning', 'data-warning': 'launch', onClick: () => (onOpenSettings ?? onOpenProjects)?.() },
+          dabT('superProjectsNoLaunch'))
+        : null,
       h('button', { type: 'button', className: 'dab-super-projects-more', onClick: () => onOpenProjects?.() },
         extra > 0 ? dabT('superProjectsMore', { n: rows.length }) : dabT('superDetailsShort'))),
     h('ul', { className: 'dab-super-project-list' }, shown.map(row => h('li', {
@@ -75,13 +80,12 @@ function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, o
       onClick: () => onToggleProject?.(row.id, !row.enabled),
     }, h('span', { className: 'dab-super-project-name' }, row.title)),
     row.enabled
-      ? h('select', {
-        className: 'dab-select dab-super-project-level', value: row.level,
-        'aria-label': dabT('superProjectLevelOf', { project: row.title }),
-        title: dabLevelHint(row.level),
+      ? h(DabSelect, {
+        className: 'dab-super-project-level', value: row.level,
+        label: dabT('superProjectLevelOf', { project: row.title }),
         disabled: busy === true || typeof onSetProjectLevel !== 'function',
-        onChange: event => onSetProjectLevel?.(row.id, event?.target?.value),
-      }, DAB_AUTONOMY_LEVELS.map(level => h('option', { key: level, value: level, title: dabLevelHint(level) }, dabLevelOption(level))))
+        options: dabLevelOptions(), onChange: value => onSetProjectLevel?.(row.id, value),
+      })
       : null))))
 }
 
@@ -100,7 +104,6 @@ function DabSuperOrchestratorBarImpl({
   const visible = orchestrators.slice(0, 6)
   const extra = orchestrators.length - visible.length
   const projectCount = Number(totals?.projects) || 0
-  const modeLabel = mode === 'off' ? dabT('modeObserve') : (typeof dabModeLabel === 'function' ? dabModeLabel(mode) : null)
   const miniSize = compact === true ? 22 : 26
   const countText = (count, singular, plural) => (typeof dabCountText === 'function'
     ? dabCountText(count, singular, plural)
@@ -200,15 +203,18 @@ function DabSuperOrchestratorBarImpl({
   h('span', { className: 'dab-super-ident' },
     h('span', { className: 'dab-super-title' },
       dabT('superOrchestrator'),
-      h('span', { className: 'dab-super-state', 'data-status': workspace?.status ?? 'unknown' },
-        h('span', { className: 'dab-dot', 'data-tone': layerTone, 'aria-hidden': 'true' }),
-        h('span', { className: 'dab-super-state-text' }, layerStatusLabel)),
-      h('span', { className: 'dab-super-layer', title: dabT('supervisionLayer') }, dabT('supervision'))),
+      // The supervision-layer status duplicates the agent state when collapsed:
+      // it belongs to the opened card, next to the supervision details.
+      open === true
+        ? h('span', { className: 'dab-super-state', 'data-status': workspace?.status ?? 'unknown' },
+          h('span', { className: 'dab-dot', 'data-tone': layerTone, 'aria-hidden': 'true' }),
+          h('span', { className: 'dab-super-state-text' }, layerStatusLabel))
+        : null,
+      open === true ? h('span', { className: 'dab-super-layer', title: dabT('supervisionLayer') }, dabT('supervision')) : null),
     h('span', { className: 'dab-super-sub' },
       projectText,
       h('span', { className: 'dab-super-sep', 'aria-hidden': 'true' }, '·'),
-      h('span', { className: 'dab-super-orch-count' }, orchestratorsText),
-      modeLabel === null ? null : h('span', { className: 'dab-tag' }, `${dabT('supervisionMode')} : ${modeLabel}`))),
+      h('span', { className: 'dab-super-orch-count' }, orchestratorsText))),
   h('span', { className: 'dab-caret', 'aria-hidden': 'true' }, open ? '▾' : '▸')),
 
   // ---- Super Agent AI session: visually distinct from the layer above.
@@ -252,13 +258,13 @@ function DabSuperOrchestratorBarImpl({
   controls,
 
   open === true && Array.isArray(projectRows) && projectRows.length > 0
-    ? dabSuperProjects(h, { rows: projectRows, busy, onToggleProject, onSetProjectLevel, onOpenProjects: onOpenProjects ?? onOpenSuperagent, onOpenSettings, needsProjects, globalLevel: typeof mandate?.level === 'string' ? mandate.level : facts.level })
+    ? dabSuperProjects(h, { rows: projectRows, busy, onToggleProject, onSetProjectLevel, onOpenProjects: onOpenProjects ?? onOpenSuperagent, onOpenSettings, needsProjects, globalLevel: typeof mandate?.level === 'string' ? mandate.level : facts.level, launchGranted: mandate?.actions?.launch === true })
     : null,
 
   // Mini orchestrator avatars: real agents only. A project without a declared
   // orchestrator is not rendered as a fake avatar.
   orchestrators.length === 0
-    ? h('span', { className: 'dab-super-none' }, dabT('superNoOrchestrator'))
+    ? (open === true ? h('span', { className: 'dab-super-none' }, dabT('superNoOrchestrator')) : null)
     : h('span', { className: 'dab-super-orchs', role: 'group', 'aria-label': orchestratorsText },
       visible.map(entry => h('button', {
         key: entry.orchestrator.id,

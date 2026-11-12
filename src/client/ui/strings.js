@@ -302,11 +302,14 @@ const DAB_STRINGS = {
     superProjectsDriven: 'Projets pilotés',
     superModelProvider: 'Fournisseur',
     superModelCurrent: 'Modèle actuel',
+    superProviderNoModels: 'aucun modèle disponible',
+    superProjectsNoLaunch: 'La permission « Lancer une session » est désactivée : le Super Agent peut analyser mais ne démarrera aucun travail. Gérer les permissions →',
     superProjectsCapped: 'Le niveau global « {level} » limite tous les projets : rien ne sera lancé au-delà. Modifier le niveau global →',
     superModelName: 'Modèle',
     superModelEffort: 'Effort de raisonnement',
     superModelEffortDefault: 'Par défaut du modèle',
     superModelEffortNone: 'Ce modèle n’expose pas de niveau d’effort.',
+    superModelEffortLoading: 'Lecture des efforts disponibles…',
     superModelFallbackN: 'Secours {n}',
     superModelFallbackNone: 'Aucun',
     superModelSave: 'Enregistrer le modèle',
@@ -768,11 +771,14 @@ const DAB_STRINGS = {
     superProjectsDriven: 'Driven projects',
     superModelProvider: 'Provider',
     superModelCurrent: 'Current model',
+    superProviderNoModels: 'no model available',
+    superProjectsNoLaunch: 'The “Launch a session” permission is off: the Super Agent can analyse but will start no work. Manage permissions →',
     superProjectsCapped: 'The global level “{level}” caps every project: nothing runs beyond it. Change the global level →',
     superModelName: 'Model',
     superModelEffort: 'Reasoning effort',
     superModelEffortDefault: 'Model default',
     superModelEffortNone: 'This model exposes no effort levels.',
+    superModelEffortLoading: 'Reading available efforts…',
     superModelFallbackN: 'Fallback {n}',
     superModelFallbackNone: 'None',
     superModelSave: 'Save model',
@@ -1235,14 +1241,6 @@ const DAB_REASON_TEXT = {
 function dabLevelLabel(level) {
   if (typeof level !== 'string' || !/^L[0-4]$/.test(level)) return typeof level === 'string' ? level : ''
   return dabT(`levelName_${level}`)
-}
-
-/** Colour of a level, grey (observe) to violet (maximum autonomy). */
-const DAB_LEVEL_EMOJI = Object.freeze({ L0: '⚪', L1: '🔵', L2: '🟢', L3: '🟠', L4: '🟣' })
-
-/** Native <option> text cannot hold markup: the coloured circle is an emoji. */
-function dabLevelOption(level) {
-  return `${DAB_LEVEL_EMOJI[level] ?? '⚪'} ${dabLevelLabel(level)}`
 }
 
 /** Inline level: coloured dot + name, the hint as tooltip. */

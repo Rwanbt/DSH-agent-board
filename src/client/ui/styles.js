@@ -62,6 +62,13 @@ const DAB_CSS = `
 .dab-dd-opt[data-active="true"] { background: var(--dab-chip-fill); }
 .dab-dd-opt[aria-selected="true"] { font-weight: 500; }
 .dab-dd-check { margin-left: auto; color: var(--dsw-alias-label-secondary); }
+.dab-dd-opt-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.dab-dd-hint { font-size: 11px; line-height: 14px; color: var(--dsw-alias-label-secondary); white-space: normal; }
+.dab-dd > .dab-select { gap: 7px; }
+.dab-dd .dab-level-dot { width: 9px; height: 9px; }
+.dab-dd-opt .dab-level-dot { align-self: flex-start; margin-top: 4px; }
+.dab-dd-pop:has(.dab-dd-hint) { min-width: max(100%, 280px); }
+.dab-dd-pop[hidden] { display: none; }
 @media (pointer: coarse) { .dab-dd-opt { min-height: 40px; font-size: 15px; } }
 .dab-select option { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); }
 .dab-counters { display: inline-flex; align-items: center; gap: 10px; flex: none; }
@@ -686,13 +693,15 @@ const DAB_CSS = `
 .dab-super-projects-more { margin-left: auto; border: 0; background: transparent; padding: 2px 4px; font: inherit; font-size: 12px;
   color: var(--dsw-alias-label-secondary); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .dab-super-projects-more:hover { color: var(--dsw-alias-label-primary); }
-.dab-super-projects-capped { flex: 1 1 100%; order: 3; text-align: left; border: 0; border-radius: var(--dsw-radius-sm); padding: 7px 10px; cursor: pointer;
+.dab-super-projects-capped, .dab-super-projects-warning { flex: 1 1 100%; order: 3; text-align: left; border: 0; border-radius: var(--dsw-radius-sm); padding: 7px 10px; cursor: pointer;
   background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 14%, transparent); color: var(--dsw-alias-state-warn-primary); font: inherit; font-size: 12px; }
 .dab-super-project-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 6px 18px; }
 .dab-super-project { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; min-height: 34px; }
 .dab-super-project-toggle { min-width: 0; }
 .dab-super-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dab-super-project-level { flex: 0 0 auto; width: 168px; min-height: 28px; font-size: 12px; }
+.dab-super-project-level { flex: 0 0 auto; width: 176px; }
+.dab-super-project-level > .dab-select, .dab-sa-model-field .dab-dd, .dab-sa-model-field .dab-dd > .dab-select { width: 100%; }
+.dab-sa-model-field .dab-dd { display: flex; }
 .dab-super-project-toggle { flex: 1 1 auto; }
 .dab-super-project-toggle:focus-visible, .dab-super-projects-more:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 .dab-super-decisions { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 0 8px;
@@ -813,10 +822,10 @@ const DAB_CSS = `
 /* Autonomy level: coloured dot + name (grey observe -> violet maximum). */
 .dab-level { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .dab-level-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #9ca3af; }
-.dab-level[data-level="L1"] .dab-level-dot { background: #3b82f6; }
-.dab-level[data-level="L2"] .dab-level-dot { background: #22c55e; }
-.dab-level[data-level="L3"] .dab-level-dot { background: #f97316; }
-.dab-level[data-level="L4"] .dab-level-dot { background: #a855f7; }
+.dab-level[data-level="L1"] .dab-level-dot, .dab-level-dot[data-level="L1"] { background: #3b82f6; }
+.dab-level[data-level="L2"] .dab-level-dot, .dab-level-dot[data-level="L2"] { background: #22c55e; }
+.dab-level[data-level="L3"] .dab-level-dot, .dab-level-dot[data-level="L3"] { background: #f97316; }
+.dab-level[data-level="L4"] .dab-level-dot, .dab-level-dot[data-level="L4"] { background: #a855f7; }
 .dab-sa-sub .dab-level { padding: 0 7px; border-radius: 999px; background: var(--dab-chip-fill); line-height: 18px; }
 /* Model editor */
 .dab-sa-model-editor { display: flex; flex-direction: column; gap: 10px; }

@@ -34,7 +34,7 @@ const MODULES = [
   'src/board/overview.js',
   'src/board/interaction.js',
   'src/client/ui/strings.js',
-  'src/client/ui/styles.js',
+  'src/client/ui/styles.js', 'src/client/ui/select.js',
   'src/client/ui/agent-bots-assets.js',
   'src/client/ui/avatar.js',
   'src/client/ui/card.js',
@@ -244,10 +244,8 @@ test('desktop toolbar: one compact header, one filter row, existing controls pre
   const viewButtons = byTag(views, 'button')
   assert.deepEqual(viewButtons.map(button => textOf(button)), ['Overview', 'Projects', 'Hierarchy'])
   assert.equal(viewButtons[0].props['aria-pressed'], 'true')
-  // The three REAL supervision modes only.
-  const modeButtons = byTag(byClass(tree, 'dab-mode')[0], 'button')
-  assert.deepEqual(modeButtons.map(button => textOf(button)), ['Observe', 'Supervised', 'Autonomous'])
-  assert.equal(modeButtons[0].props['aria-pressed'], 'true')
+  // No global Observe/Supervised/Autonomous switch: autonomy is per project.
+  assert.equal(byClass(tree, 'dab-mode').length, 0)
   // Stop is never hidden, only disabled when nothing runs.
   const stop = byClass(tree, 'dab-stop')[0]
   assert.ok(stop !== undefined)
@@ -262,7 +260,7 @@ test('desktop toolbar: stop becomes actionable while an execution runs', () => {
 
 test('narrow toolbar: one-line header, stop reachable, no five-row stack', () => {
   const tree = render(cockpit.DabToolbar(toolbarProps({ narrow: true, canStop: true })))
-  // The mode segmented control moved into the menu (not rendered while closed).
+  // No global mode switch on mobile either.
   assert.equal(byClass(tree, 'dab-mode').length, 0)
   // The critical stop control stays in the header.
   assert.equal(byClass(tree, 'dab-stop').length, 1)
@@ -508,8 +506,15 @@ test('super bar: real layer, real orchestrators, no invented agent', () => {
   assert.equal(byClass(tree, 'dab-super').length, 1)
   assert.match(textOf(tree), /Super Orchestrator/)
   assert.equal(byClass(tree, 'dab-super-mascot').length, 1)
-  assert.match(textOf(tree), /Supervision/, 'the band says it is the supervision layer, not an agent')
-  assert.equal(byClass(tree, 'dab-super-layer').length, 1)
+  // Collapsed: the layer marker is not repeated next to the agent state; it
+  // appears with the supervision details once the card is open.
+  assert.equal(byClass(tree, 'dab-super-layer').length, 0)
+  const opened = render(cockpit.DabSuperOrchestratorBar({
+    workspace: hierarchy.workspace, totals: hierarchy.totals, projects: hierarchy.projects, orchestrators: hierarchy.orchestrators, mode: 'off',
+    open: true, onToggle: () => {}, onSelect: () => {}, compact: false,
+  }))
+  assert.equal(byClass(opened, 'dab-super-layer').length, 1)
+  assert.match(textOf(opened), /Supervision/, 'the opened band says it is the supervision layer, not an agent')
   // The body is always in the DOM for aria-controls, hidden while collapsed.
   const body = byClass(tree, 'dab-band-body')[0]
   assert.equal(body.props.hidden, true)
@@ -518,7 +523,8 @@ test('super bar: real layer, real orchestrators, no invented agent', () => {
   const minis = byClass(tree, 'dab-super-orch')
   const declared = hierarchy.orchestrators.length
   assert.equal(minis.length, Math.min(6, declared))
-  if (declared === 0) assert.match(textOf(tree), /No project orchestrator declared/)
+  // Collapsed: no empty-state sentence; the opened card says it.
+  if (declared === 0) assert.match(textOf(opened), /No project orchestrator declared/)
   assert.equal(counts.total, counts.running + counts.waiting + counts.unread + counts.failed + counts.interrupted + counts.provider_unavailable + counts.history)
 })
 
@@ -561,8 +567,8 @@ test('super bar: the AI session is a state distinct from the supervision layer',
     superagent, mandate, capabilities: null, stopped: false, busy: false,
     onStart: () => {}, onPause: () => {}, onStop: () => {}, onResume: () => {},
   }))
-  // The layer keeps its own marker; the AI session has its own chip.
-  assert.equal(byClass(tree, 'dab-super-layer').length, 1)
+  // Collapsed: no layer marker beside the agent chip (it lives in the opened card).
+  assert.equal(byClass(tree, 'dab-super-layer').length, 0)
   const session = byClass(tree, 'dab-super-ai')
   assert.equal(session.length, 1)
   assert.equal(session[0].props['data-session-active'], 'false')

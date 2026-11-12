@@ -363,6 +363,21 @@ function dabMakePage(store, ctx) {
         setBusy(false)
       }
     }
+    // Start / Resume: the per-project levels decide what may happen; the engine
+    // itself only needs to be ON (not 'off') and not under an operator Stop.
+    // 'autonomous' is the engine state where the mandate gate (levels, approvals,
+    // per-action grants) is the only authority.
+    const startEngineThen = async next => {
+      if (host.stoppedAt !== null && host.stoppedAt !== undefined) {
+        const cleared = await store.resume()
+        if (cleared?.ok !== true) return cleared
+      }
+      if (host.mode === 'off' || host.mode === 'supervised') {
+        const on = await store.setMode('autonomous')
+        if (on?.ok !== true) return on
+      }
+      return next()
+    }
     // Stable handlers for the band (it is memoized on its callbacks).
     const actRef = React.useRef(act)
     actRef.current = act
@@ -416,7 +431,7 @@ function dabMakePage(store, ctx) {
       capabilities,
       stopped: superContext.stopped,
       busy,
-      onStart: () => act('start', () => store.startSuperagent()),
+      onStart: () => act('start', () => startEngineThen(() => store.startSuperagent())),
       onPause: () => act('pause', () => store.pauseSuperagent()),
       // Stop is safe by design: stop board executions AND the AI session; the
       // first success is enough, the second result is reported only if it fails.
@@ -425,9 +440,9 @@ function dabMakePage(store, ctx) {
         const session = await store.stopSuperagent()
         return executions.ok || session.ok ? { ok: true } : session
       }),
-      // Reprendre clears the operator Stop (`/resume`) when stoppedAt is set,
-      // and resumes the session lifecycle otherwise.
-      onResume: () => act('resume', () => (superContext.stopped ? store.resume() : store.resumeSuperagent())),
+      // Reprendre is one gesture: clear the board Stop if any, turn the engine
+      // on, then resume (or restart) the Super Agent session.
+      onResume: () => act('resume', () => startEngineThen(() => store.resumeSuperagent())),
       onOpenSuperagent: openSuperagent,
       onOpenDecisions: openSuperagent,
       onOpenProjects: openSuperagentProjects,
@@ -492,7 +507,6 @@ function dabMakePage(store, ctx) {
       taskStateUnavailableReason: hierarchy.workspace.taskboard !== null && hierarchy.workspace.taskboard !== undefined && hierarchy.workspace.taskboard.available === false
         ? (typeof hierarchy.workspace.taskboard.reason === 'string' ? hierarchy.workspace.taskboard.reason : null)
         : null,
-      onMode: value => act('mode', () => store.setMode(value)),
       onStop: () => act('stop', () => store.stop()),
       onResume: () => act('resume', () => store.resume()),
       onRefresh: () => { void store.refreshHost(); void act('refresh', () => store.refreshHost()) },

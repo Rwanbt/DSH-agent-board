@@ -142,7 +142,12 @@ function dabSaSectionQ(h, key, title, quiet, ...children) {
 function dabSaMoment(value) {
   const ms = Number(value)
   if (!Number.isFinite(ms) || ms <= 0) return null
-  try { return new Date(ms).toISOString().slice(0, 16).replace('T', ' ') } catch { return null }
+  // Local wall-clock time (the ISO string was UTC: 18:06 shown for 19:06).
+  try {
+    const date = new Date(ms)
+    const pad = value => String(value).padStart(2, '0')
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  } catch { return null }
 }
 
 function dabAllProjectsConfirmValid(text) {
@@ -371,13 +376,12 @@ function DabSuperagentProjects({
           'aria-label': `${row.enabled ? dabT('superProjectDisable') : dabT('superProjectEnable')} : ${row.title}`,
           onClick: () => onToggleProject?.(row.id, !row.enabled),
         }, row.enabled ? dabT('superProjectEnabled') : dabT('superProjectDisabled')),
-        h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+        h('div', { className: 'dab-sa-field dab-sa-field-inline' },
           h('span', { className: 'dab-sa-field-label' }, dabT('superProjectLevel')),
-          h('select', {
-            className: 'dab-select dab-sa-level', value: row.level,
-            'aria-label': `${dabT('superProjectLevel')} : ${row.title}`,
-            onChange: event => onSetProjectLevel?.(row.id, event?.target?.value),
-          }, DAB_AUTONOMY_LEVELS.map(level => h('option', { key: level, value: level, title: dabLevelHint(level) }, dabLevelOption(level))))),
+          h(DabSelect, {
+            className: 'dab-sa-level', value: row.level, label: `${dabT('superProjectLevel')} : ${row.title}`,
+            options: dabLevelOptions(), onChange: value => onSetProjectLevel?.(row.id, value),
+          })),
         h('label', { className: 'dab-sa-field dab-sa-field-inline' },
           h('span', { className: 'dab-sa-field-label' }, dabT('superProjectPriority')),
           h('input', {
@@ -450,23 +454,21 @@ function DabDirectiveForm({ projects, busy, onAdd, initialText }) {
       onChange: event => setText(event?.target?.value ?? ''),
     })),
   h('div', { className: 'dab-sa-directive-row' },
-    h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+    h('div', { className: 'dab-sa-field dab-sa-field-inline' },
       h('span', { className: 'dab-sa-field-label' }, dabT('superDirectiveScope')),
-      h('select', {
-        className: 'dab-select dab-sa-directive-scope', value: scope, 'aria-label': dabT('superDirectiveScope'),
-        onChange: event => setScope(event?.target?.value === 'project' ? 'project' : 'global'),
-      },
-      h('option', { value: 'global' }, dabT('superDirectiveGlobal')),
-      h('option', { value: 'project' }, dabT('superDirectiveProjectScope')))),
+      h(DabSelect, {
+        className: 'dab-sa-directive-scope', value: scope, label: dabT('superDirectiveScope'),
+        options: [['global', dabT('superDirectiveGlobal')], ['project', dabT('superDirectiveProjectScope')]],
+        onChange: value => setScope(value === 'project' ? 'project' : 'global'),
+      })),
     scope === 'project'
-      ? h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+      ? h('div', { className: 'dab-sa-field dab-sa-field-inline' },
         h('span', { className: 'dab-sa-field-label' }, dabT('superDirectiveProject')),
-        h('select', {
-          className: 'dab-select dab-sa-directive-project', value: projectId, 'aria-label': dabT('superDirectiveProject'),
-          onChange: event => setProjectId(event?.target?.value ?? ''),
-        },
-        h('option', { value: '' }, dabT('superNotAvailable')),
-        options.map(project => h('option', { key: project.id, value: project.id }, project.title))))
+        h(DabSelect, {
+          className: 'dab-sa-directive-project', value: projectId, label: dabT('superDirectiveProject'),
+          options: [['', dabT('superModelChoose')], ...options.map(project => [project.id, project.title])],
+          onChange: value => setProjectId(value ?? ''),
+        }))
       : null,
     h('button', {
       type: 'submit', className: 'dab-btn dab-sa-directive-add', 'data-primary': 'true', disabled: busy === true || !valid,
@@ -541,7 +543,7 @@ function DabSuperagentModelEditor({ facts, models, busy, onSetModel, onModelInfo
   const providerModels = providers.find(entry => entry.id === provider)?.models ?? []
   const allRoutes = providers.flatMap(entry => (Array.isArray(entry.models) ? entry.models : []).map(candidate => ({ value: `${entry.id}/${candidate.id}`, label: `${entry.name ?? entry.id} · ${candidate.name ?? candidate.id}` })))
   const efforts = Array.isArray(info?.efforts) ? info.efforts : []
-  const field = (label, control) => h('label', { className: 'dab-sa-field dab-sa-model-field' }, h('span', { className: 'dab-sa-field-label' }, label), control)
+  const field = (label, control) => h('div', { className: 'dab-sa-field dab-sa-model-field' }, h('span', { className: 'dab-sa-field-label' }, label), control)
   if (models?.discovered !== true) {
     return h('div', { className: 'dab-sa-model-editor', 'data-discovered': 'false' },
       h('div', { className: 'dab-sa-model-row' },
@@ -570,26 +572,38 @@ function DabSuperagentModelEditor({ facts, models, busy, onSetModel, onModelInfo
     h('span', { className: 'dab-sa-field-label' }, dabT('superModelCurrent')),
     h('span', { className: 'dab-sa-model-primary' }, currentText)),
   h('div', { className: 'dab-sa-model-grid' },
-    field(dabT('superModelProvider'), h('select', {
-      className: 'dab-select dab-sa-model-provider', value: provider, 'aria-label': dabT('superModelProvider'),
-      onChange: event => { setProvider(event?.target?.value ?? ''); setModel(''); setEffort(''); setSaved(false) },
-    }, h('option', { value: '' }, dabT('superModelChoose')), providers.map(entry => h('option', { key: entry.id, value: entry.id }, String(entry.name ?? entry.id))))),
-    field(dabT('superModelName'), h('select', {
-      className: 'dab-select dab-sa-model-name', value: model, 'aria-label': dabT('superModelName'), disabled: provider === '',
-      onChange: event => { setModel(event?.target?.value ?? ''); setEffort(''); setSaved(false) },
-    }, h('option', { value: '' }, dabT('superModelChoose')), providerModels.map(entry => h('option', { key: entry.id, value: entry.id }, String(entry.name ?? entry.id))))),
+    field(dabT('superModelProvider'), h(DabSelect, {
+      className: 'dab-sa-model-provider', value: provider, label: dabT('superModelProvider'),
+      options: [['', dabT('superModelChoose')], ...providers.map(entry => [entry.id,
+        Array.isArray(entry.models) && entry.models.length === 0
+          ? `${String(entry.name ?? entry.id)} — ${dabT('superProviderNoModels')}`
+          : String(entry.name ?? entry.id),
+        typeof entry.error === 'string' ? { hint: entry.error } : undefined])],
+      onChange: value => { setProvider(value ?? ''); setModel(''); setEffort(''); setSaved(false) },
+    })),
+    field(dabT('superModelName'), h(DabSelect, {
+      className: 'dab-sa-model-name', value: model, label: dabT('superModelName'), disabled: provider === '',
+      options: [['', dabT('superModelChoose')], ...providerModels.map(entry => [entry.id, String(entry.name ?? entry.id)])],
+      onChange: value => { setModel(value ?? ''); setEffort(''); setSaved(false) },
+    })),
     field(dabT('superModelEffort'), efforts.length === 0
-      ? h('span', { className: 'dab-muted dab-sa-model-effort-none' }, valid ? dabT('superModelEffortNone') : '—')
-      : h('select', {
-        className: 'dab-select dab-sa-model-effort', value: effort, 'aria-label': dabT('superModelEffort'),
-        onChange: event => { setEffort(event?.target?.value ?? ''); setSaved(false) },
-      }, h('option', { value: '' }, `${dabT('superModelEffortDefault')}${typeof info?.defaultEffort === 'string' ? ` (${efforts.find(entry => entry.id === info.defaultEffort)?.name ?? info.defaultEffort})` : ''}`),
-      efforts.map(entry => h('option', { key: entry.id, value: entry.id, title: entry.description ?? undefined }, String(entry.name ?? entry.id))))),
-    [0, 1].map(index => field(dabT('superModelFallbackN', { n: index + 1 }), h('select', {
-      key: `fb-${index}`, className: 'dab-select dab-sa-model-fallback', value: fallbacks[index], 'aria-label': dabT('superModelFallbackN', { n: index + 1 }),
-      onChange: event => { const next = [...fallbacks]; next[index] = event?.target?.value ?? ''; setFallbacks(next); setSaved(false) },
-    }, h('option', { value: '' }, dabT('superModelFallbackNone')),
-    allRoutes.filter(route => route.value !== `${provider}/${model}`).map(route => h('option', { key: route.value, value: route.value }, route.label)))))),
+      ? h('span', { className: 'dab-muted dab-sa-model-effort-none', title: typeof info?.reason === 'string' ? info.reason : undefined },
+        !valid ? '—' : info === null ? dabT('superModelEffortLoading') : info.reason === 'no_reasoning_efforts' || info.reason === null ? dabT('superModelEffortNone') : dabReasonText(String(info.reason)))
+      : h(DabSelect, {
+        className: 'dab-sa-model-effort', value: effort, label: dabT('superModelEffort'),
+        options: [
+          ['', `${dabT('superModelEffortDefault')}${typeof info?.defaultEffort === 'string' ? ` (${efforts.find(entry => entry.id === info.defaultEffort)?.name ?? info.defaultEffort})` : ''}`],
+          ...efforts.map(entry => [entry.id, String(entry.name ?? entry.id), typeof entry.description === 'string' ? { hint: entry.description } : undefined]),
+        ],
+        onChange: value => { setEffort(value ?? ''); setSaved(false) },
+      })),
+    [0, 1].map(index => h('div', { key: `fb-${index}`, className: 'dab-sa-field dab-sa-model-field' },
+      h('span', { className: 'dab-sa-field-label' }, dabT('superModelFallbackN', { n: index + 1 })),
+      h(DabSelect, {
+        className: 'dab-sa-model-fallback', value: fallbacks[index], label: dabT('superModelFallbackN', { n: index + 1 }),
+        options: [['', dabT('superModelFallbackNone')], ...allRoutes.filter(route => route.value !== `${provider}/${model}`).map(route => [route.value, route.label])],
+        onChange: value => { const next = [...fallbacks]; next[index] = value ?? ''; setFallbacks(next); setSaved(false) },
+      })))),
   h('div', { className: 'dab-sa-model-actions' },
     h('span', { className: 'dab-muted' }, saved ? dabT('superModelSaved') : ''),
     h('button', { type: 'submit', className: 'dab-btn dab-sa-model-save', 'data-primary': 'true', disabled: busy === true || !valid }, dabT('superModelSave'))))
@@ -621,12 +635,12 @@ function DabSuperagentSettings({
     dabSaSection(h, 'model', dabT('superSettingsModel'),
       h(DabSuperagentModelEditor, { key: `${facts.modelText ?? ''}`, facts, models, busy, onSetModel, onModelInfo })),
     dabSaSection(h, 'level', dabT('superSettingsLevel'),
-      h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+      h('div', { className: 'dab-sa-field dab-sa-field-inline' },
         h('span', { className: 'dab-sa-field-label' }, dabT('superSettingsGlobalLevel')),
-        h('select', {
-          className: 'dab-select dab-sa-global-level', value: level, 'aria-label': dabT('superSettingsGlobalLevel'),
-          onChange: event => onSetLevel?.(event?.target?.value),
-        }, DAB_AUTONOMY_LEVELS.map(value => h('option', { key: value, value, title: dabLevelHint(value) }, dabLevelOption(value))))),
+        h(DabSelect, {
+          className: 'dab-sa-global-level', value: level, label: dabT('superSettingsGlobalLevel'),
+          options: dabLevelOptions(), onChange: value => onSetLevel?.(value),
+        })),
       h('div', { className: 'dab-muted dab-sa-level-hint' }, dabLevelHint(level))),
     dabSaSection(h, 'budget', dabT('superSettingsBudget'),
       budget === null
