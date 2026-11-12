@@ -353,10 +353,11 @@ Règles : Bearer obligatoire, throw jamais (erreurs normalisées), timeout via
 Lecture (issues/PR/checks) toujours possible si un dépôt est configuré. Écritures
 (`createIssue`, `commentIssue`, `openPullRequest`) uniquement derrière **deux murs** :
 `allowGithubWrites: true` **et** `mandate.actions.<action>` pour un projet sélectionné,
-via `PolicyEngine`. Chaque écriture exige un `idempotencyKey`, embarque un marqueur
-`<!-- agent-board:id:... -->` et un cache process-local (la liste GitHub est à cohérence
-différée). **Aucune méthode merge, push de branche protégée ou suppression** : ces
-actions critiques ne sont pas implémentées.
+via `PolicyEngine`. Chaque écriture exige un `idempotencyKey` (jeu de caractères strict),
+**namespacé par projet** par l'hôte ; les appels concurrents avec la même clé sont
+**coalescés** (un seul POST) et un marqueur `<!-- agent-board:id:... -->` est embarqué
+dans le corps (recherche bornée + fallback après redémarrage). **Aucune méthode merge,
+push de branche protégée ou suppression** : ces actions critiques ne sont pas implémentées.
 
 ### 4.3 Autres forges
 

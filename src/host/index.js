@@ -3827,12 +3827,16 @@ export function apply(ctx, config = {}) {
               return { ok: true, adapter, projectId }
             }
             const forgeStatus = code => (code === 'invalid_input' ? 400 : code === 'rate_limited' ? 429 : code === 'credentials_rejected' ? 502 : 409)
+            // Keys are namespaced by project: the same caller key in another
+            // project must never reuse (or dedupe against) a foreign object.
+            const composeKey = (projectId, raw, fallback) => {
+              const base = typeof raw === 'string' && raw !== '' ? raw : fallback
+              return typeof base === 'string' && base !== '' ? `${projectId}:${base}` : ''
+            }
             if (route === '/forge/issue') {
               const ready = forgeReady('create_task')
               if (!ready.ok) return sendJson(res, ready.error === 'projectId_required' ? 400 : 409, { ok: false, error: ready.error })
-              const idempotencyKey = typeof body.idempotencyKey === 'string' && body.idempotencyKey !== ''
-                ? body.idempotencyKey
-                : (typeof body.taskId === 'string' && body.taskId !== '' ? `task:${body.taskId}:issue` : '')
+              const idempotencyKey = composeKey(ready.projectId, body.idempotencyKey, typeof body.taskId === 'string' && body.taskId !== '' ? `task:${body.taskId}:issue` : '')
               if (idempotencyKey === '') return sendJson(res, 400, { ok: false, error: 'idempotencyKey_required' })
               try {
                 const value = await ready.adapter.createIssue({ title: body.title, body: body.body, labels: body.labels }, { idempotencyKey })
@@ -3847,9 +3851,8 @@ export function apply(ctx, config = {}) {
             if (forgeComment !== null) {
               const ready = forgeReady('comment')
               if (!ready.ok) return sendJson(res, ready.error === 'projectId_required' ? 400 : 409, { ok: false, error: ready.error })
-              const idempotencyKey = typeof body.idempotencyKey === 'string' && body.idempotencyKey !== ''
-                ? body.idempotencyKey
-                : `comment:${decodeURIComponent(forgeComment[1])}:${newId('k')}`
+              const idempotencyKey = composeKey(ready.projectId, body.idempotencyKey, typeof body.taskId === 'string' && body.taskId !== '' ? `task:${body.taskId}:comment` : '')
+              if (idempotencyKey === '') return sendJson(res, 400, { ok: false, error: 'idempotencyKey_required' })
               try {
                 const value = await ready.adapter.commentIssue(decodeURIComponent(forgeComment[1]), body.body, { idempotencyKey })
                 audit({ type: value.created ? 'forge_comment_created' : 'forge_comment_reused', at: Date.now(), projectId: ready.projectId, number: String(forgeComment[1]), idempotencyKey })
@@ -3862,9 +3865,7 @@ export function apply(ctx, config = {}) {
             if (route === '/forge/pr') {
               const ready = forgeReady('open_pr')
               if (!ready.ok) return sendJson(res, ready.error === 'projectId_required' ? 400 : 409, { ok: false, error: ready.error })
-              const idempotencyKey = typeof body.idempotencyKey === 'string' && body.idempotencyKey !== ''
-                ? body.idempotencyKey
-                : (typeof body.head === 'string' ? `pr:${body.head}` : '')
+              const idempotencyKey = composeKey(ready.projectId, body.idempotencyKey, typeof body.head === 'string' ? `pr:${body.head}` : '')
               if (idempotencyKey === '') return sendJson(res, 400, { ok: false, error: 'idempotencyKey_required' })
               try {
                 const value = await ready.adapter.openPullRequest({ title: body.title, body: body.body, head: body.head, base: body.base }, { idempotencyKey })

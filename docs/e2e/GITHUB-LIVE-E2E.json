@@ -1,5 +1,5 @@
 {
-  "startedAt": "2026-11-12T08:29:02.923Z",
+  "startedAt": "2026-11-12T08:40:48.515Z",
   "repository": "Rwanbt/agent-board-e2e-disposable",
   "adapterValidatedLive": true,
   "assertions": [
@@ -16,7 +16,7 @@
     {
       "name": "1. a real issue was created",
       "ok": true,
-      "detail": "#4"
+      "detail": "#6"
     },
     {
       "name": "2. re-creating with the same idempotency key returns the SAME issue",
@@ -34,14 +34,14 @@
       "detail": ""
     },
     {
-      "name": "5. a disposable branch with one commit exists",
+      "name": "5. a disposable branch and its commit exist",
       "ok": true,
-      "detail": "e2e/agent-board-20261112082902"
+      "detail": "e2e/agent-board-20261112084048"
     },
     {
       "name": "6. a real pull request was opened",
       "ok": true,
-      "detail": "#5"
+      "detail": "#7"
     },
     {
       "name": "7. the same head branch does not open a second PR",
@@ -51,7 +51,7 @@
     {
       "name": "8. CI checks are readable for the branch head",
       "ok": true,
-      "detail": "total=0"
+      "detail": "total=0 (ciConfigured=false)"
     },
     {
       "name": "9. the adapter exposes no merge method",
@@ -61,50 +61,61 @@
   ],
   "observed": {
     "issue": {
-      "number": "4",
-      "url": "https://github.com/Rwanbt/agent-board-e2e-disposable/issues/4",
+      "number": "6",
+      "url": "https://github.com/Rwanbt/agent-board-e2e-disposable/issues/6",
       "created": true
     },
     "issueDuplicate": {
-      "number": "4",
+      "number": "6",
       "created": false,
       "idempotent": true
     },
     "comment": {
-      "id": "6818683336",
+      "id": "6818909623",
       "created": true
     },
     "branch": {
-      "name": "e2e/agent-board-20261112082902",
-      "base": "main"
+      "name": "e2e/agent-board-20261112084048",
+      "base": "main",
+      "headSha": "35d67c58978a9e77586347cfb492d1707ab24021",
+      "fileSha": "b5f04ecf7114950fd85a8c8f9389c7c31e7918d3"
     },
     "pullRequest": {
-      "number": "5",
-      "url": "https://github.com/Rwanbt/agent-board-e2e-disposable/pull/5",
+      "number": "7",
+      "url": "https://github.com/Rwanbt/agent-board-e2e-disposable/pull/7",
       "created": true,
-      "head": "e2e/agent-board-20261112082902",
+      "head": "e2e/agent-board-20261112084048",
       "base": "main"
     },
     "checks": {
       "total": 0,
+      "ciConfigured": false,
       "runs": []
     }
   },
-  "finishedAt": "2026-11-12T08:29:08.595Z",
-  "ok": true,
   "cleanup": {
+    "note": "This script never deletes anything. Close the objects and delete the disposable repository manually.",
+    "commands": [
+      "gh pr close <pr-number> -R Rwanbt/agent-board-e2e-disposable --delete-branch",
+      "gh issue close <issue-number> -R Rwanbt/agent-board-e2e-disposable",
+      "gh repo delete Rwanbt/agent-board-e2e-disposable --yes   # requires: gh auth refresh -h github.com -s delete_repo"
+    ],
     "closedPullRequests": [
+      7,
       5,
       3
     ],
     "closedIssues": [
       1,
       2,
-      4
+      4,
+      6
     ],
     "repository": "Rwanbt/agent-board-e2e-disposable",
     "state": "archived (private)",
     "deletion": "blocked: gh token lacks delete_repo scope; operator command: gh auth refresh -h github.com -s delete_repo ; gh repo delete Rwanbt/agent-board-e2e-disposable --yes",
-    "at": "2026-11-12T08:30:07.430Z"
-  }
+    "at": "2026-11-12T08:41:12.279Z"
+  },
+  "finishedAt": "2026-11-12T08:40:55.362Z",
+  "ok": true
 }

@@ -24,6 +24,9 @@ const PER_PAGE = 50
 const MAX_DEDUPE_ITEMS = 100
 const SAFE_BRANCH = /^[A-Za-z0-9._/-]{1,120}$/
 const SAFE_REPO = /^[^/\s]+\/[^/\s]+$/
+// Idempotency keys are namespaced by the host (`<projectId>:<callerKey>`), so the
+// allowed set is deliberately narrow: no whitespace, no `<>`, no quotes.
+const SAFE_KEY = /^[A-Za-z0-9._:/-]{1,200}$/
 
 /** `Link: <...>; rel="next"` -> the next URL, or null. */
 export function nextLinkOf(headerValue) {
@@ -35,9 +38,16 @@ export function nextLinkOf(headerValue) {
   return null
 }
 
-/** The idempotency marker embedded in an issue body or a comment. */
+/**
+ * The idempotency marker embedded in an issue/PR body or a comment. The key is
+ * validated, so a hostile value cannot close the HTML comment and forge a second
+ * marker (`k --> <b>` is refused, not escaped into an ambiguous document).
+ */
 export function markerOf(idempotencyKey) {
-  return `<!-- agent-board:id:${String(idempotencyKey)} -->`
+  if (typeof idempotencyKey !== 'string' || !SAFE_KEY.test(idempotencyKey)) {
+    throw new AdapterError('github: invalid idempotencyKey', { code: 'invalid_input', adapterId: 'github' })
+  }
+  return `<!-- agent-board:id:${idempotencyKey} -->`
 }
 
 /**
@@ -53,8 +63,28 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
   const owner = enabled ? String(repository).split('/')[0] : null
   // The forge list endpoints are eventually consistent: an immediate retry can
   // miss a just-created marker. The in-process cache makes same-run retries
-  // exact, while the embedded marker still protects a retry after a restart.
-  const idempotency = { issues: new Map(), comments: new Map(), pulls: new Map() }
+  // exact, and `inFlight` makes CONCURRENT retries share one request. The
+  // embedded marker still protects a retry after a restart.
+  const idempotency = { issues: new Map(), comments: new Map(), pulls: new Map(), inFlight: new Map() }
+
+  /**
+   * Run `factory` exactly once per key, even if several callers await it
+   * concurrently. A rejection is shared too (the retry policy is the caller's).
+   */
+  async function once(key, factory) {
+    const running = idempotency.inFlight.get(key)
+    if (running !== undefined) {
+      // A concurrent caller shares the leader's request but reports the retry
+      // semantics ("not created by me").
+      const shared = await running
+      return { ...shared, created: false, idempotent: true }
+    }
+    const promise = Promise.resolve().then(factory).finally(() => {
+      idempotency.inFlight.delete(key)
+    })
+    idempotency.inFlight.set(key, promise)
+    return promise
+  }
 
   function headerOf(response, name) {
     try {
@@ -142,7 +172,20 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
   async function findIssueByMarker(marker) {
     const { body } = await request(`${API}/repos/${repository}/issues?state=all&per_page=${MAX_DEDUPE_ITEMS}`)
     const list = Array.isArray(body) ? body : []
-    return list.find(entry => typeof entry?.body === 'string' && entry.body.includes(marker)) ?? null
+    const found = list.find(entry => typeof entry?.body === 'string' && entry.body.includes(marker))
+    if (found !== undefined) return found
+    // The list is bounded to one page and eventually consistent. After a restart
+    // (empty in-process cache) the marker may be older than that page, so one
+    // bounded search request is the fallback. A failure here returns null (the
+    // caller may then create; the marker is still the durable protection).
+    try {
+      const query = encodeURIComponent(`repo:${repository} in:body "${marker}"`)
+      const { body: searched } = await request(`${API}/search/issues?q=${query}&per_page=10`)
+      const items = Array.isArray(searched?.items) ? searched.items : []
+      return items.find(entry => typeof entry?.body === 'string' && entry.body.includes(marker)) ?? null
+    } catch {
+      return null
+    }
   }
 
   async function findCommentByMarker(number, marker) {
@@ -155,6 +198,67 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
     const { body } = await request(`${API}/repos/${repository}/pulls?state=open&head=${encodeURIComponent(`${owner}:${head}`)}`)
     const list = Array.isArray(body) ? body : []
     return list[0] ?? null
+  }
+
+  // ---------------------------------------------------------------- writes
+  // Each write is executed at most once per idempotency key, even under
+  // concurrent calls, and its result is cached for the process lifetime.
+
+  async function createIssueOnce({ title, body = '', labels = [] }, idempotencyKey) {
+    const marker = markerOf(idempotencyKey)
+    const cached = idempotency.issues.get(idempotencyKey)
+    if (cached !== undefined) return { issue: cached, created: false, idempotent: true }
+    const existing = await findIssueByMarker(marker)
+    if (existing !== null) {
+      const issue = normalizeIssue(existing)
+      idempotency.issues.set(idempotencyKey, issue)
+      return { issue, created: false, idempotent: true }
+    }
+    const payload = { title: String(title).slice(0, 240), body: `${String(body).slice(0, 60_000)}\n\n${marker}`.trim() }
+    if (Array.isArray(labels) && labels.length > 0) payload.labels = labels.filter(label => typeof label === 'string').slice(0, 10)
+    const { body: created } = await request(`${API}/repos/${repository}/issues`, { method: 'POST', body: payload })
+    const issue = normalizeIssue(created)
+    idempotency.issues.set(idempotencyKey, issue)
+    return { issue, created: true, idempotent: false }
+  }
+
+  async function commentIssueOnce(number, body, idempotencyKey) {
+    const marker = markerOf(idempotencyKey)
+    const cacheKey = `${number}:${idempotencyKey}`
+    const cached = idempotency.comments.get(cacheKey)
+    if (cached !== undefined) return { comment: cached, created: false, idempotent: true }
+    const existing = await findCommentByMarker(number, marker)
+    if (existing !== null) {
+      const comment = { id: String(existing.id), url: existing.html_url ?? null }
+      idempotency.comments.set(cacheKey, comment)
+      return { comment, created: false, idempotent: true }
+    }
+    const { body: created } = await request(`${API}/repos/${repository}/issues/${encodeURIComponent(String(number))}/comments`, {
+      method: 'POST',
+      body: { body: `${String(body).slice(0, 60_000)}\n\n${marker}`.trim() },
+    })
+    const comment = { id: String(created?.id ?? ''), url: created?.html_url ?? null }
+    idempotency.comments.set(cacheKey, comment)
+    return { comment, created: true, idempotent: false }
+  }
+
+  async function openPullOnce({ title, body = '', head, base }, idempotencyKey) {
+    const marker = markerOf(idempotencyKey)
+    const cached = idempotency.pulls.get(head)
+    if (cached !== undefined) return { pull: cached, created: false, idempotent: true }
+    const existing = await findOpenPull(head)
+    if (existing !== null) {
+      const pull = normalizePull(existing)
+      idempotency.pulls.set(head, pull)
+      return { pull, created: false, idempotent: true }
+    }
+    const { body: created } = await request(`${API}/repos/${repository}/pulls`, {
+      method: 'POST',
+      body: { title: String(title ?? '').slice(0, 240), head, base, body: `${String(body).slice(0, 60_000)}\n\n${marker}`.trim() },
+    })
+    const pull = normalizePull(created)
+    idempotency.pulls.set(head, pull)
+    return { pull, created: true, idempotent: false }
   }
 
   return defineAdapter({
@@ -206,72 +310,35 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
      * Create an issue. `idempotencyKey` is required and embedded as a marker: a
      * retry returns the SAME issue instead of opening a duplicate.
      */
-    async createIssue({ title, body = '', labels = [] } = {}, { idempotencyKey } = {}) {
+    async createIssue(payload = {}, { idempotencyKey } = {}) {
       requireWrites('createIssue')
-      if (typeof title !== 'string' || title.trim() === '') throw new AdapterError('github: title is required', { code: 'invalid_input', adapterId: 'github' })
+      if (typeof payload?.title !== 'string' || payload.title.trim() === '') throw new AdapterError('github: title is required', { code: 'invalid_input', adapterId: 'github' })
       if (typeof idempotencyKey !== 'string' || idempotencyKey === '') throw new AdapterError('github: idempotencyKey is required', { code: 'invalid_input', adapterId: 'github' })
-      const marker = markerOf(idempotencyKey)
-      const cached = idempotency.issues.get(idempotencyKey)
-      if (cached !== undefined) return { issue: cached, created: false, idempotent: true }
-      const existing = await findIssueByMarker(marker)
-      if (existing !== null) {
-        const issue = normalizeIssue(existing)
-        idempotency.issues.set(idempotencyKey, issue)
-        return { issue, created: false, idempotent: true }
-      }
-      const payload = { title: String(title).slice(0, 240), body: `${String(body).slice(0, 60_000)}\n\n${marker}`.trim() }
-      if (Array.isArray(labels) && labels.length > 0) payload.labels = labels.filter(label => typeof label === 'string').slice(0, 10)
-      const { body: created } = await request(`${API}/repos/${repository}/issues`, { method: 'POST', body: payload })
-      const issue = normalizeIssue(created)
-      idempotency.issues.set(idempotencyKey, issue)
-      return { issue, created: true, idempotent: false }
+      markerOf(idempotencyKey) // validates the key before any request
+      return once(`issue:${idempotencyKey}`, () => createIssueOnce(payload, idempotencyKey))
     },
     /** Comment an issue/PR. Idempotent through the same marker mechanism. */
     async commentIssue(number, body = '', { idempotencyKey } = {}) {
       requireWrites('commentIssue')
       if (typeof idempotencyKey !== 'string' || idempotencyKey === '') throw new AdapterError('github: idempotencyKey is required', { code: 'invalid_input', adapterId: 'github' })
-      const marker = markerOf(idempotencyKey)
-      const cacheKey = `${number}:${idempotencyKey}`
-      const cached = idempotency.comments.get(cacheKey)
-      if (cached !== undefined) return { comment: cached, created: false, idempotent: true }
-      const existing = await findCommentByMarker(number, marker)
-      if (existing !== null) {
-        const comment = { id: String(existing.id), url: existing.html_url ?? null }
-        idempotency.comments.set(cacheKey, comment)
-        return { comment, created: false, idempotent: true }
-      }
-      const { body: created } = await request(`${API}/repos/${repository}/issues/${encodeURIComponent(String(number))}/comments`, {
-        method: 'POST',
-        body: { body: `${String(body).slice(0, 60_000)}\n\n${marker}`.trim() },
-      })
-      const comment = { id: String(created?.id ?? ''), url: created?.html_url ?? null }
-      idempotency.comments.set(cacheKey, comment)
-      return { comment, created: true, idempotent: false }
+      markerOf(idempotencyKey)
+      return once(`comment:${number}:${idempotencyKey}`, () => commentIssueOnce(number, body, idempotencyKey))
     },
     /**
      * Open a pull request. Never merges. A retry for the same head branch
      * returns the already-open pull request instead of creating a second one.
      */
-    async openPullRequest({ title, body = '', head, base } = {}, { idempotencyKey } = {}) {
+    async openPullRequest(payload = {}, { idempotencyKey } = {}) {
       requireWrites('openPullRequest')
       if (typeof idempotencyKey !== 'string' || idempotencyKey === '') throw new AdapterError('github: idempotencyKey is required', { code: 'invalid_input', adapterId: 'github' })
+      const head = payload?.head
+      const base = payload?.base
       if (typeof head !== 'string' || !SAFE_BRANCH.test(head)) throw new AdapterError('github: invalid head branch', { code: 'invalid_input', adapterId: 'github' })
       if (typeof base !== 'string' || !SAFE_BRANCH.test(base)) throw new AdapterError('github: invalid base branch', { code: 'invalid_input', adapterId: 'github' })
-      const cached = idempotency.pulls.get(head)
-      if (cached !== undefined) return { pull: cached, created: false, idempotent: true }
-      const existing = await findOpenPull(head)
-      if (existing !== null) {
-        const pull = normalizePull(existing)
-        idempotency.pulls.set(head, pull)
-        return { pull, created: false, idempotent: true }
-      }
-      const { body: created } = await request(`${API}/repos/${repository}/pulls`, {
-        method: 'POST',
-        body: { title: String(title ?? '').slice(0, 240), head, base, body: String(body).slice(0, 60_000) },
-      })
-      const pull = normalizePull(created)
-      idempotency.pulls.set(head, pull)
-      return { pull, created: true, idempotent: false }
+      markerOf(idempotencyKey)
+      // One open PR per head branch: the in-flight key is the branch, so two
+      // concurrent callers cannot both pass the open-PR lookup.
+      return once(`pull:${head}`, () => openPullOnce(payload, idempotencyKey))
     },
     // Contract-named aliases: `defineAdapter` validates a declared capability
     // against a method of the same name. They delegate to the explicit methods.

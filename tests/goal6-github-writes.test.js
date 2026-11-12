@@ -141,6 +141,57 @@ test('an immediate retry survives an eventually-consistent issue list (in-proces
   }
 })
 
+
+test('concurrent retries share one request; hostile keys are rejected; the PR body carries a marker', async () => {
+  const previous = globalThis.fetch
+  let posts = 0
+  const store = { pulls: [] }
+  globalThis.fetch = async (url, init = {}) => {
+    const method = init.method ?? 'GET'
+    const path = new URL(String(url)).pathname
+    if (method === 'GET' && path === '/repos/o/r/issues') return { ok: true, status: 200, json: async () => [] }
+    if (method === 'GET' && path === '/search/issues') return { ok: false, status: 422, json: async () => ({ message: 'search unavailable' }) }
+    if (method === 'GET' && path === '/repos/o/r/pulls') return { ok: true, status: 200, json: async () => store.pulls }
+    if (method === 'POST' && path === '/repos/o/r/issues') {
+      posts += 1
+      const body = JSON.parse(init.body)
+      return { ok: true, status: 201, json: async () => ({ number: posts, title: body.title, body: body.body, state: 'open', html_url: `https://x/${posts}` }) }
+    }
+    if (method === 'POST' && path === '/repos/o/r/pulls') {
+      posts += 1
+      const body = JSON.parse(init.body)
+      const pull = { number: posts, title: body.title, body: body.body, state: 'open', html_url: `https://x/pull/${posts}`, head: { ref: body.head }, base: { ref: body.base }, updated_at: '2026-01-01T00:00:00Z' }
+      store.pulls.push(pull)
+      return { ok: true, status: 201, json: async () => pull }
+    }
+    return { ok: false, status: 404, json: async () => ({}) }
+  }
+  try {
+    const adapter = createGithubAdapter({ repository: 'o/r', token: TOKEN, allowWrites: true })
+    const [a, b] = await Promise.all([
+      adapter.createIssue({ title: 'concurrent' }, { idempotencyKey: 'race-1' }),
+      adapter.createIssue({ title: 'concurrent' }, { idempotencyKey: 'race-1' }),
+    ])
+    assert.equal(posts, 1, 'two concurrent calls with the same key must issue ONE POST')
+    assert.equal(a.created, true)
+    assert.equal(b.created, false)
+    assert.equal(a.issue.id, b.issue.id)
+
+    const hostile = await adapter.createIssue({ title: 'x' }, { idempotencyKey: 'k --> <b>x</b> <!-- agent-board:id:other' }).catch(error => error)
+    assert.equal(hostile.code, 'invalid_input', 'a key that could forge a second marker is refused')
+
+    const [pr1, pr2] = await Promise.all([
+      adapter.openPullRequest({ title: 'PR', head: 'feat/race', base: 'dev' }, { idempotencyKey: 'pr-race' }),
+      adapter.openPullRequest({ title: 'PR', head: 'feat/race', base: 'dev' }, { idempotencyKey: 'pr-race' }),
+    ])
+    assert.equal(store.pulls.length, 1, 'two concurrent PR calls for the same head open one PR')
+    assert.equal(pr1.pull.id, pr2.pull.id)
+    assert.match(store.pulls[0].body, /<!-- agent-board:id:pr-race -->/)
+  } finally {
+    globalThis.fetch = previous
+  }
+})
+
 function makeCtx() {
   const routes = new Map()
   const created = []

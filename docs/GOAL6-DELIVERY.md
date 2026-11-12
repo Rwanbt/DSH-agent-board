@@ -6,7 +6,7 @@
 - **PR #3** (empilée, non fusionnée) : https://github.com/Rwanbt/DSH-agent-board/pull/3 → base `feat/agent-board-responsive-cockpit`
 - Dépôt Agent Board : `Rwanbt/DSH-agent-board`
 - Dépôt Task Board : `Rwanbt/dsh-taskboard`, branche `feat/universal-sync`, HEAD `e6aaece`, version **0.12.0**
-- Suite Agent Board : **567 / 567 tests passent**, 0 échec (`node --test tests/`)
+- Suite Agent Board : **568 / 568 tests passent**, 0 échec (`node --test tests/`)
 - Bundle client reconstruit : `src/client.js` (603 799 octets, 23 modules)
 - E2E hôte réel : **scénarios 0, a, b, c verts** (`node scripts/e2e/run-e2e.mjs`)
 
@@ -47,8 +47,10 @@ limites de la section 10. Il **ne doit pas** être annoncé « GitHub validé en
 | `120748c` | `fix(superagent)` : cycles concurrents coalescés, backoff exponentiel après échec, réveils publiés |
 | `1ec2ddb` | `test(e2e)` : preuves régénérées après les correctifs de robustesse |
 | `e527789` | `fix(goal6)` : correctifs de la revue indépendante (P0 handoff, approbation single-use, capacités, schéma inconnu, équité, cadence, UI, modèle/budget projet) |
+| `41f9948` | `fix(goal6)` : deux P2 résiduels (retry fantôme, dry-run/Settings vs capacités) + test de normalisation `usedAt` |
 | `f9caab5` | `docs(goal6)` : rapport, limites, installation/rollback, captures |
 | `f5a7193` | `docs(goal6)` : branche poussée, PR #3, preuve de lecture GitHub réelle |
+| `4a82e20` | `feat(forge)` : écritures GitHub opt-in idempotentes, validées en live sur dépôt jetable (issue/commentaire/PR/checks) |
 
 Aucune fusion sur `dev`/`main`, aucun commit dans un dépôt de projet réel, aucun commit
 dans `D:\App\dsh-taskboard` (aucun défaut bloquant trouvé côté Task Board).
@@ -62,7 +64,7 @@ dans `D:\App\dsh-taskboard` (aucun défaut bloquant trouvé côté Task Board).
 | P0-A : décalage hôte/client visible (F0) | `host.build {version, schemaVersion, features[], startedAt, pid, source}` publié ; le client compare et dit « hôte plus ancien » | `tests/goal6-host-gate.test.js` (build/schema/features), E2E 0.7 | Livré |
 | P0-B : `[]` ≠ « tous » (F1) | `scopeMode: 'none'\|'selected'\|'all'`, défaut `none`, `all` exige `allConsent{text:'ALL_PROJECTS',at}` | `tests/mandate.test.js` (20 cas), `goal6-host-gate` (migration + restart + L4), E2E 0a/0f | Livré |
 | P0-B : migration dangereuse | `migrateLegacyPolicy` : ancien autonome + liste vide → `none`, L1, actions `false`, `requiresConfiguration:true`, audit unique | `goal6-host-gate` « v1 migration… » ; E2E 0a | Livré |
-| P0-B : gate central | `effectivePolicyOf` appelé par tick, `/dispatch`, approbation, reprise, failover/handoff, retry, Super Agent | `tests/mandate.test.js`, `goal6-superagent-host`, `goal6-host-gate` (handoff après retrait du projet), 567 tests | Livré |
+| P0-B : gate central | `effectivePolicyOf` appelé par tick, `/dispatch`, approbation, reprise, failover/handoff, retry, Super Agent | `tests/mandate.test.js`, `goal6-superagent-host`, `goal6-host-gate` (handoff après retrait du projet), 568 tests | Livré |
 | P0-C F2 : capacités véridiques | `capabilities.<action> = {state,reason,source}` dérivé de l'état réel ; jamais `available` si refus | `goal6-host-gate` « capabilities are truthful in OFF and after a Stop » | Livré |
 | P0-C F3 : Stop lisible + Reprendre | `stoppedAt` explicite, `POST /resume`, bandeau « Arrêté (observation) » + Reprendre | hôte : test Stop/Resume ; UI : `cockpit-superagent` | Livré |
 | P0-C F4 : recommandations en Arrêt | une seule ligne explicite en OFF/Stop, compteurs conservés | `tests/cockpit-superagent.test.js` | Livré |
@@ -167,7 +169,7 @@ aucune session (prouvé par test).
 ## 6. Preuves exécutées (commandes exactes)
 
 ```powershell
-node --test tests/                       # 567/567, 0 fail
+node --test tests/                       # 568/568, 0 fail
 node --check src/host/index.js           # OK
 node scripts/build-client.mjs            # built 603 799 bytes, 23 modules
 node scripts/e2e/run-e2e.mjs             # 0/a/b/c verts sur un vrai process DSH
@@ -227,11 +229,22 @@ PASS 8. checks CI lisibles (total=0)
 PASS 9. aucune méthode merge exposée
 ```
 
-Preuves : `docs/e2e/GITHUB-LIVE-E2E.json` ; script reproductible :
-`scripts/e2e/github-live.mjs`. Le dépôt a été archivé (privé) et ses issues/PR fermées ;
-sa suppression exige le scope `delete_repo` (commande exacte en §10). Aucune écriture
-n'a été faite sur un dépôt de projet réel : les écritures restent désactivées par défaut
-(`allowGithubWrites:false`) et soumises au mandat.
+Preuves : `docs/e2e/GITHUB-LIVE-E2E.json` (11 assertions vertes) ; script reproductible :
+`scripts/e2e/github-live.mjs` (il vérifie réellement la branche/le commit, et déclare si
+aucune CI n'est configurée au lieu de supposer un succès). Le dépôt a été archivé
+(privé) et ses issues/PR fermées ; sa suppression exige le scope `delete_repo` (commande
+exacte en §10).
+
+Aucune écriture n'a été faite sur un dépôt de projet réel : les écritures restent
+désactivées par défaut (`allowGithubWrites:false`) et soumises au mandat.
+
+Durcissements issus de la revue : clé d'idempotence validée (jeu de caractères strict,
+aucune injection de marqueur possible), **namespacée par projet** côté hôte, écritures
+concurrentes **coalescées** (deux appels simultanés avec la même clé = un seul POST,
+prouvé par test), marqueur aussi présent dans le corps de la PR, et fallback de recherche
+borné après redémarrage. Limite déclarée : au-delà de la première page de 100 objets,
+si l'API de recherche est indisponible après un redémarrage, un doublon reste possible ;
+la fenêtre est documentée dans `LIMITATIONS.md` (G1).
 
 ---
 
@@ -375,6 +388,17 @@ Un relecteur indépendant a été lancé sur la branche. Constats et suites :
 | Cadence Super Agent décorative, budgets non contrôlés | P2 | Corrigé : `nextWakeAt` consommé, budgets cycles/appels appliqués, timeout recycle |
 | Retry supprimé laissait un assignment `running` | P2 | Corrigé : `interrupted` + `endedAt` + lease libéré |
 | `/dry-run` et Settings divergeaient des capacités | P2/P3 | Corrigé : le dry-run inclut la disponibilité du backend, Settings lit le payload `capabilities` |
+
+Deuxième passe sur la surface GitHub (nouvelle, écrite après la première revue) :
+
+| Constat | Sévérité | Suite |
+|---|---|---|
+| Deux écritures concurrentes avec la même clé pouvaient dupliquer l'issue | **P1** | Corrigé : exécution « une fois par clé » (in-flight coalescing) + test `Promise.all` (un seul POST) |
+| Clé de marqueur injectable / non namespacée par projet | P2 | Corrigé : charset strict, `markerOf` refuse une clé forgée, clé préfixée par `projectId`, test hostile |
+| Clé de PR décorative, pas de marqueur dans la PR | P2 | Corrigé : marqueur dans le corps, idempotence par branche testée en concurrence |
+| Reprise après redémarrage bornée à une page de 100 | P2 | Documenté + fallback de recherche borné ; la limite restante est déclarée (G1) |
+| Assertions du script live faibles | P2 | Corrigé : vérification réelle de la branche/du commit, `ciConfigured` explicite, 11 assertions |
+| Clé de commentaire aléatoire sans clé appelant | P2 | Corrigé : clé dérivée déterministe (`projectId:task:<id>:comment`) ou refus 400 |
 
 Verdict de revérification : **0 P0, 0 P1 connus** ; les P2 signalés ont été corrigés
 (le relecteur les a confirmés par probe avant correction).
