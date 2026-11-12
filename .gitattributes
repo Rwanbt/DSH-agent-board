@@ -1,0 +1,4 @@
+# Generated modules and bundles embed exact bytes; keep LF in every checkout.
+* text=auto eol=lf
+# Mascot SVGs are embedded byte-for-byte as data URIs; never rewrite them.
+*.svg -text
