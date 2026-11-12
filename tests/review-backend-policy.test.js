@@ -1,3 +1,4 @@
+import { setupAgentHandle } from './fixtures/secure-agent-context.js'
 /**
  * INDEPENDENT REVIEW — layer policy and budget honesty (tests/review-backend-*.test.js).
  *
@@ -54,10 +55,10 @@ function makeCtx() {
     agents: {
       async create(options) {
         created.push(options)
-        return {
+        return setupAgentHandle(options, {
           agent: { id: options.sessionId, inject() {}, followup() {}, cancel: cause => cancelled.push({ sessionId: options.sessionId, cause }) },
           dispose: async () => {},
-        }
+        })
       },
       get(id) {
         const match = created.find(options => options.sessionId === id)

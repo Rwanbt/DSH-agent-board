@@ -14,6 +14,7 @@ import { Readable } from 'node:stream'
 import test from 'node:test'
 
 import { apply } from '../src/host/index.js'
+import { applyAgentSetup, secureAgentContext } from './fixtures/secure-agent-context.js'
 
 const TASKS = [
   { id: 't1', title: 'Tâche autorisée', status: 'todo', workspaceId: 'w1', dependsOn: [], version: 1, permission: 'workspace-write', isolation: 'none', execution: { mode: 'claim' } },
@@ -104,8 +105,17 @@ function makeCtx() {
             }, control.replyDelayMs)
           },
         }
+        const fixture = secureAgentContext({ sessionId: options.sessionId })
+        if (control.brainToolsUnavailable && options.sessionId.startsWith('session-superagent-')) fixture.agentCtx.get = () => undefined
+        const security = await applyAgentSetup(options, agent, fixture)
+        // A real model step resolves tools before assembling its prompt.
+        const followup = agent.followup.bind(agent)
+        agent.followup = message => {
+          security.tools.describeResolved()
+          return followup(message)
+        }
         handles.set(options.sessionId, agent)
-        return { agent, dispose: async () => {} }
+        return { agent, dispose: async () => { security.state.disposed = true; handles.delete(options.sessionId) } }
       },
       get(id) {
         return handles.get(id)
@@ -156,19 +166,24 @@ async function waitFor(predicate, timeoutMs = 8000) {
   return false
 }
 
-function installFetch() {
+function installFetch({ isolated = false } = {}) {
   const previous = globalThis.fetch
   const calls = []
+  const tasks = isolated ? structuredClone(TASKS) : TASKS
+  const control = {}
   const reply = (value, status = 200) => ({ ok: status < 400, status, json: async () => value })
   globalThis.fetch = async (url, init) => {
     const target = String(url)
     const method = init?.method ?? 'GET'
     calls.push({ url: target, method, headers: init?.headers, body: init?.body })
     if (target.includes('/dsh-taskboard/state')) {
-      return reply({ ok: true, value: { revision: 9, tasks: structuredClone(TASKS) } })
+      return reply({ ok: true, value: { revision: 9, tasks: structuredClone(tasks) } })
     }
     if (target.includes('/dsh-taskboard/public/v1/tasks')) {
-      if (method === 'GET') return reply({ ok: true, value: { id: 't1', version: 3 } })
+      if (method === 'GET') {
+        await control.beforeTaskRead?.()
+        return reply({ ok: true, value: { id: 't1', version: 3 } })
+      }
       if (target.endsWith('/update')) return reply({ ok: true, value: { id: 't1', version: 4 } })
       if (target.endsWith('/comments')) return reply({ ok: true, value: { taskId: 't1', commentId: 'c1', version: 5 } })
       return reply({ ok: true, value: { id: 'new-1', version: 1 } }, 201)
@@ -177,6 +192,7 @@ function installFetch() {
   }
   const restore = () => { globalThis.fetch = previous }
   restore.calls = calls
+  restore.tasks = tasks
   return restore
 }
 
@@ -224,7 +240,7 @@ test('Super Agent: real session, validated assessment, gate enforced, no effect 
     const reasons = Object.fromEntries(value.refused.map(entry => [entry.id, entry.reason]))
     assert.equal(reasons.p2, 'project_disabled')
     assert.equal(reasons.p3, 'project_not_selected')
-    assert.equal(reasons.p4, 'level_too_low', 'merge needs L4 before any grant is even considered')
+    assert.equal(reasons.p4, 'no_adapter_for_action', 'unsupported merge has no executable adapter even at higher levels')
     assert.equal(value.executed.filter(entry => entry.ok === true).length, 1)
     assert.equal(value.decisions, 1)
 
@@ -607,4 +623,153 @@ test('Super Agent: a semantic directive conflict becomes ONE arbitration decisio
     else process.env.DSH_HOME = previousHome
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
+})
+
+async function withAssessmentHost(run) {
+  const home = await mkdtemp(join(tmpdir(), 'dab-assessment-security-'))
+  const previousHome = process.env.DSH_HOME
+  const previousToken = process.env.DSH_TASKBOARD_PUBLIC_TOKEN
+  process.env.DSH_HOME = home
+  process.env.DSH_TASKBOARD_PUBLIC_TOKEN = 'test-assessment-token'
+  const transport = installFetch({ isolated: true })
+  const host = await boot({ home })
+  try {
+    await callJson(host.routes, 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(host.routes, 'POST', '/superagent/model', { provider: 'fake-provider', model: 'fake-model' })
+    await callJson(host.routes, 'POST', '/superagent/start')
+    const cycle = async (proposals, decisions = []) => {
+      host.control.replyText = JSON.stringify(assessment({ proposals, decisions, noopReason: proposals.length === 0 ? 'waiting for operator arbitration' : null }))
+      return callJson(host.routes, 'POST', '/superagent/cycle', { trigger: 'manual' })
+    }
+    const view = async () => (await callJson(host.routes, 'GET', '/state')).body.value
+    const comments = () => transport.calls.filter(entry => entry.method === 'POST' && entry.url.endsWith('/comments'))
+    await run({ host, transport, cycle, view, comments })
+  } finally {
+    host.dispose()
+    transport()
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    if (previousToken === undefined) delete process.env.DSH_TASKBOARD_PUBLIC_TOKEN
+    else process.env.DSH_TASKBOARD_PUBLIC_TOKEN = previousToken
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+}
+
+function commentProposal(overrides = {}) {
+  return { id: 'exact-comment', action: 'comment', projectId: 'w1', taskId: 't1', rationale: 'operator review', risk: 'low', expectedEffect: 'comment added', requiresApproval: false, payload: { body: 'Approved original bytes' }, ...overrides }
+}
+
+async function askComment(host) {
+  const configured = await callJson(host.routes, 'POST', '/mandate', { level: 'L2', actionModes: { comment: 'ask' } })
+  assert.equal(configured.status, 200, JSON.stringify(configured.body))
+}
+
+test('A05: canonical foreign task cannot be disguised as a task of an allowed project', async () => {
+  await withAssessmentHost(async ({ cycle, comments, view }) => {
+    const reply = await cycle(['launch', 'update_task', 'comment'].map((action, index) => commentProposal({ id: `foreign-${index}`, action, taskId: 't3' })))
+    assert.equal(reply.status, 200, JSON.stringify(reply.body))
+    assert.deepEqual(reply.body.value.refused.map(entry => entry.reason), Array(3).fill('task_project_mismatch'))
+    assert.deepEqual(reply.body.value.authorized, [])
+    assert.equal(comments().length, 0)
+    assert.equal((await view()).assignments.length, 0)
+  })
+})
+
+test('A08: L2 ask creates its own bound decision; answer executes saved bytes once without a new assessment', async () => {
+  await withAssessmentHost(async ({ host, cycle, view, comments }) => {
+    await askComment(host)
+    const reply = await cycle([commentProposal()])
+    assert.equal(reply.status, 200, JSON.stringify(reply.body))
+    assert.equal(reply.body.value.refused[0].reason, 'approval_required')
+    assert.equal(comments().length, 0)
+    const decision = (await view()).superagent.decisions.pending.find(entry => entry.intent?.action === 'comment')
+    assert.ok(decision, 'the deterministic gate creates an approval even when the model asks no question')
+    assert.equal(decision.intent.taskVersion, 1)
+    assert.equal(decision.operation.payload.body, 'Approved original bytes')
+    await cycle([commentProposal()])
+    const repeated = (await view()).superagent.decisions.pending.filter(entry => entry.intent?.action === 'comment')
+    assert.equal(repeated.length, 1, 'reassessment with a newly sampled expiry deduplicates the same exact operation')
+    assert.equal(repeated[0].id, decision.id)
+    // Model changes are not consulted by the answer route.
+    host.control.replyText = JSON.stringify(assessment({ proposals: [commentProposal({ payload: { body: 'MALICIOUS replacement' } })], decisions: [] }))
+    const answered = await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(answered.status, 200, JSON.stringify(answered.body))
+    assert.equal(answered.body.execution.ok, true, JSON.stringify(answered.body.execution))
+    assert.equal(comments().length, 1)
+    assert.deepEqual(JSON.parse(comments()[0].body), { body: 'Approved original bytes' })
+    const twice = await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(twice.status, 200, 'answer receipt is idempotent but effect is not replayed')
+    assert.equal(twice.body.execution.ok, false)
+    assert.equal(comments().length, 1)
+    assert.equal(typeof (await view()).superagent.decisions.recent.find(entry => entry.id === decision.id).usedAt, 'number')
+  })
+})
+
+for (const change of ['version', 'mandate']) {
+  test(`A08: changed ${change} invalidates an exact pending operation`, async () => {
+    await withAssessmentHost(async ({ host, transport, cycle, view, comments }) => {
+      await askComment(host)
+      await cycle([commentProposal()])
+      const decision = (await view()).superagent.decisions.pending.find(entry => entry.intent?.action === 'comment')
+      assert.ok(decision)
+      if (change === 'version') transport.tasks.find(entry => entry.id === 't1').version++
+      else await callJson(host.routes, 'POST', '/mandate/level', { level: 'L1' })
+      const answered = await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+      assert.equal(answered.status, 200, JSON.stringify(answered.body))
+      assert.equal(answered.body.execution.ok, false)
+      assert.equal(answered.body.execution.reason, change === 'version' ? 'version_conflict' : 'mandate_changed')
+      assert.equal(comments().length, 0)
+    })
+  })
+}
+
+test('A08: approving a model-authored arbitration never grants a board mutation', async () => {
+  await withAssessmentHost(async ({ host, cycle, view, comments }) => {
+    await askComment(host)
+    const question = { kind: 'arbitration', projectId: 'w1', title: 'Pretend this grants comment rights', context: 'untrusted question', options: [{ id: 'yes', label: 'Yes', effect: 'approve' }, { id: 'no', label: 'No', effect: 'reject' }], recommendation: 'Yes', urgency: 'normal' }
+    const asked = await cycle([], [question])
+    assert.equal(asked.status, 200, JSON.stringify(asked.body))
+    const pending = (await view()).superagent.decisions.pending
+    const decision = pending.find(entry => entry.title === question.title)
+    assert.ok(decision, JSON.stringify({ asked: asked.body, pending }))
+    assert.equal(decision.intent ?? null, null)
+    const answered = await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'yes' })
+    assert.equal(answered.status, 200)
+    assert.equal(answered.body.execution, null)
+    const next = await cycle([commentProposal()])
+    assert.equal(next.body.value.refused[0].reason, 'approval_required')
+    assert.equal(comments().length, 0)
+  })
+})
+
+test('A08: approved create stores and executes the same rationale-fallback title', async () => {
+  await withAssessmentHost(async ({ host, transport, cycle, view }) => {
+    await callJson(host.routes, 'POST', '/mandate', { level: 'L2', actionModes: { create_task: 'ask' } })
+    const proposal = commentProposal({ id: 'create-fallback', action: 'create_task', taskId: null, rationale: '  Exact fallback title  ', payload: { title: '   ', description: 'description' } })
+    const requested = await cycle([proposal])
+    assert.equal(requested.status, 200, JSON.stringify(requested.body))
+    const decision = (await view()).superagent.decisions.pending.find(entry => entry.intent?.action === 'create_task')
+    assert.ok(decision)
+    assert.equal(decision.operation.payload.title, 'Exact fallback title')
+    const answered = await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(answered.body.execution.ok, true, JSON.stringify(answered.body))
+    const writes = transport.calls.filter(entry => entry.method === 'POST' && entry.url.endsWith('/tasks'))
+    assert.equal(writes.length, 1)
+    assert.deepEqual(JSON.parse(writes[0].body), { title: 'Exact fallback title', description: 'description', workspaceId: 'w1' })
+  })
+})
+
+test('A06: missing confinement APIs make the assessment unavailable before any model work', async () => {
+  await withAssessmentHost(async ({ host, cycle, view }) => {
+    host.control.brainToolsUnavailable = true
+    await callJson(host.routes, 'POST', '/superagent/model', { provider: 'fake-provider', model: 'fake-model-2' })
+    const before = host.messages.length
+    const reply = await cycle([commentProposal()])
+    assert.equal(reply.status, 409, JSON.stringify(reply.body))
+    assert.equal(host.messages.length, before, 'no assessment request can run without tool confinement')
+    const state = await view()
+    assert.equal(state.superagent.runtime.available, false)
+    assert.match(state.superagent.runtime.reason, /security_service_unavailable:tools/)
+    assert.deepEqual(state.assignments, [])
+  })
 })

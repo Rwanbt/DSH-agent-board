@@ -1,3 +1,4 @@
+import { setupAgentHandle } from './fixtures/secure-agent-context.js'
 /**
  * Security regression tests for the Agent Board host.
  *
@@ -89,7 +90,7 @@ function makeCtx({ rejection } = {}) {
           followup: message => injected.push(message),
           cancel: () => {},
         }
-        return { agent, dispose: async () => {} }
+        return setupAgentHandle(options, { agent, dispose: async () => {} }, { onPermission: (session, level) => permissionSets.push({ session, level }) })
       },
       get(id) {
         const match = created.find(options => options.sessionId === id)
@@ -169,7 +170,7 @@ test('card text is DATA: the launch prompt keeps the untrusted notice and the hu
     assert.ok(body.includes('NEVER move it to done'), 'the human-only rule must survive the injection text')
     assert.ok(body.includes('in_review'), 'the highest allowed final state is stated')
     // The card asked for danger-full-access; the mandate does not grant it.
-    assert.deepEqual(harness.permissionSets, [], 'no permission may be granted from the card text')
+    assert.deepEqual(harness.permissionSets.map(entry => entry.level), ['read-only'], 'missing permission is explicitly read-only; card text cannot widen it')
   } finally {
     dispose?.()
     restore()

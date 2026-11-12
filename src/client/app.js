@@ -560,6 +560,7 @@ function dabMakePage(store, ctx) {
         onToggleProject: toggleProject,
         onSetProjectLevel: (projectId, level) => act('project-level', () => store.setProject(projectId, { level })),
         onSetProjectPriority: (projectId, priority) => act('project-priority', () => store.setProject(projectId, { priority })),
+        onSetProjectModel: (projectId, model) => act('project-model', () => store.setProject(projectId, { model })),
         onConfirmAllProjects: confirm => act('scope', () => store.setScope('all', undefined, confirm)),
         onAddDirective: input => act('directive', () => store.addDirective(input)),
         onRevokeDirective: id => act('revoke', () => store.revokeDirective(id)),
@@ -570,6 +571,7 @@ function dabMakePage(store, ctx) {
         onProbeTaskboard: () => act('taskboard', () => store.probeTaskboard()),
         onCycle: () => act('cycle', () => store.cycleSuperagent('manual')),
         onSetAction: (action, enabled) => act('action', () => store.setAction(action, enabled)),
+        onSetActionMode: (action, mode) => act('action', () => store.setActionMode(action, mode)),
         onToggleNotifications: value => setUi({ notifications: value === true }),
         onStop: () => act('stop', async () => {
           const executions = await store.stop()

@@ -1,3 +1,4 @@
+import { setupAgentHandle } from './fixtures/secure-agent-context.js'
 /**
  * Task Board execution backend.
  *
@@ -55,7 +56,7 @@ function makeCtx(liveIds) {
       list: () => [],
     },
     agents: {
-      async create(options) { created.push(options); return { agent: { id: options.sessionId }, dispose: async () => {} } },
+      async create(options) { created.push(options); return setupAgentHandle(options, { agent: { id: options.sessionId }, dispose: async () => {} }) },
       get(id) {
         if (!liveIds.has(id)) return undefined
         return { cancel: cause => cancelled.push({ sessionId: id, cause }) }

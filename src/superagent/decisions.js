@@ -68,6 +68,102 @@ function hashText(text) {
   return `${h1.toString(16).padStart(8, '0')}${h2.toString(16).padStart(8, '0')}`
 }
 
+/** Canonical JSON for approval payloads. Reject lossy/non-JSON inputs. */
+export function canonicalIntentPayload(value) {
+  const ancestors = new Set()
+  function visit(entry) {
+    if (entry === null || typeof entry === 'string' || typeof entry === 'boolean') return JSON.stringify(entry)
+    if (typeof entry === 'number' && Number.isFinite(entry)) return JSON.stringify(entry)
+    if (typeof entry !== 'object' || ancestors.has(entry)) throw new TypeError('Approval payload must be acyclic JSON')
+    if (!Array.isArray(entry) && Object.getPrototypeOf(entry) !== Object.prototype && Object.getPrototypeOf(entry) !== null) {
+      throw new TypeError('Approval payload must contain plain JSON objects')
+    }
+    ancestors.add(entry)
+    const result = Array.isArray(entry)
+      ? `[${Array.from(entry, visit).join(',')}]`
+      : `{${Object.keys(entry).sort().map(key => `${JSON.stringify(key)}:${visit(entry[key])}`).join(',')}}`
+    ancestors.delete(entry)
+    return result
+  }
+  return visit(value)
+}
+
+/** SHA-256, synchronous and browser-safe (no host crypto dependency). */
+export function intentPayloadHash(payload) {
+  const bytes = new TextEncoder().encode(canonicalIntentPayload(payload))
+  const words = []
+  for (let i = 0; i < bytes.length; i++) words[i >> 2] = (words[i >> 2] || 0) | bytes[i] << (24 - (i % 4) * 8)
+  words[bytes.length >> 2] = (words[bytes.length >> 2] || 0) | 0x80 << (24 - (bytes.length % 4) * 8)
+  const end = ((bytes.length + 9 + 63) >> 6) * 16
+  words[end - 2] = Math.floor(bytes.length / 0x20000000)
+  words[end - 1] = (bytes.length * 8) >>> 0
+  const constants = []
+  const state = []
+  for (let n = 2; constants.length < 64; n++) {
+    let prime = true
+    for (let d = 2; d * d <= n; d++) if (n % d === 0) { prime = false; break }
+    if (!prime) continue
+    if (state.length < 8) state.push((Math.sqrt(n) % 1 * 0x100000000) | 0)
+    constants.push((Math.cbrt(n) % 1 * 0x100000000) | 0)
+  }
+  const rotr = (v, n) => (v >>> n) | (v << (32 - n))
+  for (let start = 0; start < end; start += 16) {
+    const w = Array.from({ length: 16 }, (_, i) => words[start + i] | 0)
+    for (let i = 16; i < 64; i++) {
+      const x = w[i - 15], y = w[i - 2]
+      w[i] = (w[i - 16] + (rotr(x, 7) ^ rotr(x, 18) ^ (x >>> 3)) + w[i - 7] + (rotr(y, 17) ^ rotr(y, 19) ^ (y >>> 10))) | 0
+    }
+    let [a, b, c, d, e, f, g, h] = state
+    for (let i = 0; i < 64; i++) {
+      const t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + constants[i] + w[i]) | 0
+      const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0
+    }
+    ;[a, b, c, d, e, f, g, h].forEach((v, i) => { state[i] = (state[i] + v) | 0 })
+  }
+  return state.map(v => (v >>> 0).toString(16).padStart(8, '0')).join('')
+}
+
+/** Exact persisted binding; invalid bindings never authorize. No coercion/truncation. */
+export function normalizeApprovalIntent(raw) {
+  if (!isRecord(raw)) return null
+  const { action, projectId, taskId = null, taskVersion = null, payloadHash, mandateRevision, expiry } = raw
+  if (typeof action !== 'string' || !action || typeof projectId !== 'string' || !projectId) return null
+  if (taskId !== null && (typeof taskId !== 'string' || !taskId)) return null
+  if (taskVersion !== null && (!Number.isSafeInteger(taskVersion) || taskVersion < 0)) return null
+  if (taskId !== null && taskVersion === null) return null
+  if (typeof payloadHash !== 'string' || !/^[a-f0-9]{64}$/.test(payloadHash)) return null
+  if (!Number.isSafeInteger(mandateRevision) || mandateRevision < 0 || !Number.isSafeInteger(expiry) || expiry < 0) return null
+  return Object.freeze({ action, projectId, taskId, taskVersion, payloadHash, mandateRevision, expiry })
+}
+
+export function createApprovalIntent(input) {
+  const intent = normalizeApprovalIntent({ ...input, payloadHash: Object.hasOwn(input, 'payload') ? intentPayloadHash(input.payload) : input.payloadHash })
+  if (intent === null) throw new TypeError('Invalid approval intent')
+  return intent
+}
+
+/** Persist only a JSON operation whose exact payload matches the binding. */
+export function normalizeApprovalOperation(raw, rawIntent) {
+  const intent = normalizeApprovalIntent(rawIntent)
+  if (!isRecord(raw) || intent === null) return null
+  if (raw.action !== intent.action || raw.projectId !== intent.projectId || (raw.taskId ?? null) !== intent.taskId || (raw.taskVersion ?? null) !== intent.taskVersion) return null
+  try {
+    const canonical = canonicalIntentPayload(raw.payload)
+    if (canonical.length > 65536 || intentPayloadHash(raw.payload) !== intent.payloadHash) return null
+    const freeze = value => {
+      if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value) }
+      return value
+    }
+    return freeze({ action: intent.action, projectId: intent.projectId, taskId: intent.taskId, taskVersion: intent.taskVersion, payload: JSON.parse(canonical) })
+  } catch { return null }
+}
+
+export function approvalIntentFingerprint(raw) {
+  const intent = normalizeApprovalIntent(raw)
+  return intent === null ? null : `intent-${intentPayloadHash(intent)}`
+}
+
 function normalizeKind(value) {
   const text = typeof value === 'string' ? value.trim().toLowerCase() : ''
   return DECISION_KINDS.includes(text) ? text : 'approval'
@@ -132,6 +228,7 @@ function decisionContentFingerprint(fields) {
     Array.isArray(fields.options) ? fields.options.map(option => [option.id, option.label, option.effect]) : [],
     fields.recommendation ?? '',
     fields.urgency ?? '',
+    ...(fields.intent ? [approvalIntentFingerprint(fields.intent)] : []),
   ]))}`
 }
 
@@ -158,8 +255,9 @@ export function normalizeDecision(raw, { now } = {}) {
   const recommendation = boundedText(source.recommendation, DECISION_LIMITS.recommendation)
   const urgency = boundedText(source.urgency, 20).toLowerCase() === 'urgent' ? 'urgent' : 'normal'
   const createdAt = finiteInt(source.createdAt, nowValue) ?? nowValue
+  const intent = normalizeApprovalIntent(source.intent)
   const fingerprint = boundedText(source.fingerprint, 80)
-    || decisionContentFingerprint({ kind, projectId, action, taskIds, title, context, options, recommendation, urgency })
+    || decisionContentFingerprint({ kind, projectId, action, taskIds, title, context, options, recommendation, urgency, intent })
   const dedupeKey = boundedText(source.dedupeKey, 200) || fingerprint
 
   let statusText = boundedText(source.status, 20).toLowerCase()
@@ -211,6 +309,8 @@ export function normalizeDecision(raw, { now } = {}) {
     // spent. It MUST survive normalization, otherwise expireDecisions() would
     // erase it and one human answer could authorize several launches.
     usedAt: finiteInt(source.usedAt, null),
+    intent,
+    operation: normalizeApprovalOperation(source.operation, intent),
     resumeHint: boundedText(source.resumeHint, 200) || null,
     askedCount: clampInt(source.askedCount, 1, 99, 1),
   }
@@ -243,9 +343,10 @@ export function emptyInbox() {
   return []
 }
 
-function findDuplicate(inbox, { fingerprint, dedupeKey, at }) {
+function findDuplicate(inbox, { fingerprint, dedupeKey, at, intent }) {
   for (let index = inbox.length - 1; index >= 0; index -= 1) {
     const decision = inbox[index]
+    if (approvalIntentFingerprint(decision.intent) !== approvalIntentFingerprint(intent)) continue
     if (decision.dedupeKey !== dedupeKey && decision.fingerprint !== fingerprint) continue
     if (decision.status === 'pending') return decision
     if (decision.status === 'answered') {
@@ -284,6 +385,10 @@ export function proposeDecision(inbox, input, { now } = {}) {
   const requestedOptions = normalizeOptions(draft.options)
   const options = requestedOptions.length > 0 ? requestedOptions : defaultOptions()
   const recommendation = boundedText(draft.recommendation, DECISION_LIMITS.recommendation)
+  const intent = normalizeApprovalIntent(draft.intent)
+  if (draft.intent !== undefined && draft.intent !== null && intent === null) throw new TypeError('Invalid approval intent')
+  const operation = normalizeApprovalOperation(draft.operation, intent)
+  if (draft.operation !== undefined && draft.operation !== null && operation === null) throw new TypeError('Invalid approval operation')
   const fingerprint = decisionContentFingerprint({
     kind,
     projectId,
@@ -294,10 +399,11 @@ export function proposeDecision(inbox, input, { now } = {}) {
     options,
     recommendation,
     urgency,
+    intent,
   })
   const dedupeKey = boundedText(draft.dedupeKey, 200) || fingerprint
 
-  const existing = findDuplicate(current, { fingerprint, dedupeKey, at })
+  const existing = findDuplicate(current, { fingerprint, dedupeKey, at, intent })
   if (existing !== null) return { inbox: current, decision: existing, duplicate: true }
 
   const requestedExpiry = finiteInt(draft.expiresAt, null)
@@ -325,6 +431,8 @@ export function proposeDecision(inbox, input, { now } = {}) {
       recommendation,
       urgency,
       expiresAt,
+      intent,
+      operation,
       provenance: boundedText(draft.provenance, 120) || 'superagent',
       fingerprint,
       dedupeKey,
@@ -440,7 +548,11 @@ export function pendingDecisions(inbox) {
  * @param {{action?: string, taskIds?: string[], projectId?: string|null, now?: number}} [input]
  * @returns {object|null}
  */
-export function approvalFor(inbox, { action, taskIds, projectId, now } = {}) {
+export function approvalFor(inbox, input = {}) {
+  const { action, taskIds, projectId, now, intent } = input
+  const strict = Object.hasOwn(input, 'intent')
+  const requestedIntent = strict ? normalizeApprovalIntent(intent) : null
+  if (strict && requestedIntent === null) return null
   const at = finiteInt(now, null)
   if (at === null) return null
   const actionText = boundedText(action, 80)
@@ -449,7 +561,14 @@ export function approvalFor(inbox, { action, taskIds, projectId, now } = {}) {
   const requestedTaskIds = normalizeTaskIds(taskIds)
   let best = null
   for (const decision of normalizeInbox(inbox)) {
-    if (decision.status !== 'answered' || decision.answer === null) continue
+    if (decision.status !== 'answered' || decision.answer === null || decision.usedAt !== null) continue
+    if (!strict && decision.intent !== null) continue
+    if (strict) {
+      if (decision.kind !== 'approval' || requestedIntent.expiry <= at) continue
+      if (requestedIntent.action !== actionText || requestedIntent.projectId !== requestedProject) continue
+      if (requestedIntent.taskId !== null && !requestedTaskIds.includes(requestedIntent.taskId)) continue
+      if (approvalIntentFingerprint(decision.intent) !== approvalIntentFingerprint(requestedIntent)) continue
+    }
     if (decision.action !== actionText) continue
     const expiresAt = finiteInt(decision.expiresAt, null)
     if (expiresAt === null || expiresAt <= at) continue

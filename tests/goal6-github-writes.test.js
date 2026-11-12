@@ -1,3 +1,4 @@
+import { setupAgentHandle } from './fixtures/secure-agent-context.js'
 /**
  * GOAL 6 — GitHub forge write path (opt-in) and host gating.
  *
@@ -206,7 +207,7 @@ function makeCtx() {
         get: id => (id === 'w1' ? { id, path: process.cwd(), attachSession: async () => {} } : undefined),
         list: () => [{ id: 'w1', title: 'w1', path: process.cwd() }],
       },
-      agents: { async create(options) { created.push(options); return { agent: { followup() {}, inject() {}, cancel() {} }, dispose: async () => {} } }, get: () => undefined },
+      agents: { async create(options) { created.push(options); return setupAgentHandle(options, { agent: { id: options.sessionId, followup() {}, inject() {}, cancel() {} }, dispose: async () => {} }) }, get: () => undefined },
       get: () => undefined,
       on: () => () => {},
     },
@@ -263,9 +264,11 @@ test('host gates forge writes behind the explicit opt-in and the mandate, and is
     await callJson(made.routes, 'GET', '/state')
     await callJson(made.routes, 'POST', '/mode', { mode: 'autonomous' })
     const state = (await callJson(made.routes, 'GET', '/state')).body.value
-    assert.equal(state.capabilities.create_task.state, 'available', JSON.stringify(state.capabilities.create_task))
+    // Super Agent capabilities describe its actual executor, not the separate manual forge API.
+    assert.equal(state.capabilities.create_task.state, 'unavailable', JSON.stringify(state.capabilities.create_task))
+    assert.equal(state.capabilities.create_task.reason, 'taskboard_writes_unavailable')
     assert.equal(state.capabilities.open_pr.state, 'unavailable')
-    assert.equal(state.capabilities.open_pr.reason, 'level_too_low')
+    assert.equal(state.capabilities.open_pr.reason, 'no_adapter_for_action')
 
     const created = await callJson(made.routes, 'POST', '/forge/issue', { projectId: 'w1', title: 'Issue réelle (test)', body: 'corps', idempotencyKey: 'host-1' })
     assert.equal(created.status, 201, JSON.stringify(created.body))
@@ -331,7 +334,7 @@ test('without the adapter opt-in the host refuses every forge write', async () =
     await callJson(made.routes, 'GET', '/state')
     await callJson(made.routes, 'POST', '/mode', { mode: 'autonomous' })
     const state = (await callJson(made.routes, 'GET', '/state')).body.value
-    assert.equal(state.capabilities.create_task.reason, 'github_writes_disabled')
+    assert.equal(state.capabilities.create_task.reason, 'taskboard_writes_unavailable')
     assert.equal(state.capabilities.create_task.state, 'unavailable')
     const refused = await callJson(made.routes, 'POST', '/forge/issue', { projectId: 'w1', title: 'x', idempotencyKey: 'k' })
     assert.equal(refused.status, 409)

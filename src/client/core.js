@@ -399,17 +399,13 @@ export function createBoardStore(ctx, options = {}) {
     /** Full mandate patch (actions map and/or level), for POST /mandate. */
     setMandate: patch => post('/mandate', patch ?? {}),
     setAction: (action, enabled) => {
-      // POST /mandate REPLACES the mandate: send every documented field so a
-      // single permission toggle can never wipe the scope, level or projects.
-      const current = mandateOf(host) ?? {}
-      return post('/mandate', {
-        scopeMode: typeof current.scopeMode === 'string' ? current.scopeMode : 'none',
-        level: typeof current.level === 'string' ? current.level : 'L0',
-        actions: { ...(current.actions ?? {}), [action]: enabled === true },
-        projects: current.projects ?? {},
-        paused: current.paused === true,
-      })
+      // The host merges this patch. Do not redeclare scope/consent or replay
+      // unrelated permissions from a potentially stale snapshot.
+      return post('/mandate', { actions: { [action]: enabled === true } })
     },
+    setActionMode: (action, mode) => post('/mandate', {
+      actionModes: { [action]: mode }, actions: { [action]: mode !== 'deny' },
+    }),
     startSuperagent: () => post('/superagent/start', {}),
     pauseSuperagent: () => post('/superagent/pause', {}),
     resumeSuperagent: () => post('/superagent/resume', {}),
@@ -425,10 +421,15 @@ export function createBoardStore(ctx, options = {}) {
       ...(input?.scope === 'project' && typeof input?.projectId === 'string' ? { projectId: input.projectId } : {}),
     }),
     revokeDirective: id => post(`/superagent/directives/${encodeURIComponent(String(id))}/revoke`, {}),
-    answerDecision: (id, optionId, note) => post(`/superagent/decisions/${encodeURIComponent(String(id))}/answer`, {
-      optionId,
-      ...(typeof note === 'string' && note !== '' ? { note } : {}),
-    }),
+    answerDecision: async (id, optionId, note) => {
+      const result = await post(`/superagent/decisions/${encodeURIComponent(String(id))}/answer`, {
+        optionId,
+        ...(typeof note === 'string' && note !== '' ? { note } : {}),
+      })
+      return result.payload?.execution?.ok === false
+        ? { ...result, ok: false, error: result.payload.execution.reason, payload: { ...result.payload, error: result.payload.execution.reason } }
+        : result
+    },
     getStats: () => ({ ...stats }),
     destroy() {
       destroyed = true

@@ -1,3 +1,4 @@
+import { setupAgentHandle } from './fixtures/secure-agent-context.js'
 /**
  * Resilience tests: restart, duplicate/out-of-order events, ghost leases,
  * concurrent ticks and the single-writer takeover.
@@ -65,7 +66,7 @@ function makeCtx({ createGate = null, fetchDelayMs = 0, liveIds = new Set() } = 
           followup: () => {},
           cancel: cause => cancelled.push({ sessionId: options.sessionId, cause }),
         }
-        return { agent, dispose: async () => {} }
+        return setupAgentHandle(options, { agent, dispose: async () => {} })
       },
       get(id) {
         if (!liveIds.has(id)) return undefined

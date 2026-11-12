@@ -1,3 +1,4 @@
+import { setupAgentHandle } from './fixtures/secure-agent-context.js'
 /**
  * Contract-resilience regressions (independent review findings R12/R13).
  *
@@ -24,9 +25,10 @@ import { Readable } from 'node:stream'
 import { apply } from '../src/host/index.js'
 import { startSimulatedTaskBoard, simulatedTask } from './fixtures/fake-taskboard-server.mjs'
 
-function makeCtx() {
+function makeCtx({ failPermission = false } = {}) {
   const created = []
   const cancelled = []
+  const messages = []
   const listeners = new Map()
   const routes = new Map()
   const ctx = {
@@ -48,10 +50,12 @@ function makeCtx() {
     agents: {
       async create(options) {
         created.push(options)
-        return {
-          agent: { id: options.sessionId, inject() {}, followup() {}, cancel: () => cancelled.push(options.sessionId) },
+        return setupAgentHandle(options, {
+          agent: { id: options.sessionId, inject(message) { messages.push(message) }, followup(message) { messages.push(message) }, cancel: () => cancelled.push(options.sessionId) },
           dispose: async () => {},
-        }
+        }, failPermission ? { permissionPresets: {
+          resolve: name => ({ sandbox: name }), set() { throw new Error('permission setter rejected') }, current: () => 'danger-full-access',
+        } } : {})
       },
       get(id) {
         return created.some(options => options.sessionId === id) ? { cancel: () => cancelled.push(id) } : undefined
@@ -63,7 +67,7 @@ function makeCtx() {
     },
     on(event, listener) { listeners.set(event, listener); return () => {} },
   }
-  return { ctx, created, cancelled, listeners, routes }
+  return { ctx, created, cancelled, messages, listeners, routes }
 }
 
 function call(handler, method, path, body) {
@@ -98,7 +102,7 @@ async function callJson(handler, method, path, body) {
   return { status: res.status, body: res.body === '' ? null : JSON.parse(res.body) }
 }
 
-async function boot({ settlementRetryMs = 60_000 } = {}) {
+async function boot({ settlementRetryMs = 60_000, failPermission = false } = {}) {
   const home = await mkdtemp(join(tmpdir(), 'dab-resilience-'))
   const previousHome = process.env.DSH_HOME
   process.env.DSH_HOME = home
@@ -116,7 +120,7 @@ async function boot({ settlementRetryMs = 60_000 } = {}) {
     }
     return previousFetch(url, init)
   }
-  const harness = makeCtx()
+  const harness = makeCtx({ failPermission })
   const dispose = apply(harness.ctx, { baseUrl: board.url })
   const handler = () => harness.routes.get('/dsh-agent-board/api/v2').handler
   const state = async () => (await callJson(handler(), 'GET', '/state')).body.value
@@ -226,6 +230,24 @@ test('R13: a failed settlement is retried by the bounded sweep and closed once',
     const task = host.board.task('t-contract-1')
     assert.equal(task.executions[0].outcome, 'succeeded')
     assert.equal(typeof task.executions[0].report?.summary, 'string')
+  } finally {
+    await host.close()
+  }
+})
+test('A07: permission application failure cancels unpublished worker, releases canonical lease, and sends no work', async () => {
+  const host = await boot({ failPermission: true })
+  try {
+    await host.ready()
+    await host.tick()
+    const view = await host.state()
+    const assignment = view.assignments.find(entry => entry.taskId === 't-contract-1')
+    assert.equal(assignment.status, 'failed')
+    assert.match(assignment.error, /permission setter rejected/)
+    assert.equal(host.harness.cancelled.length, 1, 'setup rejection rolls the unpublished worker back')
+    assert.deepEqual(host.harness.messages, [], 'not even framing is sent before permission verification')
+    assert.ok(host.board.calls.some(entry => entry.path.endsWith('/release')), JSON.stringify(host.board.calls))
+    assert.equal(host.board.task('t-contract-1').status, 'todo')
+    assert.ok(view.audit.some(entry => entry.type === 'contract_launch_failed'))
   } finally {
     await host.close()
   }
