@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 /**
  * Agent Board host plugin.
  *
@@ -230,6 +231,21 @@ export function apply(ctx, config = {}) {
   const githubRepository = typeof config.githubRepository === 'string' ? config.githubRepository : undefined
 
   let state = createDefaultState()
+
+  /**
+   * Explicit env token first; otherwise the zero-config file Task Board
+   * creates in the same DSH home (`taskboard/public-api.token`). Never published.
+   */
+  function publicTaskBoardToken() {
+    const explicit = typeof process.env.DSH_TASKBOARD_PUBLIC_TOKEN === 'string' ? process.env.DSH_TASKBOARD_PUBLIC_TOKEN.trim() : ''
+    if (explicit !== '') return explicit
+    try {
+      const text = readFileSync(join(home, 'taskboard', 'public-api.token'), 'utf8').trim()
+      return text.length >= 32 ? text : ''
+    } catch {
+      return ''
+    }
+  }
   let ready = false
   let disposed = false
   let tickTimer = null
@@ -537,7 +553,7 @@ export function apply(ctx, config = {}) {
    * never publishes the token: a disabled surface is reported as such.
    */
   async function probePublicTaskBoard() {
-    const token = typeof process.env.DSH_TASKBOARD_PUBLIC_TOKEN === 'string' ? process.env.DSH_TASKBOARD_PUBLIC_TOKEN : ''
+    const token = publicTaskBoardToken()
     const baseUrl = typeof process.env.DSH_TASKBOARD_PUBLIC_URL === 'string' && process.env.DSH_TASKBOARD_PUBLIC_URL !== ''
       ? process.env.DSH_TASKBOARD_PUBLIC_URL
       : `${configuredOrigin()}/dsh-taskboard/public/v1`
@@ -577,7 +593,7 @@ export function apply(ctx, config = {}) {
    * only whether one is configured and where the API is expected to be.
    */
   function describeTaskBoardPublic() {
-    const tokenConfigured = typeof process.env.DSH_TASKBOARD_PUBLIC_TOKEN === 'string' && process.env.DSH_TASKBOARD_PUBLIC_TOKEN !== ''
+    const tokenConfigured = publicTaskBoardToken() !== ''
     const rawBase = typeof process.env.DSH_TASKBOARD_PUBLIC_URL === 'string' && process.env.DSH_TASKBOARD_PUBLIC_URL !== ''
       ? process.env.DSH_TASKBOARD_PUBLIC_URL
       : `${configuredOrigin()}/dsh-taskboard/public/v1`

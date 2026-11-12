@@ -18,11 +18,18 @@
  */
 
 import { readFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createGithubAdapter } from '../src/connectors/github.js'
 import { capabilitiesOf, createPublicTaskBoardClient, describePublicTaskBoard } from '../src/connectors/taskboard-public.js'
 
-const token = process.env.DSH_TASKBOARD_PUBLIC_TOKEN ?? ''
+const token = (() => {
+  if (process.env.DSH_TASKBOARD_PUBLIC_TOKEN) return process.env.DSH_TASKBOARD_PUBLIC_TOKEN
+  try {
+    const dshHome = process.env.DSH_HOME || join(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.dsh')
+    return readFileSync(join(dshHome, 'taskboard', 'public-api.token'), 'utf8').trim()
+  } catch { return '' }
+})()
 const baseUrl = process.env.DSH_TASKBOARD_PUBLIC_URL ?? ''
 const githubToken = process.env.GITHUB_TOKEN ?? ''
 const repository = process.env.GITHUB_REPOSITORY ?? ''
@@ -72,7 +79,7 @@ if (taskboardConfig.configured) {
     report.taskboardPublic.writeReady = capabilities.claim?.state === 'available'
   }
 } else {
-  report.next.push('Task Board public API: set DSH_TASKBOARD_PUBLIC_TOKEN (User variable), restart DSH, then re-run this script. Until then the installed instance answers 503 public_api_disabled and live writes stay unvalidated.')
+  report.next.push('Task Board public API: restart DSH with Task Board >= feat/local-public-token (it creates the local token itself), then re-run this script. Until then the installed instance answers 503 public_api_disabled and live writes stay unvalidated.')
 }
 
 // -------------------------------------------------------------------- GitHub
