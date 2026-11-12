@@ -379,6 +379,22 @@ export function createBoardStore(ctx, options = {}) {
     }),
     setLevel: level => post('/mandate/level', { level }),
     setProject: (projectId, patch = {}) => post('/mandate/project', { projectId, ...patch }),
+    /**
+     * One switch per project. The host refuses to enable a project that is not
+     * in scope (no silent scope increase), so enabling first makes the
+     * selection explicit (POST /mandate/scope), then turns the project on.
+     * Disabling only switches the project off; the scope is left as is.
+     */
+    enableProject: async (projectId, enabled) => {
+      if (enabled !== true) return post('/mandate/project', { projectId, enabled: false })
+      const current = mandateOf(host) ?? {}
+      const selected = Array.isArray(current.selectedWorkspaces) ? current.selectedWorkspaces : []
+      if (current.scopeMode !== 'all' && !selected.includes(projectId)) {
+        const scoped = await post('/mandate/scope', { scopeMode: 'selected', selectedWorkspaces: [...selected, projectId] })
+        if (scoped?.ok !== true) return scoped
+      }
+      return post('/mandate/project', { projectId, enabled: true })
+    },
     setPause: paused => post('/mandate/pause', { paused: paused === true }),
     /** Full mandate patch (actions map and/or level), for POST /mandate. */
     setMandate: patch => post('/mandate', patch ?? {}),

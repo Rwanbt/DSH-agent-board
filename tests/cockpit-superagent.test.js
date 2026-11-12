@@ -85,7 +85,7 @@ return {
   DabSuperagentDirectives, DabSuperagentSettings, DabSuperagentDecisions, DabAllProjectsConfirm,
   dabSuperagentFacts, dabProjectPolicyRows, dabEffectiveCapabilities, dabCapabilityEntry,
   dabActionRefusalReason, dabSuperagentPortfolio, dabDecisionGroups, dabAllProjectsConfirmValid,
-  dabSaBound, dabReasonText,
+  dabSaBound, dabReasonText, dabLevelLabel, dabLevelHint,
 }`
 
 const cockpit = new Function('React', CODE)(React)
@@ -277,15 +277,21 @@ test('inactive session is never rendered as active; active state is distinct', (
   const inactiveTree = band()
   assert.equal(byClass(inactiveTree, 'dab-super-ai')[0].props['data-session-active'], 'false')
   assert.match(textOf(byClass(inactiveTree, 'dab-super-ai-state')[0]), /session not started/)
-  // Nothing runs: Start is the single primary action, Pause is not offered,
-  // Resume is not shown next to Start, and Stop stays reachable.
+  // Nothing runs: Start is the single primary action, Pause and Resume are
+  // not offered, and the band shows no Stop (the toolbar keeps the global one).
   const controls = collect(inactiveTree, node => node.props?.['data-action'] !== undefined)
   assert.equal(controls.find(node => node.props['data-action'] === 'pause'), undefined)
   assert.equal(controls.find(node => node.props['data-action'] === 'resume'), undefined)
   assert.equal(controls.find(node => node.props['data-action'] === 'start').props.disabled, false)
   assert.equal(controls.find(node => node.props['data-action'] === 'start').props['data-primary'], 'true')
   assert.equal(controls.filter(node => node.props['data-primary'] === 'true').length, 1)
-  assert.equal(controls.find(node => node.props['data-action'] === 'stop').props.disabled, false)
+  assert.equal(controls.find(node => node.props['data-action'] === 'stop'), undefined)
+  // Running: the same slot becomes Pause, and Stop appears in the same neutral style.
+  const runningControls = collect(band({ superagent: makeActiveSuperagent('active') }), node => node.props?.['data-action'] !== undefined)
+  assert.equal(runningControls.find(node => node.props['data-action'] === 'pause').props['data-primary'], 'true')
+  assert.equal(runningControls.find(node => node.props['data-action'] === 'start'), undefined)
+  assert.equal(runningControls.find(node => node.props['data-action'] === 'stop').props.disabled, false)
+  assert.equal(runningControls.find(node => node.props['data-action'] === 'stop').props['data-danger'], undefined)
 
   const thinking = cockpit.dabSuperagentFacts(makeActiveSuperagent('thinking'), makeMandate(), {})
   assert.equal(thinking.sessionActive, true)
@@ -728,19 +734,51 @@ function json(value) {
 }
 
 // ---------------------------------------------------------------- UX polish
-test('no enabled project: the band shows one call to action that opens the Projects tab', () => {
-  let opened = null
+test('the project picker lives in the card: one switch and a named level per project', () => {
+  const toggled = []
+  const leveled = []
   const mandate = makeMandate({ scopeMode: 'none', selectedWorkspaces: [], projects: {} })
-  const tree = band({ mandate, totals: { ...TOTALS, projects: 5 }, onOpenProjects: () => { opened = 'projects' } })
-  const cta = byClass(tree, 'dab-super-cta')
-  assert.equal(cta.length, 1)
-  cta[0].props.onClick()
-  assert.equal(opened, 'projects')
+  const projectRows = cockpit.dabProjectPolicyRows(makeHost(), makeInactiveSuperagent(), mandate)
+  const tree = band({
+    mandate, projectRows, totals: { ...TOTALS, projects: 2 },
+    onToggleProject: (id, enabled) => toggled.push([id, enabled]),
+    onSetProjectLevel: (id, level) => leveled.push([id, level]),
+  })
+  const strip = byClass(tree, 'dab-super-projects')
+  assert.equal(strip.length, 1)
+  assert.match(textOf(strip[0]), /Enable a project so the Super Agent can act on it/)
+  const switches = collect(strip[0], node => node.props?.role === 'switch')
+  assert.equal(switches.length, 2)
+  switches[0].props.onClick()
+  assert.deepEqual(toggled, [['ws:a', true]])
+  // No project enabled: Start cannot be pressed yet.
+  const start = collect(tree, node => node.props?.['data-action'] === 'start')[0]
+  assert.equal(start.props.disabled, true)
   // The enabled count falls back to the real project count instead of "unavailable".
-  assert.match(textOf(byClass(tree, 'dab-super-enabled')[0]), /0\/5/)
+  assert.match(textOf(byClass(tree, 'dab-super-enabled')[0]), /0\/2/)
+  assert.equal(byClass(tree, 'dab-super-cta').length, 0, 'no separate dashed call-to-action button')
 
-  const enabled = band({ mandate: makeMandate() })
-  assert.equal(byClass(enabled, 'dab-super-cta').length, 0, 'no call to action once a project is enabled')
+  // An enabled project shows its level by NAME, and changing it calls the host.
+  const enabledRows = cockpit.dabProjectPolicyRows(makeHost(), makeInactiveSuperagent(), makeMandate())
+  const enabledTree = band({ projectRows: enabledRows, onToggleProject: () => {}, onSetProjectLevel: (id, level) => leveled.push([id, level]) })
+  const select = byClass(enabledTree, 'dab-super-project-level')
+  assert.equal(select.length, 1, 'only enabled projects get a level picker')
+  assert.match(textOf(select[0]), /L3 · Bounded autonomy/)
+  select[0].props.onChange({ target: { value: 'L3' } })
+  assert.deepEqual(leveled, [['ws:a', 'L3']])
+})
+
+test('levels are named for humans everywhere', () => {
+  assert.equal(cockpit.dabLevelLabel('L0'), 'L0 · Observe')
+  assert.equal(cockpit.dabLevelLabel('L4'), 'L4 · Maximum autonomy')
+  assert.match(cockpit.dabLevelHint('L2'), /waits for your approval/)
+  cockpit.setLang('fr')
+  try {
+    assert.equal(cockpit.dabLevelLabel('L1'), 'L1 · Conseiller')
+    assert.equal(cockpit.dabLevelLabel('L3'), 'L3 · Autonome encadré')
+  } finally {
+    cockpit.setLang('en')
+  }
 })
 
 test('no pinned model reads as the DSH default model, never "unresolved"', () => {
@@ -756,7 +794,7 @@ test('stopped: Resume is the single primary action and Start is not offered besi
   assert.equal(controls.find(node => node.props['data-action'] === 'start'), undefined)
   assert.equal(controls.find(node => node.props['data-action'] === 'resume').props['data-primary'], 'true')
   assert.equal(controls.filter(node => node.props['data-primary'] === 'true').length, 1)
-  assert.equal(controls.find(node => node.props['data-action'] === 'stop').props.disabled, false, 'Stop stays reachable')
+  assert.equal(controls.find(node => node.props['data-action'] === 'stop'), undefined, 'nothing runs while stopped')
 })
 
 test('reason codes render as sentences with the raw code kept as a tooltip', () => {
@@ -764,4 +802,24 @@ test('reason codes render as sentences with the raw code kept as a tooltip', () 
   assert.equal(cockpit.dabReasonText('some_new_code'), 'some new code', 'unknown codes are spaced, never invented')
   assert.equal(cockpit.dabReasonText('Already a sentence.'), 'Already a sentence.')
   assert.equal(cockpit.dabReasonText(''), '')
+})
+
+test('enabling a project from the card selects it first, then switches it on; disabling only switches it off', async () => {
+  const fetchImpl = fakeFetch({})
+  const store = createBoardStore({ get: () => undefined }, { fetchImpl, notifyWindowMs: 0 })
+  await store.enableProject('ws:a', true)
+  const posts = fetchImpl.calls.filter(entry => entry.init?.method === 'POST')
+  // The host refuses to enable an out-of-scope project (409 project_not_in_scope),
+  // so the explicit selection must come first.
+  assert.match(posts[0].url, /\/mandate\/scope$/)
+  assert.deepEqual(JSON.parse(posts[0].init.body), { scopeMode: 'selected', selectedWorkspaces: ['ws:a'] })
+  assert.match(posts[1].url, /\/mandate\/project$/)
+  assert.deepEqual(JSON.parse(posts[1].init.body), { projectId: 'ws:a', enabled: true })
+
+  const before = fetchImpl.calls.length
+  await store.enableProject('ws:a', false)
+  const off = fetchImpl.calls.slice(before).filter(entry => entry.init?.method === 'POST')
+  assert.equal(off.length, 1, 'disabling never widens or narrows the scope')
+  assert.match(off[0].url, /\/mandate\/project$/)
+  assert.deepEqual(JSON.parse(off[0].init.body), { projectId: 'ws:a', enabled: false })
 })

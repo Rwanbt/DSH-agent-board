@@ -571,14 +571,14 @@ test('super bar: the AI session is a state distinct from the supervision layer',
   // Real AI facts: model, level, enabled/total projects.
   assert.match(textOf(byClass(tree, 'dab-super-model')[0]), /deepseek\/v4/)
   // Label and value only once: never 'Level Level L2'.
-  assert.equal(textOf(byClass(tree, 'dab-super-level')[0]), 'LevelL2')
+  assert.equal(textOf(byClass(tree, 'dab-super-level')[0]), 'LevelL2 · Supervised')
   assert.match(textOf(byClass(tree, 'dab-super-enabled')[0]), /1\/2 projects enabled/)
   // No decision counter without a real pending decision.
   assert.equal(byClass(tree, 'dab-super-decisions').length, 0)
-  // Stop/Pause are reachable siblings of the collapsible body.
-  const stop = collect(tree, node => node.props?.['data-action'] === 'stop')
-  assert.equal(stop.length, 1)
-  assert.equal(walkHas(byClass(tree, 'dab-band-body')[0], stop[0]), false, 'controls live in the band, not in the collapsed body')
+  // The primary control is a reachable sibling of the collapsible body.
+  const primary = collect(tree, node => node.props?.['data-primary'] === 'true')
+  assert.equal(primary.length, 1)
+  assert.equal(walkHas(byClass(tree, 'dab-band-body')[0], primary[0]), false, 'controls live in the band, not in the collapsed body')
 })
 
 test('cockpit CSS: Super Agent surfaces keep a visible focus ring and mobile controls', () => {

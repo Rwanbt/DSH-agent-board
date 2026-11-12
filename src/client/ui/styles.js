@@ -472,7 +472,9 @@ const DAB_CSS = `
 .dab-super-orch:hover { border-color: var(--dsw-alias-brand-primary); }
 .dab-super-none { font-size: 11px; color: var(--dsw-alias-label-secondary); }
 .dab-super-more { font-size: 11px; color: var(--dsw-alias-label-secondary); }
-.dab-super .dab-band-body { flex: 1 0 100%; padding: 6px 2px 4px; }
+/* Supervision details come after the agent controls and the project picker. */
+.dab-super .dab-band-body { flex: 1 0 100%; padding: 6px 2px 4px; order: 10; }
+.dab-super .dab-super-none { order: 11; }
 .dab-super .dab-band-head { min-height: 0; }
 
 /* ---------- indicators (50-60 px) */
@@ -655,7 +657,7 @@ const DAB_CSS = `
   padding: 2px 9px; border-radius: 999px; corner-shape: round; background: var(--dab-chip-fill);
   font-size: 11px; line-height: 17px; color: var(--dsw-alias-label-primary); }
 .dab-super-ai[data-session-active="true"] { border: 1px solid var(--dsw-alias-brand-primary); }
-.dab-super-ai[data-session-active="false"] { border: 1px dashed var(--dsw-alias-border-l2, var(--dsw-alias-border-l3)); }
+.dab-super-ai[data-session-active="false"] { border: 1px solid var(--dsw-alias-border-l2, var(--dsw-alias-border-l3)); }
 .dab-super-ai-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--dsw-alias-label-secondary); }
 .dab-super-ai[data-session-active="true"] .dab-super-ai-dot { background: var(--dsw-alias-state-success-primary); }
 .dab-super-ai[data-session-state="error"] .dab-super-ai-dot { background: var(--dsw-alias-state-error-primary); }
@@ -671,16 +673,25 @@ const DAB_CSS = `
   background: var(--dab-card-fill); color: var(--dsw-alias-label-primary); font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .dab-super-ctrl:hover:not([disabled]) { background: var(--dsw-alias-interactive-bg-hover); }
 .dab-super-ctrl[disabled] { opacity: .45; cursor: not-allowed; }
-.dab-super-ctrl[data-danger="true"] { color: var(--dsw-alias-state-error-primary); }
+
 /* Inverted button: the DSH brand token is the text colour itself (white in dark, dark in light). */
 .dab-super-ctrl[data-primary="true"] { background: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-base, #000); font-weight: 600; }
 .dab-super-ctrl[data-primary="true"]:hover:not([disabled]) { background: var(--dsw-alias-label-primary); opacity: .88; }
-.dab-super-cta { display: inline-flex; align-items: center; min-height: 28px; padding: 4px 12px; flex: none;
-  border-radius: var(--dsw-radius-sm); border: 1px dashed var(--dsw-alias-brand-primary);
-  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); color: var(--dsw-alias-brand-primary);
-  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
-.dab-super-cta:hover { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 20%, transparent); }
-.dab-super-cta:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+/* Inline project picker: one switch + autonomy level per project. */
+.dab-super-projects { flex: 1 1 100%; order: 5; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+  border-radius: var(--dsw-radius-md, 10px); background: var(--dab-chip-fill); }
+.dab-super-projects-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.dab-super-projects-title { font-size: 12px; font-weight: 600; }
+.dab-super-projects-hint { flex: 1 1 auto; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dab-super-projects-more { margin-left: auto; border: 0; background: transparent; padding: 2px 4px; font: inherit; font-size: 12px;
+  color: var(--dsw-alias-label-secondary); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.dab-super-projects-more:hover { color: var(--dsw-alias-label-primary); }
+.dab-super-project-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 14px; }
+.dab-super-project { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; min-height: 34px; }
+.dab-super-project-toggle { min-width: 0; }
+.dab-super-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-super-project-level { flex: none; max-width: 170px; min-height: 28px; font-size: 12px; }
+.dab-super-project-toggle:focus-visible, .dab-super-projects-more:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 .dab-super-decisions { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 0 8px;
   border-radius: 999px; corner-shape: round; border: 1px solid var(--dsw-alias-state-warn-primary);
   background: transparent; color: var(--dsw-alias-state-warn-primary); font: inherit; font-size: 11px; cursor: pointer; }
@@ -770,7 +781,7 @@ const DAB_CSS = `
 .dab-sa-project-facts { display: flex; gap: 4px 14px; flex-wrap: wrap; font-size: 11px; color: var(--dsw-alias-label-secondary); }
 .dab-sa-reason { font-size: 11px; color: var(--dsw-alias-state-warn-primary); overflow-wrap: anywhere; }
 .dab-sa-dryrun { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: var(--dsw-radius-sm);
-  background: var(--dab-card-fill); border: 1px dashed var(--dsw-alias-border-l2, var(--dsw-alias-border-l3)); }
+  background: var(--dab-card-fill); border: 1px solid var(--dsw-alias-border-l2, var(--dsw-alias-border-l3)); }
 .dab-sa-dryrun-note { font-size: 11px; font-weight: 600; color: var(--dsw-alias-state-success-primary); }
 .dab-sa-dryrun-counts { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
 .dab-sa-dryrun-section { display: flex; flex-direction: column; gap: 3px; }
@@ -790,7 +801,7 @@ const DAB_CSS = `
 .dab-btn[data-primary="true"][disabled] { opacity: .4; }
 .dab-sa-examples { display: flex; flex-direction: column; gap: 8px; }
 .dab-sa-example-list { display: flex; flex-direction: column; gap: 6px; }
-.dab-sa-example { text-align: left; padding: 8px 12px; border-radius: var(--dsw-radius-md, 10px); border: 1px dashed var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary));
+.dab-sa-example { text-align: left; padding: 8px 12px; border-radius: var(--dsw-radius-md, 10px); border: 1px solid var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary));
   background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 12px; cursor: pointer; }
 .dab-sa-example:hover { background: var(--dab-card-fill); }
 .dab-sa-example:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
@@ -832,7 +843,9 @@ const DAB_CSS = `
   .dab-sa-toggle { min-height: 40px; }
   .dab-sa-field .dab-select, .dab-sa-field .dab-input { min-height: 36px; }
   .dab-sa-model-row, .dab-sa-fallbacks { grid-template-columns: 1fr; gap: 2px; }
-  .dab-super-cta { flex: 1 1 100%; justify-content: center; min-height: 40px; order: 4; }
+  .dab-super-project-list { grid-template-columns: 1fr; }
+  .dab-super-project { min-height: 44px; }
+  .dab-super-project-level { min-height: 36px; max-width: 55%; }
   /* Agent status and actions first; the supervision details follow. */
   .dab-super > .dab-band-body { order: 10; flex: 1 1 100%; }
   .dab-super-none { order: 11; }

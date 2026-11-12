@@ -4487,6 +4487,22 @@ function createBoardStore(ctx, options = {}) {
     }),
     setLevel: level => post('/mandate/level', { level }),
     setProject: (projectId, patch = {}) => post('/mandate/project', { projectId, ...patch }),
+    /**
+     * One switch per project. The host refuses to enable a project that is not
+     * in scope (no silent scope increase), so enabling first makes the
+     * selection explicit (POST /mandate/scope), then turns the project on.
+     * Disabling only switches the project off; the scope is left as is.
+     */
+    enableProject: async (projectId, enabled) => {
+      if (enabled !== true) return post('/mandate/project', { projectId, enabled: false })
+      const current = mandateOf(host) ?? {}
+      const selected = Array.isArray(current.selectedWorkspaces) ? current.selectedWorkspaces : []
+      if (current.scopeMode !== 'all' && !selected.includes(projectId)) {
+        const scoped = await post('/mandate/scope', { scopeMode: 'selected', selectedWorkspaces: [...selected, projectId] })
+        if (scoped?.ok !== true) return scoped
+      }
+      return post('/mandate/project', { projectId, enabled: true })
+    },
     setPause: paused => post('/mandate/pause', { paused: paused === true }),
     /** Full mandate patch (actions map and/or level), for POST /mandate. */
     setMandate: patch => post('/mandate', patch ?? {}),
@@ -4837,6 +4853,20 @@ const DAB_STRINGS = {
     superUnavailableReason: 'hôte : superagent non publié',
     superModelUnavailable: 'modèle non résolu',
     superModelHostDefault: 'modèle par défaut de DSH',
+    levelName_L0: 'Observation',
+    levelName_L1: 'Conseiller',
+    levelName_L2: 'Supervisé',
+    levelName_L3: 'Autonome encadré',
+    levelName_L4: 'Autonomie maximale',
+    levelHint_L0: 'Lit et rapporte, ne crée ni ne lance rien.',
+    levelHint_L1: 'Analyse et propose des plans, sans les appliquer.',
+    levelHint_L2: 'Prépare le travail et attend votre approbation avant d’agir.',
+    levelHint_L3: 'Planifie et lance les tâches autorisées ; vous consulte pour les exceptions.',
+    levelHint_L4: 'Gère seul les projets choisis ; ne vous consulte que pour les décisions hors mandat.',
+    superProjectsDriven: 'Projets pilotés',
+    superProjectsNoneHint: 'Activez un projet pour que le Super Agent puisse agir dessus.',
+    superProjectsMore: 'Tous les projets ({n})',
+    superProjectLevelOf: 'Niveau d’autonomie : {project}',
     supervisionNothingToReport: 'Rien à signaler : aucune recommandation, aucun blocage, aucune dépendance entre projets.',
     superDirectiveUseExample: 'Utiliser cet exemple',
     superNoObjectiveYet: 'Aucun objectif : démarrez le Super Agent après avoir choisi des projets.',
@@ -5274,6 +5304,20 @@ const DAB_STRINGS = {
     superUnavailableReason: 'host: superagent not published',
     superModelUnavailable: 'unresolved model',
     superModelHostDefault: 'DSH default model',
+    levelName_L0: 'Observe',
+    levelName_L1: 'Advisor',
+    levelName_L2: 'Supervised',
+    levelName_L3: 'Bounded autonomy',
+    levelName_L4: 'Maximum autonomy',
+    levelHint_L0: 'Reads and reports; creates and launches nothing.',
+    levelHint_L1: 'Analyses and proposes plans without applying them.',
+    levelHint_L2: 'Prepares work and waits for your approval before acting.',
+    levelHint_L3: 'Plans and launches allowed tasks; asks you about exceptions.',
+    levelHint_L4: 'Runs the chosen projects on its own; asks only for out-of-mandate decisions.',
+    superProjectsDriven: 'Driven projects',
+    superProjectsNoneHint: 'Enable a project so the Super Agent can act on it.',
+    superProjectsMore: 'All projects ({n})',
+    superProjectLevelOf: 'Autonomy level: {project}',
     supervisionNothingToReport: 'Nothing to report: no recommendation, no block, no cross-project dependency.',
     superDirectiveUseExample: 'Use this example',
     superNoObjectiveYet: 'No objective yet: start the Super Agent once projects are chosen.',
@@ -5719,6 +5763,17 @@ const DAB_REASON_TEXT = {
     credentials_rejected: 'credentials rejected',
     unsupported_version: 'unsupported version',
   },
+}
+
+/** "L2 · Supervisé": the code stays visible (it is what the docs use), the name explains it. */
+function dabLevelLabel(level) {
+  if (typeof level !== 'string' || !/^L[0-4]$/.test(level)) return typeof level === 'string' ? level : ''
+  return `${level} · ${dabT(`levelName_${level}`)}`
+}
+
+/** One-sentence description of what a level allows. */
+function dabLevelHint(level) {
+  return typeof level === 'string' && /^L[0-4]$/.test(level) ? dabT(`levelHint_${level}`) : ''
 }
 
 /** True when `value` looks like a machine code (snake_case), not a sentence. */
@@ -6210,7 +6265,9 @@ const DAB_CSS = `
 .dab-super-orch:hover { border-color: var(--dsw-alias-brand-primary); }
 .dab-super-none { font-size: 11px; color: var(--dsw-alias-label-secondary); }
 .dab-super-more { font-size: 11px; color: var(--dsw-alias-label-secondary); }
-.dab-super .dab-band-body { flex: 1 0 100%; padding: 6px 2px 4px; }
+/* Supervision details come after the agent controls and the project picker. */
+.dab-super .dab-band-body { flex: 1 0 100%; padding: 6px 2px 4px; order: 10; }
+.dab-super .dab-super-none { order: 11; }
 .dab-super .dab-band-head { min-height: 0; }
 
 /* ---------- indicators (50-60 px) */
@@ -6393,7 +6450,7 @@ const DAB_CSS = `
   padding: 2px 9px; border-radius: 999px; corner-shape: round; background: var(--dab-chip-fill);
   font-size: 11px; line-height: 17px; color: var(--dsw-alias-label-primary); }
 .dab-super-ai[data-session-active="true"] { border: 1px solid var(--dsw-alias-brand-primary); }
-.dab-super-ai[data-session-active="false"] { border: 1px dashed var(--dsw-alias-border-l2, var(--dsw-alias-border-l3)); }
+.dab-super-ai[data-session-active="false"] { border: 1px solid var(--dsw-alias-border-l2, var(--dsw-alias-border-l3)); }
 .dab-super-ai-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--dsw-alias-label-secondary); }
 .dab-super-ai[data-session-active="true"] .dab-super-ai-dot { background: var(--dsw-alias-state-success-primary); }
 .dab-super-ai[data-session-state="error"] .dab-super-ai-dot { background: var(--dsw-alias-state-error-primary); }
@@ -6409,16 +6466,25 @@ const DAB_CSS = `
   background: var(--dab-card-fill); color: var(--dsw-alias-label-primary); font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .dab-super-ctrl:hover:not([disabled]) { background: var(--dsw-alias-interactive-bg-hover); }
 .dab-super-ctrl[disabled] { opacity: .45; cursor: not-allowed; }
-.dab-super-ctrl[data-danger="true"] { color: var(--dsw-alias-state-error-primary); }
+
 /* Inverted button: the DSH brand token is the text colour itself (white in dark, dark in light). */
 .dab-super-ctrl[data-primary="true"] { background: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-base, #000); font-weight: 600; }
 .dab-super-ctrl[data-primary="true"]:hover:not([disabled]) { background: var(--dsw-alias-label-primary); opacity: .88; }
-.dab-super-cta { display: inline-flex; align-items: center; min-height: 28px; padding: 4px 12px; flex: none;
-  border-radius: var(--dsw-radius-sm); border: 1px dashed var(--dsw-alias-brand-primary);
-  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); color: var(--dsw-alias-brand-primary);
-  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
-.dab-super-cta:hover { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 20%, transparent); }
-.dab-super-cta:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+/* Inline project picker: one switch + autonomy level per project. */
+.dab-super-projects { flex: 1 1 100%; order: 5; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+  border-radius: var(--dsw-radius-md, 10px); background: var(--dab-chip-fill); }
+.dab-super-projects-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.dab-super-projects-title { font-size: 12px; font-weight: 600; }
+.dab-super-projects-hint { flex: 1 1 auto; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dab-super-projects-more { margin-left: auto; border: 0; background: transparent; padding: 2px 4px; font: inherit; font-size: 12px;
+  color: var(--dsw-alias-label-secondary); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.dab-super-projects-more:hover { color: var(--dsw-alias-label-primary); }
+.dab-super-project-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 14px; }
+.dab-super-project { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; min-height: 34px; }
+.dab-super-project-toggle { min-width: 0; }
+.dab-super-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dab-super-project-level { flex: none; max-width: 170px; min-height: 28px; font-size: 12px; }
+.dab-super-project-toggle:focus-visible, .dab-super-projects-more:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 .dab-super-decisions { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 0 8px;
   border-radius: 999px; corner-shape: round; border: 1px solid var(--dsw-alias-state-warn-primary);
   background: transparent; color: var(--dsw-alias-state-warn-primary); font: inherit; font-size: 11px; cursor: pointer; }
@@ -6508,7 +6574,7 @@ const DAB_CSS = `
 .dab-sa-project-facts { display: flex; gap: 4px 14px; flex-wrap: wrap; font-size: 11px; color: var(--dsw-alias-label-secondary); }
 .dab-sa-reason { font-size: 11px; color: var(--dsw-alias-state-warn-primary); overflow-wrap: anywhere; }
 .dab-sa-dryrun { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: var(--dsw-radius-sm);
-  background: var(--dab-card-fill); border: 1px dashed var(--dsw-alias-border-l2, var(--dsw-alias-border-l3)); }
+  background: var(--dab-card-fill); border: 1px solid var(--dsw-alias-border-l2, var(--dsw-alias-border-l3)); }
 .dab-sa-dryrun-note { font-size: 11px; font-weight: 600; color: var(--dsw-alias-state-success-primary); }
 .dab-sa-dryrun-counts { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
 .dab-sa-dryrun-section { display: flex; flex-direction: column; gap: 3px; }
@@ -6528,7 +6594,7 @@ const DAB_CSS = `
 .dab-btn[data-primary="true"][disabled] { opacity: .4; }
 .dab-sa-examples { display: flex; flex-direction: column; gap: 8px; }
 .dab-sa-example-list { display: flex; flex-direction: column; gap: 6px; }
-.dab-sa-example { text-align: left; padding: 8px 12px; border-radius: var(--dsw-radius-md, 10px); border: 1px dashed var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary));
+.dab-sa-example { text-align: left; padding: 8px 12px; border-radius: var(--dsw-radius-md, 10px); border: 1px solid var(--dsw-alias-border-l3, var(--dsw-alias-label-secondary));
   background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 12px; cursor: pointer; }
 .dab-sa-example:hover { background: var(--dab-card-fill); }
 .dab-sa-example:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
@@ -6570,7 +6636,9 @@ const DAB_CSS = `
   .dab-sa-toggle { min-height: 40px; }
   .dab-sa-field .dab-select, .dab-sa-field .dab-input { min-height: 36px; }
   .dab-sa-model-row, .dab-sa-fallbacks { grid-template-columns: 1fr; gap: 2px; }
-  .dab-super-cta { flex: 1 1 100%; justify-content: center; min-height: 40px; order: 4; }
+  .dab-super-project-list { grid-template-columns: 1fr; }
+  .dab-super-project { min-height: 44px; }
+  .dab-super-project-level { min-height: 36px; max-width: 55%; }
   /* Agent status and actions first; the supervision details follow. */
   .dab-super > .dab-band-body { order: 10; flex: 1 1 100%; }
   .dab-super-none { order: 11; }
@@ -8038,9 +8106,43 @@ function dabSuperControl(h, props) {
   }, label)
 }
 
+const DAB_SUPER_PROJECTS_SHOWN = 8
+
+/** Inline project switches: the first thing an operator configures. */
+function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, onOpenProjects, needsProjects }) {
+  const shown = rows.slice(0, DAB_SUPER_PROJECTS_SHOWN)
+  const extra = rows.length - shown.length
+  return h('div', { className: 'dab-super-projects', role: 'group', 'aria-label': dabT('superProjectsDriven') },
+    h('div', { className: 'dab-super-projects-head' },
+      h('span', { className: 'dab-super-projects-title' }, dabT('superProjectsDriven')),
+      needsProjects ? h('span', { className: 'dab-super-projects-hint' }, dabT('superProjectsNoneHint')) : null,
+      h('button', { type: 'button', className: 'dab-super-projects-more', onClick: () => onOpenProjects?.() },
+        extra > 0 ? dabT('superProjectsMore', { n: rows.length }) : dabT('superDetailsShort'))),
+    h('ul', { className: 'dab-super-project-list' }, shown.map(row => h('li', {
+      key: row.id, className: 'dab-super-project', 'data-enabled': row.enabled ? 'true' : 'false', 'data-project-id': row.id,
+    },
+    h('button', {
+      type: 'button', className: 'dab-sa-toggle dab-super-project-toggle', role: 'switch',
+      'aria-checked': row.enabled ? 'true' : 'false',
+      'aria-label': `${row.enabled ? dabT('superProjectDisable') : dabT('superProjectEnable')} : ${row.title}`,
+      disabled: busy === true || typeof onToggleProject !== 'function',
+      onClick: () => onToggleProject?.(row.id, !row.enabled),
+    }, h('span', { className: 'dab-super-project-name' }, row.title)),
+    row.enabled
+      ? h('select', {
+        className: 'dab-select dab-super-project-level', value: row.level,
+        'aria-label': dabT('superProjectLevelOf', { project: row.title }),
+        title: dabLevelHint(row.level),
+        disabled: busy === true || typeof onSetProjectLevel !== 'function',
+        onChange: event => onSetProjectLevel?.(row.id, event?.target?.value),
+      }, DAB_AUTONOMY_LEVELS.map(level => h('option', { key: level, value: level, title: dabLevelHint(level) }, dabLevelLabel(level))))
+      : null))))
+}
+
 function DabSuperOrchestratorBarImpl({
   workspace, totals, projects, orchestrators: orchestratorList, mode, open, onToggle, onSelect, compact,
   superagent, mandate, capabilities, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenProjects,
+  projectRows, onToggleProject, onSetProjectLevel,
 }) {
   const h = React.createElement
   // Prefer the real, filter-independent orchestrator list from the hierarchy.
@@ -8082,7 +8184,10 @@ function DabSuperOrchestratorBarImpl({
   const modelText = facts.modelText ?? (facts.available ? dabT('superModelHostDefault') : null)
   const totalProjects = facts.totalProjects > 0 ? facts.totalProjects : projectCount
   const needsProjects = facts.available && facts.enabledProjects === 0 && totalProjects > 0
-  const levelText = facts.level === null ? dabT('superLevelUnavailable') : facts.level
+  const levelText = facts.level === null ? dabT('superLevelUnavailable') : dabLevelLabel(facts.level)
+  // Stop matters only while something runs; the toolbar keeps the global
+  // emergency Stop reachable at all times.
+  const canStop = facts.sessionActive === true || inFlight > 0
   const projectsText = totalProjects > 0
     ? dabT('superProjectsEnabled', { enabled: facts.enabledProjects, total: totalProjects })
     : (facts.available ? dabT('superProjectsUnavailable') : null)
@@ -8096,25 +8201,25 @@ function DabSuperOrchestratorBarImpl({
     // Exactly one primary action for the current state: Start, Resume or Pause.
     canResume
       ? dabSuperControl(h, {
-        key: 'resume', action: 'resume', label: `▶ ${dabT('resume')}`, title: dabT('superResume'), primary: true, disabled: busy === true, onClick: onResume,
+        key: 'resume', action: 'resume', label: dabT('resume'), title: dabT('superResume'), primary: true, disabled: busy === true, onClick: onResume,
       })
-      : null,
-    canStart
+      : canPause
+        ? dabSuperControl(h, {
+          key: 'pause', action: 'pause', label: dabT('superPauseShort'), title: dabT('superPause'), primary: true,
+          disabled: busy === true, onClick: onPause,
+        })
+        : canStart
+          ? dabSuperControl(h, {
+            key: 'start', action: 'start', label: dabT('superStartShort'), title: dabT('superStart'), primary: true,
+            disabled: busy === true || facts.enabledProjects === 0, onClick: onStart,
+          })
+          : null,
+    canStop
       ? dabSuperControl(h, {
-        key: 'start', action: 'start', label: `▶ ${dabT('superStartShort')}`, title: dabT('superStart'), primary: true,
-        disabled: busy === true, onClick: onStart,
+        key: 'stop', action: 'stop', label: dabT('superStopShort'), title: dabT('superStop'),
+        disabled: busy === true, onClick: onStop,
       })
       : null,
-    canPause
-      ? dabSuperControl(h, {
-        key: 'pause', action: 'pause', label: `⏸ ${dabT('superPauseShort')}`, title: dabT('superPause'),
-        disabled: busy === true, onClick: onPause,
-      })
-      : null,
-    dabSuperControl(h, {
-      key: 'stop', action: 'stop', label: `⏹ ${dabT('superStopShort')}`, title: dabT('superStop'), danger: true,
-      disabled: busy === true, onClick: onStop,
-    }),
     onOpenSuperagent !== undefined && onOpenSuperagent !== null
       ? dabSuperControl(h, {
         key: 'details', action: 'details', label: dabT('superDetailsShort'), title: dabT('superDetailsOpen'),
@@ -8200,14 +8305,8 @@ function DabSuperOrchestratorBarImpl({
 
   controls,
 
-  needsProjects
-    ? h('button', {
-      type: 'button',
-      className: 'dab-super-cta',
-      'data-cta': 'choose-projects',
-      title: dabT('superChooseProjectsHint'),
-      onClick: () => (onOpenProjects ?? onOpenSuperagent)?.(),
-    }, dabT('superChooseProjects'))
+  Array.isArray(projectRows) && projectRows.length > 0
+    ? dabSuperProjects(h, { rows: projectRows, busy, onToggleProject, onSetProjectLevel, onOpenProjects: onOpenProjects ?? onOpenSuperagent, needsProjects })
     : null,
 
   // Mini orchestrator avatars: real agents only. A project without a declared
@@ -8255,6 +8354,9 @@ const DabSuperOrchestratorBar = React.memo(DabSuperOrchestratorBarImpl, (a, b) =
   && a.onOpenSuperagent === b.onOpenSuperagent
   && a.onOpenDecisions === b.onOpenDecisions
   && a.onOpenProjects === b.onOpenProjects
+  && a.projectRows === b.projectRows
+  && a.onToggleProject === b.onToggleProject
+  && a.onSetProjectLevel === b.onSetProjectLevel
   && a.superagent === b.superagent
   && a.mandate === b.mandate
   && a.capabilities === b.capabilities
@@ -8990,7 +9092,7 @@ function DabSuperagentProjects({
             className: 'dab-select dab-sa-level', value: row.level,
             'aria-label': `${dabT('superProjectLevel')} : ${row.title}`,
             onChange: event => onSetProjectLevel?.(row.id, event?.target?.value),
-          }, DAB_AUTONOMY_LEVELS.map(level => h('option', { key: level, value: level }, level)))),
+          }, DAB_AUTONOMY_LEVELS.map(level => h('option', { key: level, value: level, title: dabLevelHint(level) }, dabLevelLabel(level))))),
         h('label', { className: 'dab-sa-field dab-sa-field-inline' },
           h('span', { className: 'dab-sa-field-label' }, dabT('superProjectPriority')),
           h('input', {
@@ -9170,7 +9272,8 @@ function DabSuperagentSettings({
         h('select', {
           className: 'dab-select dab-sa-global-level', value: level, 'aria-label': dabT('superSettingsGlobalLevel'),
           onChange: event => onSetLevel?.(event?.target?.value),
-        }, DAB_AUTONOMY_LEVELS.map(value => h('option', { key: value, value }, value))))),
+        }, DAB_AUTONOMY_LEVELS.map(value => h('option', { key: value, value, title: dabLevelHint(value) }, dabLevelLabel(value))))),
+      h('div', { className: 'dab-muted dab-sa-level-hint' }, dabLevelHint(level))),
     dabSaSection(h, 'budget', dabT('superSettingsBudget'),
       budget === null
         ? dabSaReason(h, 'budget_not_published')
@@ -9332,7 +9435,7 @@ function DabSuperagentInspector(props) {
         h('div', { className: 'dab-sa-sub' },
           h('span', { className: 'dab-sa-state', 'data-session-state': facts.stateKey }, dabT(facts.stateLabelKey)),
           facts.modelText === null ? null : h('span', { className: 'dab-sa-head-model' }, facts.modelText),
-          facts.level === null ? null : h('span', { className: 'dab-tag' }, facts.level))),
+          facts.level === null ? null : h('span', { className: 'dab-tag', title: dabLevelHint(facts.level) }, dabLevelLabel(facts.level)))),
       h('button', {
         type: 'button', className: 'dab-btn', 'data-variant': 'ghost', 'aria-label': dabT('close'), onClick: () => onClose?.(),
       }, '✕')),
@@ -9980,6 +10083,7 @@ function dabMakePage(store, ctx) {
     const mandate = snapshot.mandate ?? null
     const capabilities = snapshot.capabilities ?? null
     const portfolio = React.useMemo(() => (typeof dabSuperagentPortfolio === 'function' ? dabSuperagentPortfolio(host, superagent) : []), [host, superagent])
+    const projectRows = React.useMemo(() => (typeof dabProjectPolicyRows === 'function' ? dabProjectPolicyRows(host, superagent, mandate) : []), [host, superagent, mandate])
     const superContext = {
       mode,
       stopped: host.stoppedAt !== null && host.stoppedAt !== undefined,
@@ -10149,11 +10253,17 @@ function dabMakePage(store, ctx) {
       setBusy(true)
       try {
         const result = await operation()
-        setNotice(result?.ok === true ? '' : `${label}: ${result?.payload?.error ?? result?.error ?? result?.status ?? 'failed'}`)
+        const error = String(result?.payload?.error ?? result?.error ?? result?.status ?? 'failed')
+        setNotice(result?.ok === true ? '' : `${label}: ${typeof dabReasonText === 'function' ? dabReasonText(error) : error}`)
       } finally {
         setBusy(false)
       }
     }
+    // Stable handlers for the band (it is memoized on its callbacks).
+    const actRef = React.useRef(act)
+    actRef.current = act
+    const toggleProject = React.useCallback((projectId, enabled) => actRef.current('project', () => store.enableProject(projectId, enabled)), [store])
+    const setProjectLevel = React.useCallback((projectId, level) => actRef.current('project-level', () => store.setProject(projectId, { level })), [store])
 
     const hostDown = snapshot.hostError !== null && snapshot.hostError !== undefined && host.sync === null
     const canStop = (host.assignments ?? []).some(assignment => assignment.status === 'running' || assignment.status === 'starting')
@@ -10217,6 +10327,9 @@ function dabMakePage(store, ctx) {
       onOpenSuperagent: openSuperagent,
       onOpenDecisions: openSuperagent,
       onOpenProjects: openSuperagentProjects,
+      projectRows,
+      onToggleProject: toggleProject,
+      onSetProjectLevel: setProjectLevel,
     })
 
     const filtersActiveAll = filtersActive || ui.project !== null || focus !== null
@@ -10325,7 +10438,7 @@ function dabMakePage(store, ctx) {
         onClose: () => setSuperagentOpen(false),
         onOpenDetail: openSuperagent,
         onDryRun: runDryRun,
-        onToggleProject: (projectId, enabled) => act('project', () => store.setProject(projectId, { enabled })),
+        onToggleProject: toggleProject,
         onSetProjectLevel: (projectId, level) => act('project-level', () => store.setProject(projectId, { level })),
         onSetProjectPriority: (projectId, priority) => act('project-priority', () => store.setProject(projectId, { priority })),
         onConfirmAllProjects: confirm => act('scope', () => store.setScope('all', undefined, confirm)),
