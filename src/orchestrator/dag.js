@@ -63,8 +63,15 @@ export function dagDepth(task, tasksById, seen = new Set()) {
   return depth
 }
 
-export function orderCandidates(tasks, tasksById) {
+export function orderCandidates(tasks, tasksById, projectRank = null) {
+  // Project fairness comes FIRST: the host passes the fair order computed by
+  // `plan/scheduler.js` (priority, anti-starvation, fewest served). Within one
+  // project the historical rule applies (urgency, then DAG depth, then id).
+  const rank = projectRank instanceof Map ? projectRank : null
+  const rankOf = task => (rank === null ? 0 : (rank.get(String(task?.workspaceId ?? '')) ?? Number.MAX_SAFE_INTEGER))
   return [...tasks].sort((a, b) => {
+    const project = rankOf(a) - rankOf(b)
+    if (project !== 0) return project
     const urgency = (URGENCY_WEIGHT[a.urgency] ?? 1) - (URGENCY_WEIGHT[b.urgency] ?? 1)
     if (urgency !== 0) return urgency
     const depth = dagDepth(a, tasksById) - dagDepth(b, tasksById)
@@ -108,7 +115,7 @@ export function startedWithinHour(assignments, now, windowMs = 60 * 60 * 1000) {
  * @param {number} input.now
  * @returns {{mode:string, slots:number, actions:object[], skipped:object[]}}
  */
-export function selectDispatchable({ tasks, assignments = [], proposals = [], policy, now = Date.now() }) {
+export function selectDispatchable({ tasks, assignments = [], proposals = [], policy, now = Date.now(), projectOrder = [] }) {
   const tasksById = new Map()
   for (const task of tasks ?? []) {
     if (task !== null && typeof task === 'object' && typeof task.id === 'string') tasksById.set(task.id, task)
@@ -143,6 +150,7 @@ export function selectDispatchable({ tasks, assignments = [], proposals = [], po
   const candidates = orderCandidates(
     (tasks ?? []).filter(task => taskStatusOf(task) === 'todo'),
     tasksById,
+    new Map((Array.isArray(projectOrder) ? projectOrder : []).map((projectId, index) => [String(projectId), index])),
   )
 
   let remaining = slots

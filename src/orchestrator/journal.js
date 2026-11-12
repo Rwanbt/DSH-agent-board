@@ -22,6 +22,14 @@ let writeCounter = 0
 /** Rename errors worth retrying on Windows: AV scanners, indexers, open handles. */
 export const RENAME_RETRY_CODES = Object.freeze(['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY'])
 
+/**
+ * State documents this build can read. v1 is the pre-mandate shape (migrated by
+ * the host with a restrictive mandate); v2 adds the explicit mandate. A document
+ * from an UNKNOWN future version is not guessed at: it is treated as unreadable
+ * so the evidence is preserved instead of silently overwritten with defaults.
+ */
+export const SUPPORTED_SCHEMA_VERSIONS = Object.freeze(new Set([1, 2]))
+
 const RETRYABLE_RENAME = new Set(RENAME_RETRY_CODES)
 
 /** Short, bounded backoff: long enough for an AV scan, short enough for a save. */
@@ -160,8 +168,12 @@ export class StateStore {
       }
       parsed = null
     }
-    if (parsed === null || typeof parsed !== 'object' || parsed.schemaVersion !== 1) {
-      const initial = { ...defaults, schemaVersion: 1 }
+    if (parsed === null || typeof parsed !== 'object' || !SUPPORTED_SCHEMA_VERSIONS.has(Number(parsed.schemaVersion))) {
+      // A fresh document always carries a schema version: the caller's when it
+      // declares one (v2 for the mandate), otherwise the legacy 1 — never a
+      // silently version-less document that a later build would treat as foreign.
+      const declared = Number(defaults?.schemaVersion)
+      const initial = { ...defaults, schemaVersion: Number.isFinite(declared) && declared > 0 ? declared : 1 }
       if (write) await this.write(initial)
       return initial
     }
@@ -210,7 +222,10 @@ export class StateStore {
    * promise still rejects for its caller, and `lastFailure` records it.
    */
   write(state) {
-    const payload = { ...state, schemaVersion: 1, savedAt: this.now() }
+    // The document keeps the version the caller declared (v2 for the mandate);
+    // forcing 1 here made every save look pre-mandate to the next read.
+    const declared = Number(state?.schemaVersion)
+    const payload = { ...state, schemaVersion: Number.isFinite(declared) && declared > 0 ? declared : 1, savedAt: this.now() }
     const start = () => this.#persist(payload)
     const current = this.queue.then(start, start)
     this.queue = current.then(() => undefined, () => undefined)
@@ -228,7 +243,8 @@ export class StateStore {
     // Close the store first: a queued async write must not rename its older
     // snapshot over this final document (it checks `closed` before renaming).
     this.closed = true
-    const payload = { ...state, schemaVersion: 1, savedAt: this.now() }
+    const declared = Number(state?.schemaVersion)
+    const payload = { ...state, schemaVersion: Number.isFinite(declared) && declared > 0 ? declared : 1, savedAt: this.now() }
     const tmp = `${this.statePath}.tmp-${process.pid}-exit`
     try {
       writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
