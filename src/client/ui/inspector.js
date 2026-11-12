@@ -515,6 +515,17 @@ function DabSuperagentDirectives({ superagent, portfolio, busy, onAdd, onRevoke 
       }, example)))))
 }
 
+/** One readable line for a reconcile note (objects were printed as [object Object]). */
+function dabReconcileNoteText(note) {
+  if (typeof note === 'string') return dabReasonText(note)
+  if (note === null || typeof note !== 'object') return '?'
+  if (typeof note.message === 'string') return note.message
+  const kind = typeof note.type === 'string' ? note.type : (typeof note.kind === 'string' ? note.kind : 'note')
+  const detail = [note.taskId, note.assignmentId, note.sessionId, note.holder, note.error, note.reason]
+    .filter(value => typeof value === 'string' && value !== '').slice(0, 2).join(' · ')
+  return detail === '' ? dabReasonText(kind) : `${dabReasonText(kind)} — ${detail}`
+}
+
 /** Paramètres: model/fallback, level, budget, permissions, Stop, connectors. */
 /**
  * Model editor: provider, model, reasoning effort (read from the exact route)
@@ -623,9 +634,11 @@ function DabSuperagentSettings({
   const discovered = models?.discovered === true
   const budget = facts.budget
   const actions = dabSaObject(mandate?.actions) ?? {}
-  const notes = Array.isArray(host?.reconcileNotes) ? host.reconcileNotes.slice(-5) : []
+  const noteSource = Array.isArray(host?.reconcileNotes) ? host.reconcileNotes : (Array.isArray(host?.host?.reconcileNotes) ? host.host.reconcileNotes : [])
+  const notes = noteSource.slice(-5)
   const globalRefusal = context?.stopped === true ? 'stopped_by_operator' : context?.mode === 'off' ? 'mode_off' : null
-  const connector = dabSaObject(taskboard) ?? dabSaObject(host?.taskboardPublic)
+  // /state and SSE publish it under host.host (same nesting as the models).
+  const connector = dabSaObject(taskboard) ?? dabSaObject(host?.host?.taskboardPublic) ?? dabSaObject(host?.taskboardPublic)
   const connectorReason = connector === null ? null : (typeof connector.reason === 'string' ? connector.reason : null)
   const connectorState = connector === null
     ? dabT('superNotAvailable')
@@ -699,7 +712,7 @@ function DabSuperagentSettings({
     dabSaSection(h, 'diagnostics', dabT('superSettingsDiagnostics'),
       notes.length === 0
         ? h('div', { className: 'dab-muted' }, dabT('superReconcileNone'))
-        : h('ul', { className: 'dab-sa-list' }, notes.map((note, index) => h('li', { key: `n-${index}` }, String(note?.message ?? note ?? '?'))))),
+        : h('ul', { className: 'dab-sa-list' }, notes.map((note, index) => h('li', { key: `n-${index}`, title: typeof note === 'object' ? JSON.stringify(note).slice(0, 400) : undefined }, dabReconcileNoteText(note))))),
     dabSaSection(h, 'taskboard', dabT('superSettingsTaskboard'),
       h('div', { className: 'dab-sa-connector' },
         h('span', { className: 'dab-sa-connector-state', 'data-reachable': connector?.reachable === true ? 'true' : 'false' }, connectorState),
@@ -731,6 +744,28 @@ function DabSuperagentInspector(props) {
   const activeTab = DAB_SUPER_TABS.some(entry => entry[0] === tab) ? tab : 'overview'
   const tabId = id => `dab-sa-tab-${id}`
   const panelId = 'dab-sa-tabpanel'
+
+  // In DSH the plugin container can be taller than the visible window, so a
+  // panel anchored to its bottom ended below the screen and its last rows
+  // (Stop / Resume) could never be scrolled into view. Cap the panel to the
+  // visible viewport, measured from its real top, and keep it on resize.
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+    const fit = () => {
+      const panel = panelRef.current
+      if (panel === null || panel === undefined || typeof panel.getBoundingClientRect !== 'function') return
+      const top = Math.max(0, panel.getBoundingClientRect().top)
+      const viewport = window.visualViewport?.height ?? window.innerHeight
+      panel.style.maxHeight = `${Math.max(240, Math.floor(viewport - top - 8))}px`
+    }
+    fit()
+    window.addEventListener('resize', fit)
+    window.visualViewport?.addEventListener?.('resize', fit)
+    return () => {
+      window.removeEventListener('resize', fit)
+      window.visualViewport?.removeEventListener?.('resize', fit)
+    }
+  }, [])
 
   React.useEffect(() => {
     if (typeof document === 'undefined') return undefined
