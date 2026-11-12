@@ -225,6 +225,12 @@ function DabSuperagentDecisions({ superagent, filter = 'decisions', onFilter, on
           h('dt', null, dabT('superDecisionImpact')), h('dd', null, String(decision.impact ?? decision.expectedEffect ?? dabT('superNotAvailable'))),
           h('dt', null, dabT('superDecisionExpires')),
           h('dd', null, dabSaMoment(decision.expiresAt) ?? dabT('superDecisionNoExpiry'))),
+        decision.operation && decision.intent
+          ? h('details', { className: 'dab-sa-operation' },
+            h('summary', null, dabT('superDecisionExactOperation')),
+            h('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '18rem', overflow: 'auto' } },
+              JSON.stringify({ ...decision.operation, mandateRevision: decision.intent.mandateRevision, payloadHash: decision.intent.payloadHash }, null, 2)))
+          : null,
         typeof decision.recommendation === 'string' && decision.recommendation !== ''
           ? h('div', { className: 'dab-sa-recommendation' }, `${dabT('superDecisionRecommendation')} : ${decision.recommendation}`)
           : null,
@@ -323,13 +329,19 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
 /** Projets: real portfolio, per-project policy, scope, Simuler (dry-run). */
 function DabSuperagentProjects({
   superagent, mandate, host, context, dryRun, dryRunBusy, busy,
-  onToggleProject, onSetProjectLevel, onSetProjectPriority, onConfirmAllProjects, onDryRun, scopeConfirmOpen,
+  onToggleProject, onSetProjectLevel, onSetProjectPriority, onSetProjectModel, onConfirmAllProjects, onDryRun, scopeConfirmOpen,
 }) {
   const h = React.createElement
   const [confirming, setConfirming] = React.useState(false)
   const [confirmText, setConfirmText] = React.useState('')
+  const [query, setQuery] = React.useState('')
+  const [page, setPage] = React.useState(0)
   const rows = dabProjectPolicyRows(host, superagent, mandate)
-  const bound = dabSaBound(rows, DAB_SUPER_PROJECT_LIMIT)
+  const search = query.trim().toLocaleLowerCase()
+  const matches = rows.filter(row => `${row.title} ${row.id}`.toLocaleLowerCase().includes(search))
+  const pageCount = Math.max(1, Math.ceil(matches.length / DAB_SUPER_PROJECT_LIMIT))
+  const currentPage = Math.min(page, pageCount - 1)
+  const shown = matches.slice(currentPage * DAB_SUPER_PROJECT_LIMIT, (currentPage + 1) * DAB_SUPER_PROJECT_LIMIT)
   const scopeMode = typeof mandate?.scopeMode === 'string' ? mandate.scopeMode : null
   const selectedCount = rows.filter(row => row.selected).length
   const scopeLabel = scopeMode === 'all'
@@ -360,9 +372,14 @@ function DabSuperagentProjects({
         onConfirm: text => onConfirmAllProjects?.(text),
       })
       : null,
+    rows.length > 0 ? h('label', { className: 'dab-sa-field' },
+      h('span', { className: 'dab-sa-field-label' }, dabT('superProjectSearch')),
+      h('input', { type: 'search', className: 'dab-input', value: query,
+        'aria-label': dabT('superProjectSearch'),
+        onChange: event => { setQuery(event?.target?.value ?? ''); setPage(0) } })) : null,
     rows.length === 0
       ? dabSaReason(h, factsPortfolioReason(host, superagent))
-      : h('ul', { className: 'dab-sa-projects-list' }, bound.shown.map(row => h('li', {
+      : h('ul', { className: 'dab-sa-projects-list' }, shown.map(row => h('li', {
         key: row.id, className: 'dab-sa-project',
         'data-project-id': row.id, 'data-enabled': row.enabled ? 'true' : 'false', 'data-selected': row.selected ? 'true' : 'false',
       },
@@ -379,8 +396,10 @@ function DabSuperagentProjects({
         h('div', { className: 'dab-sa-field dab-sa-field-inline' },
           h('span', { className: 'dab-sa-field-label' }, dabT('superProjectLevel')),
           h(DabSelect, {
-            className: 'dab-sa-level', value: row.level, label: `${dabT('superProjectLevel')} : ${row.title}`,
-            options: dabLevelOptions(), onChange: value => onSetProjectLevel?.(row.id, value),
+            className: 'dab-sa-level', value: row.level ?? '', label: `${dabT('superProjectLevel')} : ${row.title}`,
+            disabled: busy === true,
+            options: [['', dabT('superProjectLevelInherited', { level: row.inheritedLevel })], ...dabLevelOptions()],
+            onChange: value => onSetProjectLevel?.(row.id, value === '' ? null : value),
           })),
         h('label', { className: 'dab-sa-field dab-sa-field-inline' },
           h('span', { className: 'dab-sa-field-label' }, dabT('superProjectPriority')),
@@ -390,13 +409,23 @@ function DabSuperagentProjects({
             onChange: event => onSetProjectPriority?.(row.id, Number(event?.target?.value)),
           }))),
       h('div', { className: 'dab-sa-project-facts' },
-        h('span', { className: 'dab-sa-model' }, `${dabT('model')} : ${row.model === null ? dabT('superModelInherited') : `${row.model.provider ?? '?'}/${row.model.model ?? '?'}`}`),
+        h('span', { className: 'dab-sa-model' }, `${dabT('model')} : ${row.modelInherited ? dabT('superModelInherited') : `${row.model.provider ?? '?'}/${row.model.model ?? '?'}`}`),
+        !row.modelInherited && typeof onSetProjectModel === 'function'
+          ? h('button', { type: 'button', className: 'dab-btn', disabled: busy === true,
+            'aria-label': `${dabT('superProjectModelReset')} : ${row.title}`,
+            onClick: () => onSetProjectModel(row.id, null) }, dabT('superProjectModelReset')) : null,
         h('span', { className: 'dab-sa-budget' }, `${dabT('superProjectBudget')} : ${row.budget === null || row.budget.maxTasksPerHour === undefined ? dabT('superBudgetGlobal') : `${row.budget.maxTasksPerHour}/h`}`),
         row.source === null || row.source === undefined ? null : h('span', { className: 'dab-sa-source' }, `${dabT('superProjectSource')} : ${row.source}`)),
       // The "scope_none" reason is already said once by the scope line above;
       // repeating it on every row was noise.
       row.reason === null || row.reason === 'scope_none' ? null : h('div', { className: 'dab-sa-reason', title: row.reason }, dabReasonText(row.reason)))),
-      dabSaExtraNode(h, bound.extra)),
+      null),
+    rows.length > 0 ? h('nav', { 'aria-label': dabT('superProjectPages') },
+      h('span', { role: 'status', 'aria-live': 'polite' }, dabT('superProjectPage', { page: currentPage + 1, pages: pageCount, n: matches.length })),
+      h('button', { type: 'button', className: 'dab-btn', disabled: currentPage === 0,
+        onClick: () => setPage(currentPage - 1) }, dabT('superProjectPrevious')),
+      h('button', { type: 'button', className: 'dab-btn', disabled: currentPage + 1 >= pageCount,
+        onClick: () => setPage(currentPage + 1) }, dabT('superProjectNext'))) : null,
     h('div', { className: 'dab-sa-dryrun-head' },
       h('button', {
         type: 'button', className: 'dab-btn dab-sa-dryrun-btn', 'aria-label': dabT('superSimulate'),
@@ -622,7 +651,7 @@ function DabSuperagentModelEditor({ facts, models, busy, onSetModel, onModelInfo
 
 function DabSuperagentSettings({
   superagent, mandate, capabilities, host, context, ui, busy, taskboard,
-  onSetLevel, onSetAction, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle,
+  onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle,
 }) {
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
@@ -681,7 +710,9 @@ function DabSuperagentSettings({
       // above the list instead of on each of the 13 rows.
       globalRefusal === null ? null : h('div', { className: 'dab-sa-permissions-global', role: 'note', title: globalRefusal }, dabReasonText(globalRefusal)),
       h('ul', { className: 'dab-sa-permissions' }, DAB_ACTION_ROWS.map(([action, labelKey]) => {
-        const granted = actions[action] === true
+        const configuredMode = mandate?.actionModes?.[action]
+        const actionMode = ['deny', 'ask', 'auto'].includes(configuredMode) ? configuredMode : (actions[action] === true ? 'auto' : 'deny')
+        const granted = actionMode !== 'deny'
         // The host capability is authoritative: an action with no adapter must
         // never read "Autorisée" just because the mandate grants it.
         const capability = capabilities !== null && typeof capabilities === 'object' && typeof capabilities[action] === 'object' ? capabilities[action] : null
@@ -697,13 +728,19 @@ function DabSuperagentSettings({
           key: action, className: 'dab-sa-permission', 'data-action': action, 'data-granted': granted ? 'true' : 'false',
           'data-blocked': granted && reason !== null ? 'true' : 'false',
         },
-          h('label', { className: 'dab-sa-check' },
-            h('input', {
-              type: 'checkbox', className: 'dab-sa-permission-toggle', checked: granted,
-              'aria-label': `${dabT(labelKey)}${reason === null ? '' : ` — ${dabReasonText(reason)}`}`,
-              onChange: event => onSetAction?.(action, event?.target?.checked === true),
-            }),
-            h('span', null, dabT(labelKey))),
+          h('div', { className: 'dab-sa-check' },
+            h('span', null, dabT(labelKey)),
+            h(DabSelect, {
+              className: 'dab-sa-permission-toggle', value: actionMode,
+              label: `${dabT(labelKey)}${reason === null ? '' : ` — ${dabReasonText(reason)}`}`,
+              disabled: busy === true || capability?.implemented === false || capability?.reason === 'no_adapter_for_action',
+              options: [
+                ['deny', dabT('superActionDeny')],
+                ...((actionMode === 'ask' || Number(level.slice(1)) >= (DAB_CRITICAL_ACTIONS.includes(action) ? 4 : 2)) ? [['ask', dabT('superActionAsk')]] : []),
+                ['auto', dabT('superActionAuto')],
+              ],
+              onChange: mode => onSetActionMode?.(action, mode),
+            })),
           reason === null
             ? h('span', { className: 'dab-sa-permission-ok' }, dabT('superActionGranted'))
             : shownReason === null ? null : h('span', { className: 'dab-sa-permission-reason', title: reason }, dabReasonText(reason)))
@@ -733,8 +770,8 @@ function DabSuperagentInspector(props) {
   const h = React.createElement
   const {
     superagent, mandate, capabilities, portfolio, host, context, dryRun, dryRunBusy, busy, narrow, taskboard, ui, workspace, initialTab,
-    onClose, onOpenDetail, onDryRun, onToggleProject, onSetProjectLevel, onSetProjectPriority, onConfirmAllProjects,
-    onAddDirective, onRevokeDirective, onAnswerDecision, onSetLevel, onSetAction, onToggleNotifications, onStop, onResume,
+    onClose, onOpenDetail, onDryRun, onToggleProject, onSetProjectLevel, onSetProjectPriority, onSetProjectModel, onConfirmAllProjects,
+    onAddDirective, onRevokeDirective, onAnswerDecision, onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume,
     onSetModel, onModelInfo, onProbeTaskboard, onCycle,
   } = props
   const facts = dabSuperagentFacts(superagent, mandate, context)
@@ -808,14 +845,14 @@ function DabSuperagentInspector(props) {
   const content = activeTab === 'projects'
     ? h(DabSuperagentProjects, {
       superagent, mandate, host, context, dryRun, dryRunBusy, busy,
-      onToggleProject, onSetProjectLevel, onSetProjectPriority, onConfirmAllProjects, onDryRun,
+      onToggleProject, onSetProjectLevel, onSetProjectPriority, onSetProjectModel, onConfirmAllProjects, onDryRun,
     })
     : activeTab === 'directives'
       ? h(DabSuperagentDirectives, { superagent, portfolio, busy, onAdd: onAddDirective, onRevoke: onRevokeDirective })
       : activeTab === 'settings'
         ? h(DabSuperagentSettings, {
           superagent, mandate, capabilities, host, context, ui, busy, taskboard,
-          onSetLevel, onSetAction, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle,
+          onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle,
         })
         : h(DabSuperagentOverview, {
           superagent, mandate, capabilities, host, context, busy, workspace,

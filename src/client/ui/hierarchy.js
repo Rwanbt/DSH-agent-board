@@ -622,7 +622,10 @@ function dabProjectPolicyRows(host, superagent, mandate) {
       source: entry.source,
       enabled,
       selected,
-      level: typeof policy.level === 'string' ? policy.level : 'L0',
+      level: DAB_AUTONOMY_LEVELS.includes(policy.level) ? policy.level : null,
+      effectiveLevel: DAB_AUTONOMY_LEVELS.includes(policy.level) ? policy.level : (DAB_AUTONOMY_LEVELS.includes(mandate?.level) ? mandate.level : 'L0'),
+      inheritedLevel: DAB_AUTONOMY_LEVELS.includes(mandate?.level) ? mandate.level : 'L0',
+      modelInherited: policy.model === null || typeof policy.model !== 'object',
       priority: Number.isFinite(Number(policy.priority)) ? Number(policy.priority) : 5,
       model,
       budget: policy.budget !== null && typeof policy.budget === 'object' ? policy.budget : null,
@@ -674,8 +677,14 @@ function dabActionRefusalReason({ action, mandate, context = {} }) {
   if (context?.projectEnabled === false) return 'project_disabled'
   const rank = value => DAB_AUTONOMY_LEVELS.indexOf(value)
   const required = DAB_ACTION_MIN_LEVEL[action] ?? 'L4'
-  if (actions[action] !== true) {
+  const configuredMode = mandate?.actionModes?.[action]
+  const mode = ['deny', 'ask', 'auto'].includes(configuredMode) ? configuredMode : (actions[action] === true ? 'auto' : 'deny')
+  if (mode === 'deny') {
     return DAB_CRITICAL_ACTIONS.includes(action) ? 'critical_action_not_granted' : 'action_disabled'
+  }
+  if (mode === 'ask') {
+    if (rank(level) < (DAB_CRITICAL_ACTIONS.includes(action) ? 4 : 2)) return 'level_too_low'
+    return 'approval_required'
   }
   if (rank(level) < rank(required)) return 'level_too_low'
   // L2 executes a prepared action only after a human decision.

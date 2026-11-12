@@ -348,7 +348,7 @@ export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, 
      * version first, then send the patch. A concurrent edit surfaces as
      * `version_conflict` and the proposal fails (it is re-proposed later).
      */
-    async update(id, patch = {}) {
+    async update(id, patch = {}, { beforeWrite } = {}) {
       const taskId = encodeURIComponent(String(id))
       const view = await publicJson('GET', `/tasks/${taskId}`)
       const ifVersion = typeof patch.ifVersion === 'number' ? patch.ifVersion : view?.version
@@ -356,6 +356,9 @@ export function createTaskboardAdapter({ baseUrl, fetchImpl = globalThis.fetch, 
         throw new AdapterError('task board did not report a version', { code: 'version_conflict', adapterId: 'dsh-taskboard' })
       }
       const { ifVersion: _ignored, ...rest } = patch
+      // The version read is an await boundary: let the policy owner re-check
+      // Stop/Pause/mandate immediately before the actual external effect.
+      if (typeof beforeWrite === 'function') beforeWrite()
       return publicJson('POST', `/tasks/${taskId}/update`, { ...rest, ifVersion })
     },
     /** Append one comment to a card. */

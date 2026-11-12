@@ -1,3 +1,4 @@
+import { setupAgentHandle } from './fixtures/secure-agent-context.js'
 /**
  * INDEPENDENT REVIEW — restart / durable contract lease (tests/review-backend-*.test.js).
  *
@@ -52,7 +53,7 @@ function makeCtx() {
           followup() {},
           cancel: cause => cancelled.push({ sessionId: options.sessionId, cause }),
         }
-        return { agent, dispose: async () => {} }
+        return setupAgentHandle(options, { agent, dispose: async () => {} })
       },
       get(id) {
         const match = created.find(options => options.sessionId === id)

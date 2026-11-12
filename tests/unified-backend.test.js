@@ -1,3 +1,4 @@
+import { setupAgentHandle } from './fixtures/secure-agent-context.js'
 /**
  * Unified execution backend (`executionBackend:'contract'`) — host level.
  *
@@ -56,7 +57,7 @@ function makeCtx() {
           followup: message => injected.push(message),
           cancel: cause => cancelled.push({ sessionId: options.sessionId, cause }),
         }
-        return { agent, dispose: async () => {} }
+        return setupAgentHandle(options, { agent, dispose: async () => {} })
       },
       get(id) {
         const match = created.find(options => options.sessionId === id)

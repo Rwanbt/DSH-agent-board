@@ -1,3 +1,4 @@
+import { setupAgentHandle } from './fixtures/secure-agent-context.js'
 /**
  * Host-level supervision facts: a session the runtime REMOVED is a fact, not an
  * inference. It must be recorded (`state.gone`), the projection must be able to
@@ -41,10 +42,10 @@ function makeCtx(initialSessions = null) {
     agents: {
       async create(options) {
         created.push(options)
-        return {
+        return setupAgentHandle(options, {
           agent: { id: options.sessionId, inject: () => {}, followup: () => {}, cancel: () => {} },
           dispose: async () => {},
-        }
+        })
       },
       get(id) {
         return created.some(options => options.sessionId === id) ? { cancel: () => {} } : undefined

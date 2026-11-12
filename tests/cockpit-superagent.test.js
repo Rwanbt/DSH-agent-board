@@ -525,8 +525,7 @@ test('project and scope mutations post to the mandate routes with plain JSON', a
   const pause = fetchImpl.calls.find(entry => entry.url.endsWith('/mandate/pause'))
   assert.deepEqual(JSON.parse(pause.init.body), { paused: true })
 
-  // POST /mandate replaces the whole mandate: an action toggle must preserve
-  // scope, level, projects and pause instead of silently wiping them.
+  // POST /mandate merges: an action toggle must not replay unrelated policy.
   const withMandate = fakeFetch({ state: { mode: 'supervised', acks: {}, assignments: [], mandate: makeMandate() } })
   const fullStore = createBoardStore({ get: () => undefined }, { fetchImpl: withMandate, notifyWindowMs: 0 })
   fullStore.start()
@@ -534,12 +533,10 @@ test('project and scope mutations post to the mandate routes with plain JSON', a
   await fullStore.setAction('launch', true)
   const replace = withMandate.calls.find(entry => entry.init?.method === 'POST' && entry.url.endsWith('/mandate'))
   const body = JSON.parse(replace.init.body)
-  assert.equal(body.scopeMode, 'selected')
-  assert.equal(body.level, 'L1')
-  assert.equal(body.paused, false)
-  assert.equal(body.projects['ws:a'].enabled, true)
-  assert.equal(body.actions.launch, true)
-  assert.equal(body.actions.comment, false)
+  assert.deepEqual(body, { actions: { launch: true } })
+  await fullStore.setActionMode('launch', 'ask')
+  const modePost = withMandate.calls.filter(entry => entry.init?.method === 'POST' && entry.url.endsWith('/mandate')).at(-1)
+  assert.deepEqual(JSON.parse(modePost.init.body), { actionModes: { launch: 'ask' }, actions: { launch: true } })
   fullStore.destroy()
 })
 
@@ -594,7 +591,8 @@ test('every bounded list shows an explicit "+N" (portfolio, steps, journal)', ()
     dryRun: null, onDryRun: () => {},
   }))
   assert.equal(byClass(tree, 'dab-sa-project').length, 20)
-  assert.match(textOf(tree), /\+5/)
+  assert.match(textOf(tree), /Page 1\/2 — 25 projects/)
+  assert.ok(byTag(tree, 'button').some(node => textOf(node) === 'Next projects' && node.props.disabled === false))
 
   const activity = Array.from({ length: 30 }, (_, index) => ({ at: 1700000000000 + index, kind: 'step', summary: `Étape ${index}` }))
   const overview = render(cockpit.DabSuperagentOverview({
@@ -901,4 +899,75 @@ test('settings: reconcile notes are readable and the connector is read where /st
   assert.match(text, /stale lock taken over/)
   assert.match(text, /lock lost — EPERM/)
   assert.match(text, /Configured and reachable/)
+})
+
+test('project 21 is individually reachable by pagination and search without widening scope', () => {
+  const values = []
+  const original = React.useState
+  let cursor = 0
+  const props = {
+    superagent: makeInactiveSuperagent(), mandate: makeMandate({ projects: {} }),
+    host: { ...makeHost(), projects: Array.from({ length: 25 }, (_, i) => ({ id: `ws:${i}`, title: `Project ${i}` })) },
+    onToggleProject: (id, enabled) => values.push([id, enabled]),
+  }
+  const state = []
+  const draw = () => {
+    cursor = 0
+    React.useState = initial => {
+      const slot = cursor++
+      if (!(slot in state)) state[slot] = initial
+      return [state[slot], value => { state[slot] = typeof value === 'function' ? value(state[slot]) : value }]
+    }
+    let node
+    try { node = cockpit.DabSuperagentProjects(props) } finally { React.useState = original }
+    return render(node)
+  }
+  let tree = draw()
+  byTag(tree, 'button').find(node => textOf(node) === 'Next projects').props.onClick()
+  tree = draw()
+  const project21 = byClass(tree, 'dab-sa-project').find(node => node.props['data-project-id'] === 'ws:20')
+  assert.ok(project21)
+  byTag(project21, 'button').find(node => node.props.role === 'switch').props.onClick()
+  assert.deepEqual(values, [['ws:20', true]])
+  byTag(tree, 'input').find(node => node.props.type === 'search').props.onChange({ target: { value: 'ws:20' } })
+  tree = draw()
+  assert.equal(byClass(tree, 'dab-sa-project').length, 1)
+  assert.equal(byClass(tree, 'dab-sa-project')[0].props['data-project-id'], 'ws:20')
+  assert.match(textOf(tree), /Page 1\/1 — 1 projects/)
+})
+
+test('inherited project level displays global level and explicit overrides can reset with null', () => {
+  const changes = []
+  const mandate = makeMandate({ level: 'L3', projects: { 'ws:a': { enabled: true, level: null }, 'ws:b': { enabled: true, level: 'L2', model: { provider: 'p', model: 'm' } } } })
+  const rows = cockpit.dabProjectPolicyRows(makeHost(), makeInactiveSuperagent(), mandate)
+  assert.equal(rows.find(row => row.id === 'ws:a').level, null)
+  assert.equal(rows.find(row => row.id === 'ws:a').effectiveLevel, 'L3')
+  const node = cockpit.DabSuperagentProjects({ host: makeHost(), mandate, superagent: makeInactiveSuperagent(),
+    onSetProjectLevel: (id, value) => changes.push({ id, level: value }),
+    onSetProjectModel: (id, value) => changes.push({ id, model: value }),
+  })
+  const tree = render(node)
+  assert.match(textOf(tree), /Inherited — L3/)
+  const override = byClass(tree, 'dab-sa-project').find(row => row.props['data-project-id'] === 'ws:b')
+  collect(override, row => row.props?.role === 'option' && row.props['data-value'] === '')[0].props.onClick()
+  byTag(override, 'button').find(row => row.props['aria-label']?.startsWith('Reset worker model')).props.onClick()
+  assert.deepEqual(changes, [{ id: 'ws:b', level: null }, { id: 'ws:b', model: null }])
+})
+
+test('permission modes are tri-state and unsupported actions stay unavailable', () => {
+  assert.equal(cockpit.dabActionRefusalReason({ action: 'comment', mandate: makeMandate({ level: 'L2', actionModes: { comment: 'ask' } }) }), 'approval_required')
+  assert.equal(cockpit.dabActionRefusalReason({ action: 'comment', mandate: makeMandate({ level: 'L3', actionModes: { comment: 'deny' }, actions: { comment: true } }) }), 'action_disabled')
+  const changes = []
+  const tree = render(cockpit.DabSuperagentSettings({
+    superagent: makeInactiveSuperagent(), mandate: makeMandate({ level: 'L3', actionModes: { launch: 'ask' } }), host: makeHost(),
+    capabilities: { merge: { implemented: false, state: 'unavailable', reason: 'no_adapter_for_action' } },
+    onSetActionMode: (action, mode) => changes.push([action, mode]),
+  }))
+  const launch = byClass(tree, 'dab-sa-permission').find(row => row.props['data-action'] === 'launch')
+  const options = collect(launch, row => row.props?.role === 'option')
+  assert.deepEqual(options.map(row => row.props['data-value']), ['deny', 'ask', 'auto'])
+  options.find(row => row.props['data-value'] === 'deny').props.onClick()
+  assert.deepEqual(changes, [['launch', 'deny']])
+  const merge = byClass(tree, 'dab-sa-permission').find(row => row.props['data-action'] === 'merge')
+  assert.equal(byTag(merge, 'button')[0].props.disabled, true)
 })

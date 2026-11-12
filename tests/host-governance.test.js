@@ -1,3 +1,4 @@
+import { setupAgentHandle } from './fixtures/secure-agent-context.js'
 /**
  * Governance tests for the host half: the single launch choke point.
  *
@@ -66,7 +67,7 @@ function makeCtx({ createDelayMs = 0, permissionPresets = [] } = {}) {
           followup: message => injected.push(message),
           cancel: cause => cancelled.push({ sessionId: options.sessionId, cause }),
         }
-        return { agent, dispose: async () => {} }
+        return setupAgentHandle(options, { agent, dispose: async () => {} }, { onPermission: (session, preset) => { presets.push({ session, preset }); permissionPresets.push(preset) } })
       },
       get(id) {
         const match = created.find(options => options.sessionId === id)

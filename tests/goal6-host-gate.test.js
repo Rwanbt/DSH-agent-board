@@ -1,3 +1,4 @@
+import { setupAgentHandle } from './fixtures/secure-agent-context.js'
 /**
  * GOAL 6 — P0 gate: a mandate that is empty/absent/migrated authorizes NOTHING,
  * even in autonomous mode, even after a restart; the dry-run writes nothing; the
@@ -51,10 +52,10 @@ function makeCtx({ llm } = {}) {
     agents: {
       async create(options) {
         created.push(options)
-        return {
+        return setupAgentHandle(options, {
           agent: { id: options.sessionId, inject: () => {}, followup: () => {}, cancel: () => {} },
           dispose: async () => {},
-        }
+        })
       },
       get(id) {
         return created.some(options => options.sessionId === id) ? { cancel: () => {} } : undefined
@@ -287,8 +288,8 @@ test('capabilities are truthful in OFF and after a Stop', async () => {
     // not a temporary mode refusal: nothing pretends they are available.
     assert.equal(off.capabilities.delegate.state, 'unavailable')
     assert.equal(off.capabilities.delegate.reason, 'no_adapter_for_action')
-    assert.equal(off.capabilities.open_pr.reason, 'github_not_configured')
-    assert.equal(off.capabilities.create_task.reason, 'github_not_configured')
+    assert.equal(off.capabilities.open_pr.reason, 'no_adapter_for_action')
+    assert.equal(off.capabilities.create_task.reason, 'taskboard_writes_unavailable')
     assert.equal(off.capabilities.launch.reason, 'mode_off')
 
     await callJson(routes, 'POST', '/mode', { mode: 'autonomous' })
@@ -602,5 +603,44 @@ test('Reprendre after a Stop restarts the Super Agent instead of answering not_p
     const unpaused = await callJson(routes, 'POST', '/superagent/resume', {})
     assert.equal(unpaused.status, 200)
     assert.equal(created.length, before)
+  })
+})
+
+test('route patches preserve priority and allow explicit level/model inheritance resets', async () => {
+  await withHost({ mandate: TEST_MANDATE }, async ({ routes }) => {
+    const first = await callJson(routes, 'POST', '/mandate/project', { projectId: 'w1', priority: 9, level: 'L2', model: { provider: 'primary', model: 'big' } })
+    assert.equal(first.status, 200, JSON.stringify(first.body))
+    const minimal = await callJson(routes, 'POST', '/mandate/project', { projectId: 'w1', enabled: true })
+    assert.equal(minimal.status, 200)
+    let project = (await callJson(routes, 'GET', '/state')).body.value.mandate.projects.w1
+    assert.equal(project.priority, 9)
+    assert.equal(project.level, 'L2')
+    assert.equal(project.model.model, 'big')
+    const reset = await callJson(routes, 'POST', '/mandate/project', { projectId: 'w1', level: null, model: null })
+    assert.equal(reset.status, 200)
+    project = (await callJson(routes, 'GET', '/state')).body.value.mandate.projects.w1
+    assert.equal(project.priority, 9)
+    assert.equal(project.level, null)
+    assert.equal(project.model, null)
+  })
+})
+
+test('minimal store-style action grants are accepted under selected and all scopes without widening other grants', async () => {
+  await withHost({ mandate: TEST_MANDATE }, async ({ routes }) => {
+    for (const scopeMode of ['selected', 'all']) {
+      const scoped = await callJson(routes, 'POST', '/mandate/scope', scopeMode === 'all'
+        ? { scopeMode, confirm: 'ALL_PROJECTS' } : { scopeMode, selectedWorkspaces: ['w1'] })
+      assert.equal(scoped.status, 200, JSON.stringify(scoped.body))
+      const before = (await callJson(routes, 'GET', '/state')).body.value.mandate
+      const changed = await callJson(routes, 'POST', '/mandate', { actions: { comment: true } })
+      assert.equal(changed.status, 200, JSON.stringify(changed.body))
+      const after = (await callJson(routes, 'GET', '/state')).body.value.mandate
+      assert.equal(after.actions.comment, true)
+      assert.equal(after.scopeMode, scopeMode)
+      assert.deepEqual(after.selectedWorkspaces, before.selectedWorkspaces)
+      assert.deepEqual(after.allConsent, before.allConsent)
+      assert.equal(after.projects.w1.enabled, before.projects.w1.enabled)
+      assert.equal(after.actions.delete_task, before.actions.delete_task)
+    }
   })
 })

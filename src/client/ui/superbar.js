@@ -81,10 +81,11 @@ function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, o
     }, h('span', { className: 'dab-super-project-name' }, row.title)),
     row.enabled
       ? h(DabSelect, {
-        className: 'dab-super-project-level', value: row.level,
+        className: 'dab-super-project-level', value: row.level ?? 'inherit',
         label: dabT('superProjectLevelOf', { project: row.title }),
         disabled: busy === true || typeof onSetProjectLevel !== 'function',
-        options: dabLevelOptions(), onChange: value => onSetProjectLevel?.(row.id, value),
+        options: [['inherit', `${dabT('superProjectInherit')} — ${dabLevelLabel(row.effectiveLevel)}`], ...dabLevelOptions()],
+        onChange: value => onSetProjectLevel?.(row.id, value === 'inherit' ? null : value),
       })
       : null))))
 }

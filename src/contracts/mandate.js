@@ -56,7 +56,8 @@ export const ACTIONS = Object.freeze([
  */
 export const READ_ONLY_ACTIONS = Object.freeze(['read', 'analyse', 'propose'])
 
-/** The minimum level at which an action becomes possible at all. */
+/** Automatic threshold (legacy grants also use it as a hard minimum).
+ * Explicit noncritical modes permit supervised execution at L2+ instead. */
 export const ACTION_MIN_LEVEL = Object.freeze({
   read: 'L0',
   analyse: 'L1',
@@ -223,6 +224,22 @@ function normalizeProjects(value) {
   return out
 }
 
+/** Explicit overrides only: absence preserves legacy boolean/level semantics. */
+export const ACTION_MODES = Object.freeze(['deny', 'ask', 'auto'])
+
+export function normalizeActionModes(value) {
+  const source = isPlainObject(value) ? value : {}
+  return Object.fromEntries(ACTIONS.filter(action => !READ_ONLY_ACTIONS.includes(action)
+    && Object.hasOwn(source, action) && ACTION_MODES.includes(source[action]))
+    .map(action => [action, source[action]]))
+}
+
+/** Effective mode, including the backward-compatible boolean fallback. */
+export function actionModeOf(mandate, action) {
+  const explicit = normalizeActionModes(mandate?.actionModes)[action]
+  return explicit ?? (mandate?.actions?.[action] === true ? 'auto' : 'deny')
+}
+
 function normalizeActions(value, fallback = DISABLED_ACTIONS) {
   const source = isPlainObject(value) ? value : {}
   const previous = isPlainObject(fallback) ? fallback : DISABLED_ACTIONS
@@ -262,6 +279,7 @@ export function emptyMandate(now = Date.now()) {
     allConsent: null,
     level: 'L0',
     actions: { ...DISABLED_ACTIONS },
+    actionModes: {},
     projects: {},
     paused: false,
     revision: 0,
@@ -303,13 +321,25 @@ export function normalizeMandate(input, fallback = emptyMandate()) {
   // audited operator action, not something normalization may silently undo — and
   // a persisted state must round-trip without losing the operator's ceiling.
   const level = levelOf(source.level, previous.level ?? 'L0')
+  const actions = normalizeActions(source.actions, previous.actions ?? DISABLED_ACTIONS)
+  const actionModes = normalizeActionModes(previous.actionModes)
+  // A legacy boolean patch is an explicit replacement of that action's mode.
+  // A mode supplied in the same patch wins; invalid modes fail closed.
+  for (const action of Object.keys(actions)) {
+    if (isPlainObject(source.actions) && Object.hasOwn(source.actions, action)) delete actionModes[action]
+    if (isPlainObject(source.actionModes) && Object.hasOwn(source.actionModes, action)) {
+      actionModes[action] = ACTION_MODES.includes(source.actionModes[action]) ? source.actionModes[action] : 'deny'
+    }
+    if (Object.hasOwn(actionModes, action)) actions[action] = actionModes[action] !== 'deny'
+  }
   return {
     version: 2,
     scopeMode: effectiveScope,
     selectedWorkspaces: effectiveScope === 'selected' ? selectedWorkspaces : [],
     allConsent: effectiveScope === 'all' ? allConsent : null,
     level,
-    actions: normalizeActions(source.actions, previous.actions ?? DISABLED_ACTIONS),
+    actions,
+    actionModes,
     projects: source.projects === undefined ? normalizeProjects(previous.projects) : normalizeProjects({ ...previous.projects, ...source.projects }),
     paused: source.paused === undefined ? previous.paused === true : source.paused === true,
     revision: clampInt(source.revision, 0, 1_000_000_000, previous.revision ?? 0),
@@ -453,8 +483,15 @@ export function effectivePolicyOf({
     return { ...base, reason: 'project_budget_exhausted' }
   }
 
+  // Explicit tri-state grants treat the action minimum as an AUTOMATION
+  // threshold. L2+ can approve noncritical work below it; legacy booleans keep
+  // their historical hard minimum. Capability/executor checks remain external.
+  const actionMode = actionModeOf(current, action)
+  const belowMinimum = LEVEL_RANK[level] < LEVEL_RANK[requiredLevel]
+  const approvalFallback = Object.hasOwn(current.actionModes, action)
+    && actionMode !== 'deny' && !critical && LEVEL_RANK[level] >= LEVEL_RANK.L2
   // 5. Level ladder (global ∩ project ∩ integration ∩ action).
-  if (LEVEL_RANK[level] < LEVEL_RANK[requiredLevel]) return { ...base, reason: 'level_too_low' }
+  if (belowMinimum && !approvalFallback) return { ...base, reason: 'level_too_low' }
 
   // 6. The operator's per-action grant.
   if (current.actions[action] !== true) {
@@ -468,7 +505,7 @@ export function effectivePolicyOf({
 
   // 8. L2 executes prepared changes only after a real, non-expired approval;
   //    critical actions always need a per-occurrence human decision.
-  const requiresApproval = LEVEL_RANK[level] < LEVEL_RANK.L3
+  const requiresApproval = actionMode === 'ask' || belowMinimum || LEVEL_RANK[level] < LEVEL_RANK.L3
   if (critical) {
     return approved
       ? { ...base, allowed: true, reason: 'allowed', requiresApproval: true }
@@ -520,6 +557,10 @@ export function describeMandate(mandate) {
  * dropped, the revision is bumped and the update is timestamped. Granting
  * `all` requires the explicit confirmation text; without it the patch is
  * refused rather than silently downgraded (the caller must say no clearly).
+ * Actions/modes merge per key. Boolean-only keys replace previous explicit
+ * modes; mode keys win same-patch conflicts and refresh the boolean mirror.
+ * Keep actionModes sparse during migration: filling inherited `auto` entries
+ * would opt legacy grants into the new supervised fallback below their minimum.
  */
 export function applyMandatePatch(current, patch = {}, { now = Date.now(), by = 'operator' } = {}) {
   const previous = normalizeMandate(current)
@@ -532,7 +573,6 @@ export function applyMandatePatch(current, patch = {}, { now = Date.now(), by = 
     return { ok: false, reason: 'selected_scope_requires_workspaces' }
   }
   const next = normalizeMandate({
-    ...previous,
     ...source,
     // A level change is accepted here but must be audited by the caller: the
     // dedicated POST /mandate/level path writes the entry, and a patch that only

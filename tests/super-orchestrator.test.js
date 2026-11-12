@@ -1,3 +1,4 @@
+import { setupAgentHandle } from './fixtures/secure-agent-context.js'
 /**
  * Super Orchestrator supervision projection tests.
  *
@@ -500,7 +501,7 @@ test('host publishes supervision and bounded events; a disabled supervision gate
     agents: {
       async create(options) {
         created.push(options)
-        return { agent: { id: options.sessionId, inject: () => {}, followup: () => {}, cancel: () => {} }, dispose: async () => {} }
+        return setupAgentHandle(options, { agent: { id: options.sessionId, inject: () => {}, followup: () => {}, cancel: () => {} }, dispose: async () => {} })
       },
       get(id) {
         return created.some(options => options.sessionId === id) ? { cancel: () => {} } : undefined

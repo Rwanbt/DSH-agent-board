@@ -1,3 +1,4 @@
+import { setupAgentHandle } from './fixtures/secure-agent-context.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -56,7 +57,7 @@ function makeCtx() {
           followup: message => injected.push(message),
           cancel: cause => cancelled.push({ sessionId: options.sessionId, cause }),
         }
-        return { agent, dispose: async () => {} }
+        return setupAgentHandle(options, { agent, dispose: async () => {} })
       },
       get(id) {
         const match = created.find(options => options.sessionId === id)

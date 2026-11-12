@@ -49,10 +49,11 @@ import { capabilitiesOf as publicTaskBoardCapabilities, createPublicTaskBoardCli
 import { createIdentity, markCycle, normalizeIdentity, publicIdentityOf, requestRecycle } from '../superagent/identity.js'
 import { activeDirectives, addDirective, directivesFingerprint, resolveDirectives, revokeDirective } from '../superagent/directives.js'
 import { buildDigest, checkpointOf, emptyMemory, recordDecision, recordFact } from '../superagent/memory.js'
-import { answerDecision, approvalFor, emptyInbox, expireDecisions, inboxSummary, pendingDecisions, proposeDecision } from '../superagent/decisions.js'
+import { answerDecision, approvalFor, createApprovalIntent, approvalIntentFingerprint, emptyInbox, expireDecisions, inboxSummary, pendingDecisions, proposeDecision } from '../superagent/decisions.js'
 import { ASSESSMENT_SCHEMA_VERSION, buildAssessmentPrompt, buildRepairPrompt, parseAssessment, shouldRunCycle, validateAssessment } from '../superagent/brain.js'
 import { buildPortfolio } from '../plan/portfolio.js'
 import { fairOrder } from '../plan/scheduler.js'
+import { createSecuredAgent, effectiveWorkerPermission, secureAssessmentAgent, secureWorkerAgent } from './security.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -1356,6 +1357,94 @@ export function apply(ctx, config = {}) {
     })
   }
 
+  function assertOperationGate(action, projectId, { approved = false, revision = state.mandate.revision } = {}) {
+    const gate = effectiveFor(action, { projectId, approved })
+    const reason = superagentHardStop() ?? (!gate.allowed ? gate.reason : null)
+      ?? (revision !== state.mandate.revision ? 'mandate_changed' : null)
+    if (reason) throw Object.assign(new Error(reason), { code: reason })
+  }
+
+  /** Persist a concrete, immutable operation; a model question is not a grant. */
+  function requestOperationApproval(proposal, task = null) {
+    const agent = ensureSuperAgent()
+    const expiresAt = Date.now() + 60 * 60 * 1000
+    const operation = {
+      action: proposal.action, projectId: proposal.projectId,
+      taskId: proposal.taskId ?? null, taskVersion: task?.version ?? null,
+      payload: proposal.action === 'create_task'
+        ? { ...(proposal.payload ?? {}), title: typeof proposal.payload?.title === 'string' && proposal.payload.title.trim() !== ''
+          ? proposal.payload.title.trim() : String(proposal.rationale ?? '').trim().slice(0, 120) }
+        : (proposal.payload ?? {}),
+    }
+    const intent = createApprovalIntent({ ...operation, mandateRevision: state.mandate.revision, expiry: expiresAt })
+    // Dedupe the operation, not the newly sampled expiry.
+    const stable = createApprovalIntent({ ...operation, mandateRevision: state.mandate.revision, expiry: 1 })
+    const stableKey = approvalIntentFingerprint(stable)
+    // Only a still-PENDING request absorbs a repeated proposal. A consumed or
+    // failed answer must not silently replace the operator's next decision.
+    const existing = agent.decisions.find(entry => entry.intent && entry.status === 'pending'
+      && entry.expiresAt > Date.now()
+      && approvalIntentFingerprint({ ...entry.intent, expiry: 1 }) === stableKey)
+    if (existing) return existing
+    const result = proposeDecision(agent.decisions, {
+      kind: 'approval', projectId: operation.projectId, action: operation.action,
+      taskIds: operation.taskId ? [operation.taskId] : [], intent, operation, expiresAt,
+      title: `Autoriser une fois : ${operation.action}`,
+      context: `${proposal.rationale ?? ''}\nProjet : ${operation.projectId}\nTâche : ${operation.taskId ?? 'nouvelle tâche'}\nContenu : ${JSON.stringify(operation.payload)}`,
+      recommendation: proposal.expectedEffect ?? '', provenance: 'policy',
+      dedupeKey: `operation:${approvalIntentFingerprint(stable)}`,
+      options: [{ id: 'approve', label: 'Autoriser une fois', effect: 'approve' }, { id: 'reject', label: 'Refuser', effect: 'reject' }],
+    }, { now: Date.now() })
+    agent.decisions = result.inbox
+    touch()
+    return result.decision
+  }
+
+  async function executeApprovedOperation(decisionId) {
+    const agent = ensureSuperAgent()
+    const stored = agent.decisions.find(entry => entry.id === decisionId)
+    if (!stored?.intent || !stored?.operation) return { ok: false, reason: 'no_bound_operation' }
+    const { intent, operation } = stored
+    const match = approvalFor(agent.decisions, { action: operation.action, projectId: operation.projectId,
+      taskIds: operation.taskId ? [operation.taskId] : [], intent, now: Date.now() })
+    if (!match || match.id !== decisionId) return { ok: false, reason: 'approval_not_valid' }
+    if (intent.mandateRevision !== state.mandate.revision) return { ok: false, reason: 'mandate_changed' }
+    if (!IMPLEMENTED_ACTIONS.has(operation.action)) return { ok: false, reason: 'no_adapter_for_action' }
+    const adapter = connectors.get('dsh-taskboard')
+    let task = null
+    if (operation.taskId) {
+      try { task = await adapter.get(operation.taskId) } catch { return { ok: false, reason: 'ledger_unreadable' } }
+      if (!task || task.workspaceId !== operation.projectId) return { ok: false, reason: 'task_project_mismatch' }
+      if (task.version !== operation.taskVersion) return { ok: false, reason: 'version_conflict' }
+    }
+    const gate = effectiveFor(operation.action, { projectId: operation.projectId, approved: true })
+    if (!gate.allowed) return { ok: false, reason: gate.reason }
+    if (operation.action !== 'launch' && !taskboardWritesReady()) return { ok: false, reason: 'taskboard_writes_unavailable' }
+    if (superagentHardStop() !== null) return { ok: false, reason: superagentHardStop() }
+    // At most once: burn and durably save BEFORE the external effect. A crash can
+    // lose an action, never replay it. Retrying requires a fresh human decision.
+    if (typeof stored.usedAt === 'number') return { ok: false, reason: 'approval_consumed' }
+    stored.usedAt = Date.now()
+    await store.write(state)
+    const finalGate = effectiveFor(operation.action, { projectId: operation.projectId, approved: true })
+    if (!finalGate.allowed || intent.mandateRevision !== state.mandate.revision || superagentHardStop() !== null) {
+      return { ok: false, reason: superagentHardStop() ?? (!finalGate.allowed ? finalGate.reason : 'mandate_changed') }
+    }
+    let result
+    try {
+      if (operation.action === 'launch') result = await launchTask({ task, source: 'approval' })
+      else if (operation.action === 'create_task') result = { ok: true, value: await adapter.create({ ...operation.payload, workspaceId: operation.projectId }) }
+      else if (operation.action === 'update_task') result = { ok: true, value: await adapter.update(operation.taskId, { ...operation.payload, ifVersion: operation.taskVersion }, {
+        beforeWrite: () => assertOperationGate(operation.action, operation.projectId, { approved: true, revision: intent.mandateRevision }),
+      }) }
+      else result = { ok: true, value: await adapter.comment(operation.taskId, operation.payload.body) }
+    } catch (error) { result = { ok: false, reason: error?.code ?? 'adapter_error' } }
+    stored.execution = { at: Date.now(), ok: result.ok === true, reason: result.reason ?? null }
+    audit({ type: 'approved_operation_executed', at: Date.now(), decisionId, action: operation.action, ok: result.ok === true, reason: result.reason ?? null })
+    touch()
+    return result
+  }
+
   // Every action the UI can grant has a capability entry: an action missing
   // here silently fell back to the mandate, which could read "granted" while
   // no executor existed (audit A12).
@@ -1377,20 +1466,6 @@ export function apply(ctx, config = {}) {
     return adapter !== null && adapter !== undefined
       && typeof adapter.writesReady === 'function' && adapter.writesReady() === true
   }
-  // Forge actions map to an adapter capability. They are available only when the
-  // GitHub adapter is configured, writes are explicitly enabled, and the mandate
-  // grants the action for a selected project.
-  const FORGE_WRITE_ACTIONS = Object.freeze({ create_task: 'create', comment: 'comment', open_pr: 'open_pr' })
-
-  function forgeReadiness(action) {
-    const capability = FORGE_WRITE_ACTIONS[action]
-    if (capability === undefined) return { relevant: false, ok: false, reason: null }
-    const adapter = connectors?.get?.('github')
-    const described = adapter !== null && adapter !== undefined && typeof adapter.describe === 'function' ? adapter.describe() : null
-    if (described === null || described.status !== 'available') return { relevant: true, ok: false, reason: 'github_not_configured' }
-    if (described.capabilities?.[capability] !== true) return { relevant: true, ok: false, reason: 'github_writes_disabled' }
-    return { relevant: true, ok: true, reason: null }
-  }
 
   /** Can this host actually open a worker session for the configured backend? */
   function backendReadiness() {
@@ -1409,16 +1484,13 @@ export function apply(ctx, config = {}) {
    * the real reason otherwise. Never a decorative "sous conditions" while OFF.
    */
   function capabilityOf(action) {
-    const forge = forgeReadiness(action)
-    const taskboardWrite = TASKBOARD_WRITE_ACTIONS.has(action) && taskboardWritesReady()
-    if (forge.relevant && !forge.ok && !taskboardWrite) {
-      return { state: 'unavailable', reason: forge.reason, source: 'integration' }
-    }
-    if (TASKBOARD_WRITE_ACTIONS.has(action) && !taskboardWrite && !(forge.relevant && forge.ok)) {
-      return { state: 'unavailable', reason: 'taskboard_writes_unavailable', source: 'integration' }
-    }
-    if (!IMPLEMENTED_ACTIONS.has(action) && !forge.relevant) {
+    // This matrix describes the Super Agent executor, not unrelated manual
+    // forge HTTP routes: a configured forge cannot implement a missing brain action.
+    if (!IMPLEMENTED_ACTIONS.has(action)) {
       return { state: 'unavailable', reason: 'no_adapter_for_action', source: 'host' }
+    }
+    if (TASKBOARD_WRITE_ACTIONS.has(action) && !taskboardWritesReady()) {
+      return { state: 'unavailable', reason: 'taskboard_writes_unavailable', source: 'integration' }
     }
     if (action === 'launch') {
       const backend = backendReadiness()
@@ -1427,7 +1499,7 @@ export function apply(ctx, config = {}) {
     if (action === 'delegate' && typeof ctx.agents?.create !== 'function') {
       return { state: 'unavailable', reason: 'runtime_unavailable', source: 'runtime' }
     }
-    const integration = forge.relevant ? 'github' : 'board'
+    const integration = 'board'
     const mandate = state.mandate
     const scopeProjects = mandate?.scopeMode === 'all'
       ? workspaceList().map(workspace => String(workspace.id))
@@ -1444,7 +1516,13 @@ export function apply(ctx, config = {}) {
 
   function capabilitiesOf() {
     const out = {}
-    for (const action of CAPABILITY_ACTIONS) out[action] = capabilityOf(action)
+    for (const action of CAPABILITY_ACTIONS) {
+      out[action] = {
+        ...capabilityOf(action),
+        implemented: IMPLEMENTED_ACTIONS.has(action),
+        executor: IMPLEMENTED_ACTIONS.has(action) ? (action === 'launch' ? 'worker' : 'taskboard') : null,
+      }
+    }
     // Read/analyse are always possible: diagnostics must survive OFF and Stop.
     out.observe = { state: 'available', reason: 'allowed', source: 'host' }
     out.analyse = { state: 'available', reason: 'allowed', source: 'host' }
@@ -1598,7 +1676,7 @@ export function apply(ctx, config = {}) {
    * passing it: that is what makes OFF, Stop, the mandate and the concurrency
    * limit real rather than decorative.
    */
-  function authorizeLaunch(task, { source = 'tick', approved = false } = {}) {
+  function authorizeLaunch(task, { source = 'tick', approved = false, consumeApproval = true } = {}) {
     const projectId = typeof task?.workspaceId === 'string' && task.workspaceId !== '' ? task.workspaceId : null
     // The deterministic mandate gate runs FIRST and on every path: timer tick,
     // manual dispatch, proposal approval, resume and failover. A failover keeps
@@ -1608,7 +1686,7 @@ export function apply(ctx, config = {}) {
     // checked against the card revision by the caller, and it is single-use.
     // A DecisionInbox answer unlocks ONE occurrence of the action it names.
     const approvalDecision = approvalFor(
-      (state.superagent?.decisions ?? []).filter(entry => typeof entry.usedAt !== 'number'),
+      (state.superagent?.decisions ?? []).filter(entry => typeof entry.usedAt !== 'number' && !entry.intent),
       {
         action: 'launch',
         projectId,
@@ -1700,7 +1778,7 @@ export function apply(ctx, config = {}) {
     }
     // The approval authorized exactly this attempt: consume it so a second
     // launch needs a second decision (an ungranted approval never lingers).
-    if (approvalDecision !== null && source !== 'approval') {
+    if (consumeApproval && approvalDecision !== null && source !== 'approval') {
       const inboxDecision = (state.superagent?.decisions ?? []).find(entry => entry.id === approvalDecision.id)
       if (inboxDecision !== undefined) {
         inboxDecision.usedAt = Date.now()
@@ -1746,11 +1824,12 @@ export function apply(ctx, config = {}) {
       ...(typeof route.model === 'string' ? { model: route.model } : {}),
       ...(typeof route.reasoningEffort === 'string' ? { reasoningEffort: route.reasoningEffort } : {}),
     } : undefined
-    const handle = await ctx.agents.create({
+    const permission = effectiveWorkerPermission(state.policy, task.permission)
+    const handle = await createSecuredAgent(ctx.agents, {
       sessionId,
       meta: { cwd: directory },
       ...(agentOptions !== undefined ? { agentOptions } : {}),
-    })
+    }, (agentCtx, agent) => secureWorkerAgent(agentCtx, agent, permission))
     try {
       await workspace.attachSession?.(sessionId)
     } catch (error) {
@@ -1761,18 +1840,6 @@ export function apply(ctx, config = {}) {
       const title = ctx.get?.('sessionTitle')
       const session = sessions?.get?.(sessionId)
       if (session !== undefined && title?.rename !== undefined) title.rename(session, `Agent Board — ${truncate(task.title, 60)}`)
-      // A card may declare a permission level, but the operator's mandate decides
-      // whether this board may grant it. Never inherit `danger-full-access`
-      // silently from a ledger row.
-      if (typeof task.permission === 'string' && task.permission !== '') {
-        const granted = allowedPermissionOf(state.policy, task.permission)
-        if (granted === null) {
-          audit({ type: 'permission_refused', taskId: task.id, requested: task.permission, sessionId })
-        } else {
-          const presets = ctx.get?.('permissionPresets')
-          if (session !== undefined && typeof presets?.set === 'function') presets.set(session, granted)
-        }
-      }
     } catch { /* cosmetic / optional */ }
     const mkMessage = (text, sourceKind) => ({
       id: `msg-agentboard-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
@@ -1813,10 +1880,27 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  /** Side-effect-free shared preflight: dry-run and real launches agree. */
+  function preflightLaunch(task, { source = 'tick', approved = false } = {}) {
+    const auth = authorizeLaunch(task, { source, approved, consumeApproval: false })
+    if (!auth.ok) return auth
+    if (state.assignments.some(entry => String(entry.taskId) === String(task.id) && ACTIVE_STATUSES.includes(entry.status))) {
+      return { ok: false, reason: 'duplicate_assignment' }
+    }
+    if (supervisionConfigOf(state.policy).enabled === true) {
+      const delegation = delegationForTask(task, source)
+      const verdict = evaluateDelegation({ policy: state.policy, task, taskboard: coordinationModel,
+        assignments: state.assignments, usage: { ...delegationUsageOf(state.assignments), depth: delegation.depth, parentProjectId: delegation.parentProjectId }, now: Date.now() })
+      if (!verdict.allow) return { ok: false, reason: verdict.reason, gate: 'delegation', depth: delegation.depth }
+    }
+    return auth
+  }
+
   async function launchTask({ task, proposalId = null, source = 'tick' }) {
-    const auth = authorizeLaunch(task, { source })
+    const preflight = preflightLaunch(task, { source })
+    const auth = preflight.ok ? authorizeLaunch(task, { source }) : preflight
     if (!auth.ok) {
-      audit({ type: 'launch_refused', taskId: task.id, source, reason: auth.reason })
+      audit({ type: auth.gate === 'delegation' ? 'delegation_refused' : 'launch_refused', taskId: task.id, source, reason: auth.reason, ...(auth.gate === 'delegation' ? { depth: auth.depth } : {}) })
       return { ok: false, reason: auth.reason }
     }
     // The super-orchestrator gate is ADDITIVE: the existing authorization gates
@@ -2913,7 +2997,7 @@ export function apply(ctx, config = {}) {
     const sessionId = `session-superagent-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`
     let handle
     try {
-      handle = await ctx.agents.create({
+      handle = await createSecuredAgent(ctx.agents, {
         sessionId,
         meta: { cwd: superagentCwd() },
         agentOptions: {
@@ -2921,7 +3005,7 @@ export function apply(ctx, config = {}) {
           model: route.model,
           ...(typeof route.reasoningEffort === 'string' ? { reasoningEffort: route.reasoningEffort } : {}),
         },
-      })
+      }, secureAssessmentAgent)
     } catch (error) {
       const message = truncate(String(error?.message ?? error), 200)
       agent.identity.session.lastError = message
@@ -3309,16 +3393,22 @@ export function apply(ctx, config = {}) {
         refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, taskId: proposal.taskId ?? null, reason: stopDuringExecution })
         continue
       }
+      // A model-supplied project id is never proof of a task's ownership.
+      const targetTask = typeof proposal.taskId === 'string' ? tasks.find(task => task.id === proposal.taskId) : null
+      if (proposal.action === 'launch' || proposal.action === 'update_task' || proposal.action === 'comment') {
+        if (!targetTask || String(targetTask.workspaceId ?? '') !== proposal.projectId) {
+          refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, taskId: proposal.taskId ?? null, reason: targetTask ? 'task_project_mismatch' : 'task_not_found' })
+          continue
+        }
+      }
+      if (!IMPLEMENTED_ACTIONS.has(proposal.action) && !READ_ONLY_ACTIONS.includes(proposal.action)) {
+        refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, taskId: proposal.taskId ?? null, reason: 'no_adapter_for_action' })
+        continue
+      }
       const base = effectiveFor(proposal.action, { projectId: proposal.projectId })
-      let decision = base
-      if (base.requiresApproval) {
-        const approval = approvalFor(agent.decisions, {
-          action: proposal.action,
-          projectId: proposal.projectId,
-          taskIds: typeof proposal.taskId === 'string' ? [proposal.taskId] : [],
-          now: Date.now(),
-        })
-        decision = effectiveFor(proposal.action, { projectId: proposal.projectId, approved: approval !== null })
+      const decision = base
+      if (base.reason === 'approval_required') {
+        requestOperationApproval(proposal, targetTask)
       }
       if (!decision.allowed) {
         refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, taskId: proposal.taskId ?? null, reason: decision.reason })
@@ -3366,7 +3456,12 @@ export function apply(ctx, config = {}) {
               if (payload[key] !== undefined) patch[key] = payload[key]
             }
             if (Object.keys(patch).length === 0) throw Object.assign(new Error('empty update payload'), { code: 'payload_invalid' })
-            const updated = await adapter.update(proposal.taskId, patch)
+            // The connector reads the card's CURRENT version right before the
+            // write; the gate is re-checked after that await boundary. The
+            // approved path below keeps its exact captured version instead.
+            const updated = await adapter.update(proposal.taskId, patch, {
+              beforeWrite: () => assertOperationGate(proposal.action, proposal.projectId),
+            })
             executed.push({ proposalId: proposal.id, ok: true, action: 'update_task', taskId: proposal.taskId, version: updated?.version ?? null })
           } else {
             if (typeof proposal.taskId !== 'string' || proposal.taskId === '') {
@@ -3418,8 +3513,9 @@ export function apply(ctx, config = {}) {
         recommendation: question.recommendation,
         urgency: question.urgency,
         provenance: 'superagent',
-        action: assessment.proposals.find(proposal => proposal.projectId === question.projectId)?.action ?? null,
-        taskIds: assessment.proposals.filter(proposal => proposal.projectId === question.projectId && typeof proposal.taskId === 'string').map(proposal => proposal.taskId),
+        // Model-authored questions are advice/arbitration, never execution grants.
+        action: null,
+        taskIds: [],
       }, { now: Date.now() })
       inbox = result.inbox
       if (result.duplicate !== true) {
@@ -3431,8 +3527,8 @@ export function apply(ctx, config = {}) {
         if (stored !== undefined) {
           stored.risk = related?.risk ?? null
           stored.impact = related?.expectedEffect ?? null
-          stored.action = related?.action ?? null
-          stored.taskIds = related?.taskId ? [related.taskId] : []
+          stored.action = null
+          stored.taskIds = []
         }
       }
     }
@@ -3537,9 +3633,8 @@ export function apply(ctx, config = {}) {
       if (task === null || typeof task !== 'object') continue
       const projectId = String(task.workspaceId ?? '')
       if (!isProjectSelected(projectId)) continue
-      const gate = effectiveFor('launch', { projectId })
-      // The dry-run must answer what a REAL launch would answer: a backend that
-      // cannot create the execution is a refusal, not a green candidate.
+      const preflight = authorizeLaunch(task, { source: 'superagent', consumeApproval: false })
+      const gate = preflight.decision ?? effectiveFor('launch', { projectId })
       const backend = backendReadiness()
       const readiness = readinessOf(task, tasksById)
       if (!readiness.ready) {
@@ -3554,8 +3649,8 @@ export function apply(ctx, config = {}) {
         title: truncate(String(task.title ?? ''), 120),
         urgency: typeof task.urgency === 'string' ? task.urgency : null,
         permission: typeof task.permission === 'string' ? task.permission : null,
-        allowed: gate.allowed === true && backend.ok === true,
-        reason: gate.allowed === true && backend.ok !== true ? backend.reason : gate.reason,
+        allowed: preflight.ok === true && backend.ok === true,
+        reason: preflight.ok !== true ? preflight.reason : (!backend.ok ? backend.reason : 'allowed'),
         level: gate.level,
         requiresApproval: gate.requiresApproval,
       })
@@ -4060,9 +4155,9 @@ export function apply(ctx, config = {}) {
               const current = projectPolicyOf(projectId) ?? {}
               const patch = {
                 enabled: body.enabled === undefined ? current.enabled === true : body.enabled === true,
-                level: body.level ?? current.level ?? 'L0',
+                level: Object.hasOwn(body, 'level') ? body.level : (current.level ?? null),
                 priority: body.priority ?? current.priority ?? 5,
-                model: body.model ?? current.model ?? null,
+                model: Object.hasOwn(body, 'model') ? body.model : (current.model ?? null),
                 budget: { maxTasksPerHour: body.budget?.maxTasksPerHour ?? current.budget?.maxTasksPerHour ?? 6 },
                 note: body.note ?? current.note ?? '',
               }
@@ -4252,7 +4347,10 @@ export function apply(ctx, config = {}) {
               }, { now: Date.now() })
               audit({ type: 'superagent_decision_answered', at: Date.now(), decisionId: result.decision?.id ?? null, optionId })
               touch()
-              return sendJson(res, 200, { ok: true, value: superagentPublicOf() })
+              const execution = result.decision?.intent && result.decision?.operation
+                && result.decision.options?.some(option => option.id === optionId && option.effect === 'approve')
+                ? await executeApprovedOperation(result.decision.id) : null
+              return sendJson(res, 200, { ok: true, value: superagentPublicOf(), execution })
             }
             if (route === '/integrations/taskboard/probe') {
               const value = await probePublicTaskBoard()
