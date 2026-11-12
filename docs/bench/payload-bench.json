@@ -1,0 +1,27 @@
+{
+  "generatedAt": "2026-11-12T08:50:25.020Z",
+  "fixture": {
+    "projects": 100,
+    "tasks": 500,
+    "directives": 40,
+    "decisions": 20,
+    "activity": 30
+  },
+  "bytes": {
+    "total": 105870,
+    "mandate": 8311,
+    "portfolio": 33613,
+    "capabilities": 980,
+    "superagent": 62416,
+    "host": 487
+  },
+  "kb": {
+    "total": 103.4,
+    "mandate": 8.1,
+    "portfolio": 32.8,
+    "capabilities": 1,
+    "superagent": 61,
+    "host": 0.5
+  },
+  "note": "Size only. SSE sends the whole /state; this is the additive cost of the GOAL 6 sections for a large personal install."
+}
