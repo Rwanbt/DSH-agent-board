@@ -47,7 +47,7 @@ import { createIdentity, markCycle, normalizeIdentity, publicIdentityOf, request
 import { activeDirectives, addDirective, directivesFingerprint, resolveDirectives, revokeDirective } from '../superagent/directives.js'
 import { buildDigest, checkpointOf, emptyMemory, recordDecision, recordFact } from '../superagent/memory.js'
 import { answerDecision, approvalFor, emptyInbox, expireDecisions, inboxSummary, pendingDecisions, proposeDecision } from '../superagent/decisions.js'
-import { buildAssessmentPrompt, parseAssessment, shouldRunCycle, validateAssessment } from '../superagent/brain.js'
+import { ASSESSMENT_SCHEMA_VERSION, buildAssessmentPrompt, buildRepairPrompt, parseAssessment, shouldRunCycle, validateAssessment } from '../superagent/brain.js'
 import { buildPortfolio } from '../plan/portfolio.js'
 import { fairOrder } from '../plan/scheduler.js'
 
@@ -2957,22 +2957,29 @@ export function apply(ctx, config = {}) {
       broadcast()
       return { ok: false, ran: true, reason: response.reason }
     }
-    const parsed = parseAssessment(response.text)
-    if (!parsed.ok) {
-      agent.identity.status = 'error'
-      noteSuperagentFailure(agent, parsed.reason)
-      agent.lastCycle = { at: startedAt, trigger, outcome: 'invalid_assessment', reason: parsed.reason, proposals: 0, applied: 0, refused: 0, durationMs: Date.now() - startedAt }
-      audit({ type: 'superagent_invalid_assessment', at: startedAt, reason: parsed.reason })
-      touch()
-      broadcast()
-      return { ok: false, ran: true, reason: 'invalid_assessment', error: parsed.reason }
-    }
     const projectIds = portfolio.projects.map(project => project.projectId)
-    const validated = validateAssessment(parsed.assessment, { projectIds, actions: ACTIONS })
+    const interpret = text => {
+      const parsed = parseAssessment(text)
+      if (!parsed.ok) return { ok: false, reason: parsed.reason, errors: [`invalid_json:${parsed.reason}`] }
+      const checked = validateAssessment(parsed.assessment, { projectIds, actions: ACTIONS })
+      return checked.ok ? { ok: true, assessment: checked.assessment } : { ok: false, reason: checked.errors.join(','), errors: checked.errors }
+    }
+    let validated = interpret(response.text)
+    if (!validated.ok && Number(agent.budget.modelCallsThisHour) < Number(agent.budget.modelCallsPerHour)) {
+      // One bounded repair round: the strict validator is unchanged, only the
+      // model gets a second chance to emit the documented shape.
+      agent.budget = { ...agent.budget, modelCallsThisHour: Number(agent.budget.modelCallsThisHour) + 1 }
+      audit({ type: 'superagent_assessment_repair', at: Date.now(), errors: validated.errors.slice(0, 5) })
+      const repair = await askSuperAgent(buildRepairPrompt(validated.errors, ASSESSMENT_SCHEMA_VERSION), { timeoutMs: 120_000 })
+      if (repair.ok) {
+        const repaired = interpret(repair.text)
+        if (repaired.ok) validated = { ...repaired, repaired: true }
+      }
+    }
     if (!validated.ok) {
       agent.identity.status = 'error'
-      noteSuperagentFailure(agent, validated.errors.join(','))
-      agent.lastCycle = { at: startedAt, trigger, outcome: 'invalid_assessment', reason: validated.errors.join(','), proposals: 0, applied: 0, refused: 0, durationMs: Date.now() - startedAt }
+      noteSuperagentFailure(agent, validated.reason)
+      agent.lastCycle = { at: startedAt, trigger, outcome: 'invalid_assessment', reason: validated.reason, proposals: 0, applied: 0, refused: 0, durationMs: Date.now() - startedAt }
       audit({ type: 'superagent_invalid_assessment', at: startedAt, errors: validated.errors.slice(0, 5) })
       touch()
       broadcast()
