@@ -43,6 +43,9 @@ limites de la section 10. Il **ne doit pas** être annoncé « GitHub validé en
 | `3d39445` | `feat(taskboard)` : client public-v1 réel + sonde hôte honnête + audit live |
 | `cf07f79` | `feat(cockpit)` : bandeau Super Agent, inspecteur 4 onglets, portée projets, boîte de décisions, bundle |
 | `32cc6ed` | `test(e2e)` : scénarios hôte réel (gate mandat, 3 projets) + preuves régénérées |
+| `120748c` | `fix(superagent)` : cycles concurrents coalescés, backoff exponentiel après échec, réveils publiés |
+| `f9caab5` | `docs(goal6)` : rapport, limites, installation/rollback, captures |
+| `f5a7193` | `docs(goal6)` : branche poussée, PR #3, preuve de lecture GitHub réelle |
 
 Aucune fusion sur `dev`/`main`, aucun commit dans un dépôt de projet réel, aucun commit
 dans `D:\App\dsh-taskboard` (aucun défaut bloquant trouvé côté Task Board).
@@ -218,6 +221,9 @@ Cela prouve la lecture réelle (API GitHub, pagination, normalisation) ; **aucun
 - Contenu externe balisé comme donnée non fiable dans le prompt du Super Agent ;
   il ne peut pas élargir le mandat.
 - Une décision humaine est liée à l'action/au projet/à la tâche et consommée une fois.
+- Les réveils du Super Agent sont coalescés (timer + opérateur + événement ne peuvent pas
+  lancer deux cycles concurrents) et un assessment inutilisable déclenche un backoff
+  exponentiel au lieu d'une boucle de réessai.
 - Migration : un état v1 n'autorise rien, un état v2 n'est jamais écrasé (le store
   accepte v1 et v2 ; une version inconnue préserve le fichier au lieu de le remplacer).
 
