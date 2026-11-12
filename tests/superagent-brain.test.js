@@ -4,7 +4,9 @@ import assert from 'node:assert/strict'
 import {
   ASSESSMENT_SCHEMA_VERSION,
   assessmentFingerprint,
+  assessmentSchemaLines,
   buildAssessmentPrompt,
+  buildRepairPrompt,
   parseAssessment,
   shouldRunCycle,
   validateAssessment,
@@ -205,4 +207,20 @@ test('shouldRunCycle is deterministic and uses the exact reason vocabulary', () 
   for (const garbage of [null, undefined, [], 'x', { proposals: [null] }]) {
     assert.equal(typeof assessmentFingerprint(garbage), 'string')
   }
+})
+
+test('the prompt and the repair prompt give the model the exact allowed values and a valid example', () => {
+  const prompt = buildAssessmentPrompt({ portfolio: [], directives: [], mandate: {} })
+  const repair = buildRepairPrompt(['finding_kind_unknown', 'situation_invalid'])
+  for (const text of [prompt.user, repair]) {
+    // Real failure seen live: the model invented kinds and an object situation.
+    assert.match(text, /"blocker" \| "stale" \| "risk" \| "opportunity" \| "info"/)
+    assert.match(text, /"approval" \| "arbitration" \| "missing_access" \| "high_impact"/)
+    assert.match(text, /"situation": string/)
+    assert.match(text, /"directiveEcho": \[string\]/)
+  }
+  // The example shipped in the prompt passes the same strict validator.
+  const lines = assessmentSchemaLines(ASSESSMENT_SCHEMA_VERSION)
+  const example = JSON.parse(lines[lines.length - 1])
+  assert.deepEqual(validateAssessment(example, { projectIds: [] }).errors, [])
 })

@@ -582,3 +582,25 @@ test('an injected llm service yields real models; model, effort and fallback are
     assert.deepEqual(identity.model, { provider: 'deepseek', model: 'v4', reasoningEffort: 'high', fallback: [{ provider: 'local', model: 'small' }] })
   })
 })
+
+test('Reprendre after a Stop restarts the Super Agent instead of answering not_paused', async () => {
+  await withHost({ mandate: TEST_MANDATE }, async ({ routes, created }) => {
+    const stopped = await callJson(routes, 'POST', '/superagent/stop', {})
+    assert.equal(stopped.status, 200)
+    assert.equal((await callJson(routes, 'GET', '/state')).body.value.superagent.identity.status, 'stopped')
+
+    const resumed = await callJson(routes, 'POST', '/superagent/resume', {})
+    assert.equal(resumed.status, 200, JSON.stringify(resumed.body))
+    const identity = (await callJson(routes, 'GET', '/state')).body.value.superagent.identity
+    assert.equal(identity.status, 'idle')
+    assert.equal((await callJson(routes, 'GET', '/state')).body.value.superagent.session.active, true, 'a real session was started')
+    assert.ok(created.length >= 1)
+
+    // From a pause, Reprendre only un-pauses (no second session).
+    const before = created.length
+    await callJson(routes, 'POST', '/superagent/pause', {})
+    const unpaused = await callJson(routes, 'POST', '/superagent/resume', {})
+    assert.equal(unpaused.status, 200)
+    assert.equal(created.length, before)
+  })
+})

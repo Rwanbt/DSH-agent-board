@@ -38,6 +38,7 @@ const PARTS = [
   'src/client/core.js',
   'src/client/ui/strings.js',
   'src/client/ui/styles.js',
+  'src/client/ui/select.js',
   // Mascot data URIs must precede the avatar component that looks them up.
   'src/client/ui/agent-bots-assets.js',
   'src/client/ui/avatar.js',

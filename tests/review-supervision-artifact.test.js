@@ -24,7 +24,7 @@ const PARTS = [
   'src/board/interaction.js',
   'src/client/core.js',
   'src/client/ui/strings.js',
-  'src/client/ui/styles.js',
+  'src/client/ui/styles.js', 'src/client/ui/select.js',
   'src/client/ui/agent-bots-assets.js',
   'src/client/ui/avatar.js',
   'src/client/ui/card.js',

@@ -38,7 +38,7 @@ const MODULES = [
   'src/board/overview.js',
   'src/board/interaction.js',
   'src/client/ui/strings.js',
-  'src/client/ui/styles.js',
+  'src/client/ui/styles.js', 'src/client/ui/select.js',
   'src/client/ui/agent-bots-assets.js',
   'src/client/ui/avatar.js',
   'src/client/ui/card.js',
@@ -85,7 +85,7 @@ return {
   DabSuperagentDirectives, DabSuperagentSettings, DabSuperagentDecisions, DabAllProjectsConfirm,
   dabSuperagentFacts, dabProjectPolicyRows, dabEffectiveCapabilities, dabCapabilityEntry,
   dabActionRefusalReason, dabSuperagentPortfolio, dabDecisionGroups, dabAllProjectsConfirmValid,
-  dabSaBound, dabReasonText, dabLevelLabel, dabLevelHint, dabLevelOption, DabSuperagentModelEditor,
+  dabSaBound, dabReasonText, dabLevelLabel, dabLevelHint, dabLevelOptions, DabSuperagentModelEditor, DabSelect,
 }`
 
 const cockpit = new Function('React', CODE)(React)
@@ -129,6 +129,14 @@ function walkHas(root, target) {
   walk(root, node => { if (node === target) found = true })
   return found
 }
+
+/** Pick an option of a themed DabSelect (the list is in the DOM, hidden). */
+function pickOption(select, value) {
+  const option = collect(select, node => node.props?.role === 'option' && node.props['data-value'] === value)[0]
+  assert.ok(option !== undefined, `option ${value} exists`)
+  option.props.onClick()
+}
+const optionValues = select => collect(select, node => node.props?.role === 'option').map(node => node.props['data-value'])
 
 function textOf(node) {
   if (typeof node === 'string' || typeof node === 'number') return String(node)
@@ -308,7 +316,7 @@ test('inactive session is never rendered as active; active state is distinct', (
   const stopped = cockpit.dabSuperagentFacts(makeInactiveSuperagent(), makeMandate(), { stopped: true })
   assert.equal(stopped.stateKey, 'stopped')
   // No in-flight work + Stop => "Stopped (observing)", not "Blocked".
-  assert.equal(byClass(band({ stopped: true }), 'dab-super-state-text')[0].children[0], 'Stopped (observing)')
+  assert.equal(byClass(band({ stopped: true, open: true }), 'dab-super-state-text')[0].children[0], 'Stopped (observing)')
 })
 
 // ---------------------------------------------------------------- capabilities
@@ -473,7 +481,7 @@ test('project rows expose toggle, level, priority, model, budget, source and rea
   const project = byClass(tree, 'dab-sa-project')[0]
   assert.equal(project.props['data-project-id'], 'ws:a')
   byClass(tree, 'dab-sa-toggle')[0].props.onClick()
-  byClass(tree, 'dab-sa-level')[0].props.onChange({ target: { value: 'L3' } })
+  pickOption(byClass(tree, 'dab-sa-level')[0], 'L3')
   byClass(tree, 'dab-sa-priority')[0].props.onChange({ target: { value: '7' } })
   byClass(tree, 'dab-sa-dryrun-btn')[0].props.onClick()
   assert.deepEqual(calls, [['toggle', 'ws:a', false], ['level', 'ws:a', 'L3'], ['priority', 'ws:a', 7], ['dry']])
@@ -648,9 +656,9 @@ test('settings show model discovery, refusal reasons per action, connector and l
   // list only discovered entries, and saving posts provider/model/effort/fallback.
   assert.match(text, /Current model/)
   const providerSelect = byClass(tree, 'dab-sa-model-provider')[0]
-  assert.deepEqual(byTag(providerSelect, 'option').map(option => option.props.value), ['', 'deepseek'])
+  assert.deepEqual(optionValues(providerSelect), ['', 'deepseek'])
   const modelSelect = byClass(tree, 'dab-sa-model-name')[0]
-  assert.deepEqual(byTag(modelSelect, 'option').map(option => option.props.value), ['', 'v4'])
+  assert.deepEqual(optionValues(modelSelect), ['', 'v4'])
   assert.equal(byClass(tree, 'dab-sa-model-fallback').length, 2)
   const saved = []
   const editor = render(cockpit.DabSuperagentModelEditor({
@@ -787,16 +795,19 @@ test('the project picker lives in the card: one switch and a named level per pro
   const enabledTree = band({ open: true, projectRows: enabledRows, onToggleProject: () => {}, onSetProjectLevel: (id, level) => leveled.push([id, level]) })
   const select = byClass(enabledTree, 'dab-super-project-level')
   assert.equal(select.length, 1, 'only enabled projects get a level picker')
-  assert.match(textOf(select[0]), /🟠 Bounded autonomy/)
+  assert.match(textOf(select[0]), /Bounded autonomy/)
+  assert.equal(collect(select[0], node => node.props?.className === 'dab-level-dot' && node.props['data-level'] === 'L3').length >= 1, true, 'coloured dot per level')
   assert.doesNotMatch(textOf(select[0]), /\bL[0-4]\b/, 'no internal level code on screen')
-  select[0].props.onChange({ target: { value: 'L3' } })
+  pickOption(select[0], 'L3')
   assert.deepEqual(leveled, [['ws:a', 'L3']])
 })
 
 test('levels are named for humans everywhere', () => {
   assert.equal(cockpit.dabLevelLabel('L0'), 'Observe')
   assert.equal(cockpit.dabLevelLabel('L4'), 'Maximum autonomy')
-  assert.equal(cockpit.dabLevelOption('L2'), '🟢 Supervised')
+  // Dropdown options carry the level for a real CSS dot, the name and the description.
+  const option = cockpit.dabLevelOptions().find(entry => entry[0] === 'L2')
+  assert.deepEqual([option[1], option[2].level, option[2].describe], ['Supervised', 'L2', true])
   assert.match(cockpit.dabLevelHint('L2'), /waits for your approval/)
   cockpit.setLang('fr')
   try {
@@ -870,4 +881,14 @@ test('settings read the model catalog where /state and SSE publish it (host.host
     superagent: makeInactiveSuperagent(), mandate: makeMandate(), host: nested, context: { mode: 'supervised' }, ui: {}, taskboard: null,
   }))
   assert.equal(byClass(tree, 'dab-sa-model-provider').length, 1, 'the editor is offered from the nested catalog')
+})
+
+test('the card says when enabled projects cannot launch anything (permission off)', () => {
+  const mandate = makeMandate({ level: 'L4' })
+  const projectRows = cockpit.dabProjectPolicyRows(makeHost(), makeInactiveSuperagent(), mandate)
+  const warned = band({ mandate, projectRows, open: true })
+  assert.equal(collect(warned, node => node.props?.['data-warning'] === 'launch').length, 1)
+  const granted = makeMandate({ level: 'L4', actions: { ...makeMandate().actions, launch: true } })
+  const fine = band({ mandate: granted, projectRows: cockpit.dabProjectPolicyRows(makeHost(), makeInactiveSuperagent(), granted), open: true })
+  assert.equal(collect(fine, node => node.props?.['data-warning'] === 'launch').length, 0)
 })

@@ -4869,11 +4869,14 @@ const DAB_STRINGS = {
     superProjectsDriven: 'Projets pilotés',
     superModelProvider: 'Fournisseur',
     superModelCurrent: 'Modèle actuel',
+    superProviderNoModels: 'aucun modèle disponible',
+    superProjectsNoLaunch: 'La permission « Lancer une session » est désactivée : le Super Agent peut analyser mais ne démarrera aucun travail. Gérer les permissions →',
     superProjectsCapped: 'Le niveau global « {level} » limite tous les projets : rien ne sera lancé au-delà. Modifier le niveau global →',
     superModelName: 'Modèle',
     superModelEffort: 'Effort de raisonnement',
     superModelEffortDefault: 'Par défaut du modèle',
     superModelEffortNone: 'Ce modèle n’expose pas de niveau d’effort.',
+    superModelEffortLoading: 'Lecture des efforts disponibles…',
     superModelFallbackN: 'Secours {n}',
     superModelFallbackNone: 'Aucun',
     superModelSave: 'Enregistrer le modèle',
@@ -5335,11 +5338,14 @@ const DAB_STRINGS = {
     superProjectsDriven: 'Driven projects',
     superModelProvider: 'Provider',
     superModelCurrent: 'Current model',
+    superProviderNoModels: 'no model available',
+    superProjectsNoLaunch: 'The “Launch a session” permission is off: the Super Agent can analyse but will start no work. Manage permissions →',
     superProjectsCapped: 'The global level “{level}” caps every project: nothing runs beyond it. Change the global level →',
     superModelName: 'Model',
     superModelEffort: 'Reasoning effort',
     superModelEffortDefault: 'Model default',
     superModelEffortNone: 'This model exposes no effort levels.',
+    superModelEffortLoading: 'Reading available efforts…',
     superModelFallbackN: 'Fallback {n}',
     superModelFallbackNone: 'None',
     superModelSave: 'Save model',
@@ -5804,14 +5810,6 @@ function dabLevelLabel(level) {
   return dabT(`levelName_${level}`)
 }
 
-/** Colour of a level, grey (observe) to violet (maximum autonomy). */
-const DAB_LEVEL_EMOJI = Object.freeze({ L0: '⚪', L1: '🔵', L2: '🟢', L3: '🟠', L4: '🟣' })
-
-/** Native <option> text cannot hold markup: the coloured circle is an emoji. */
-function dabLevelOption(level) {
-  return `${DAB_LEVEL_EMOJI[level] ?? '⚪'} ${dabLevelLabel(level)}`
-}
-
 /** Inline level: coloured dot + name, the hint as tooltip. */
 function dabLevelBadge(h, level, key) {
   if (typeof level !== 'string' || !/^L[0-4]$/.test(level)) return null
@@ -5904,6 +5902,13 @@ const DAB_CSS = `
 .dab-dd-opt[data-active="true"] { background: var(--dab-chip-fill); }
 .dab-dd-opt[aria-selected="true"] { font-weight: 500; }
 .dab-dd-check { margin-left: auto; color: var(--dsw-alias-label-secondary); }
+.dab-dd-opt-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.dab-dd-hint { font-size: 11px; line-height: 14px; color: var(--dsw-alias-label-secondary); white-space: normal; }
+.dab-dd > .dab-select { gap: 7px; }
+.dab-dd .dab-level-dot { width: 9px; height: 9px; }
+.dab-dd-opt .dab-level-dot { align-self: flex-start; margin-top: 4px; }
+.dab-dd-pop:has(.dab-dd-hint) { min-width: max(100%, 280px); }
+.dab-dd-pop[hidden] { display: none; }
 @media (pointer: coarse) { .dab-dd-opt { min-height: 40px; font-size: 15px; } }
 .dab-select option { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); }
 .dab-counters { display: inline-flex; align-items: center; gap: 10px; flex: none; }
@@ -6528,13 +6533,15 @@ const DAB_CSS = `
 .dab-super-projects-more { margin-left: auto; border: 0; background: transparent; padding: 2px 4px; font: inherit; font-size: 12px;
   color: var(--dsw-alias-label-secondary); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .dab-super-projects-more:hover { color: var(--dsw-alias-label-primary); }
-.dab-super-projects-capped { flex: 1 1 100%; order: 3; text-align: left; border: 0; border-radius: var(--dsw-radius-sm); padding: 7px 10px; cursor: pointer;
+.dab-super-projects-capped, .dab-super-projects-warning { flex: 1 1 100%; order: 3; text-align: left; border: 0; border-radius: var(--dsw-radius-sm); padding: 7px 10px; cursor: pointer;
   background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 14%, transparent); color: var(--dsw-alias-state-warn-primary); font: inherit; font-size: 12px; }
 .dab-super-project-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 6px 18px; }
 .dab-super-project { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; min-height: 34px; }
 .dab-super-project-toggle { min-width: 0; }
 .dab-super-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dab-super-project-level { flex: 0 0 auto; width: 168px; min-height: 28px; font-size: 12px; }
+.dab-super-project-level { flex: 0 0 auto; width: 176px; }
+.dab-super-project-level > .dab-select, .dab-sa-model-field .dab-dd, .dab-sa-model-field .dab-dd > .dab-select { width: 100%; }
+.dab-sa-model-field .dab-dd { display: flex; }
 .dab-super-project-toggle { flex: 1 1 auto; }
 .dab-super-project-toggle:focus-visible, .dab-super-projects-more:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 .dab-super-decisions { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 0 8px;
@@ -6655,10 +6662,10 @@ const DAB_CSS = `
 /* Autonomy level: coloured dot + name (grey observe -> violet maximum). */
 .dab-level { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .dab-level-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #9ca3af; }
-.dab-level[data-level="L1"] .dab-level-dot { background: #3b82f6; }
-.dab-level[data-level="L2"] .dab-level-dot { background: #22c55e; }
-.dab-level[data-level="L3"] .dab-level-dot { background: #f97316; }
-.dab-level[data-level="L4"] .dab-level-dot { background: #a855f7; }
+.dab-level[data-level="L1"] .dab-level-dot, .dab-level-dot[data-level="L1"] { background: #3b82f6; }
+.dab-level[data-level="L2"] .dab-level-dot, .dab-level-dot[data-level="L2"] { background: #22c55e; }
+.dab-level[data-level="L3"] .dab-level-dot, .dab-level-dot[data-level="L3"] { background: #f97316; }
+.dab-level[data-level="L4"] .dab-level-dot, .dab-level-dot[data-level="L4"] { background: #a855f7; }
 .dab-sa-sub .dab-level { padding: 0 7px; border-radius: 999px; background: var(--dab-chip-fill); line-height: 18px; }
 /* Model editor */
 .dab-sa-model-editor { display: flex; flex-direction: column; gap: 10px; }
@@ -6738,6 +6745,72 @@ function dabInjectStyles(ctxStyles) {
   } catch {
     return () => {}
   }
+}
+
+
+// ---- src/client/ui/select.js ----
+/**
+ * Themed dropdown shared by the toolbar, the Super Agent band and inspector.
+ *
+ * Native <select> popups are drawn by Chromium/the OS and cannot follow the
+ * DSH look (radius, surface, coloured level dots). Options are tuples
+ * [value, text, meta?]; meta.level draws the level dot, meta.hint is the
+ * tooltip, and meta.describe shows it as a second line.
+ *
+ * Concatenated into the browser artifact by scripts/build-client.mjs.
+ *
+ * @module dsh-agent-board/client/ui/select
+ */
+
+/** Themed dropdown (the native <select> popup cannot follow the plugin look). */
+function DabSelect({ label, value, options, onChange, title, disabled, style, className }) {
+  const h = React.createElement
+  const [open, setOpen] = React.useState(false)
+  const [active, setActive] = React.useState(0)
+  const rootRef = React.useRef(null)
+  const listRef = React.useRef(null)
+  const current = options.find(([optionValue]) => optionValue === value) ?? options[0]
+  // HTML ids must not contain spaces: the translated label ("État Task Board")
+  // would break aria-activedescendant.
+  const slug = String(label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'select'
+  React.useEffect(() => {
+    if (!open) return undefined
+    const close = event => { if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false) }
+    document.addEventListener('pointerdown', close)
+    listRef.current?.focus()
+    return () => document.removeEventListener('pointerdown', close)
+  }, [open])
+  const show = () => { setActive(Math.max(0, options.findIndex(([optionValue]) => optionValue === value))); setOpen(true) }
+  const pick = index => { const option = options[index]; setOpen(false); rootRef.current?.querySelector('button')?.focus(); if (option && option[0] !== value) onChange(option[0]) }
+  const onListKey = event => {
+    if (event.key === 'ArrowDown') { event.preventDefault(); setActive(index => Math.min(options.length - 1, index + 1)) }
+    else if (event.key === 'ArrowUp') { event.preventDefault(); setActive(index => Math.max(0, index - 1)) }
+    else if (event.key === 'Home') { event.preventDefault(); setActive(0) }
+    else if (event.key === 'End') { event.preventDefault(); setActive(options.length - 1) }
+    else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick(active) }
+    else if (event.key === 'Escape' || event.key === 'Tab') { event.stopPropagation(); setOpen(false); if (event.key === 'Escape') rootRef.current?.querySelector('button')?.focus() }
+  }
+  const dot = meta => (typeof meta?.level === 'string' ? h('span', { className: 'dab-level-dot', 'data-level': meta.level, 'aria-hidden': 'true' }) : null)
+  return h('div', { className: `dab-dd${className ? ` ${className}` : ''}`, ref: rootRef, style, 'data-value': value ?? '' },
+    h('button', {
+      type: 'button', className: 'dab-select', 'aria-haspopup': 'listbox', 'aria-expanded': open, 'aria-label': `${label} : ${current?.[1] ?? ''}`, title: title ?? current?.[2]?.hint ?? label, disabled,
+      onClick: () => (open ? setOpen(false) : show()),
+      onKeyDown: event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show() } },
+    }, dot(current?.[2]), h('span', { className: 'dab-dd-text' }, current?.[1] ?? '')),
+    // The list stays in the DOM while closed (hidden): assistive tech and tests
+    // can read the options without opening the popover.
+    h('ul', { className: 'dab-dd-pop', role: 'listbox', 'aria-label': label, tabIndex: -1, ref: listRef, onKeyDown: onListKey, hidden: !open, 'aria-activedescendant': open ? `dab-opt-${slug}-${active}` : undefined },
+        options.map(([optionValue, text, meta], index) => h('li', {
+          key: optionValue, id: `dab-opt-${slug}-${index}`, role: 'option', className: 'dab-dd-opt', 'aria-selected': optionValue === value, 'data-active': index === active,
+          title: meta?.hint, 'data-value': optionValue,
+          onPointerEnter: () => setActive(index), onClick: () => pick(index),
+        }, dot(meta), h('span', { className: 'dab-dd-opt-body' }, h('span', { className: 'dab-dd-text' }, text),
+          typeof meta?.hint === 'string' && meta.describe === true ? h('span', { className: 'dab-dd-hint' }, meta.hint) : null), optionValue === value ? h('span', { className: 'dab-dd-check', 'aria-hidden': 'true' }, '✓') : null))))
+}
+
+/** Level options: coloured dot + name + one-line description. */
+function dabLevelOptions() {
+  return DAB_AUTONOMY_LEVELS.map(level => [level, dabLevelLabel(level), { level, hint: dabLevelHint(level), describe: true }])
 }
 
 
@@ -8179,7 +8252,7 @@ function dabSuperControl(h, props) {
 const DAB_SUPER_PROJECTS_SHOWN = 8
 
 /** Inline project switches: the first thing an operator configures. */
-function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, onOpenProjects, onOpenSettings, needsProjects, globalLevel }) {
+function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, onOpenProjects, onOpenSettings, needsProjects, globalLevel, launchGranted }) {
   const shown = rows.slice(0, DAB_SUPER_PROJECTS_SHOWN)
   // Effective level = the most restrictive of global and project: say so when
   // the global ceiling silently caps an enabled project.
@@ -8194,6 +8267,11 @@ function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, o
         ? h('button', { type: 'button', className: 'dab-super-projects-capped', onClick: () => (onOpenSettings ?? onOpenProjects)?.() },
           dabT('superProjectsCapped', { level: dabLevelLabel(globalLevel) }))
         : null,
+      // Enabled projects but no permission to launch: the agent can plan, never act.
+      rows.some(row => row.enabled) && launchGranted === false
+        ? h('button', { type: 'button', className: 'dab-super-projects-warning', 'data-warning': 'launch', onClick: () => (onOpenSettings ?? onOpenProjects)?.() },
+          dabT('superProjectsNoLaunch'))
+        : null,
       h('button', { type: 'button', className: 'dab-super-projects-more', onClick: () => onOpenProjects?.() },
         extra > 0 ? dabT('superProjectsMore', { n: rows.length }) : dabT('superDetailsShort'))),
     h('ul', { className: 'dab-super-project-list' }, shown.map(row => h('li', {
@@ -8207,13 +8285,12 @@ function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, o
       onClick: () => onToggleProject?.(row.id, !row.enabled),
     }, h('span', { className: 'dab-super-project-name' }, row.title)),
     row.enabled
-      ? h('select', {
-        className: 'dab-select dab-super-project-level', value: row.level,
-        'aria-label': dabT('superProjectLevelOf', { project: row.title }),
-        title: dabLevelHint(row.level),
+      ? h(DabSelect, {
+        className: 'dab-super-project-level', value: row.level,
+        label: dabT('superProjectLevelOf', { project: row.title }),
         disabled: busy === true || typeof onSetProjectLevel !== 'function',
-        onChange: event => onSetProjectLevel?.(row.id, event?.target?.value),
-      }, DAB_AUTONOMY_LEVELS.map(level => h('option', { key: level, value: level, title: dabLevelHint(level) }, dabLevelOption(level))))
+        options: dabLevelOptions(), onChange: value => onSetProjectLevel?.(row.id, value),
+      })
       : null))))
 }
 
@@ -8232,7 +8309,6 @@ function DabSuperOrchestratorBarImpl({
   const visible = orchestrators.slice(0, 6)
   const extra = orchestrators.length - visible.length
   const projectCount = Number(totals?.projects) || 0
-  const modeLabel = mode === 'off' ? dabT('modeObserve') : (typeof dabModeLabel === 'function' ? dabModeLabel(mode) : null)
   const miniSize = compact === true ? 22 : 26
   const countText = (count, singular, plural) => (typeof dabCountText === 'function'
     ? dabCountText(count, singular, plural)
@@ -8332,15 +8408,18 @@ function DabSuperOrchestratorBarImpl({
   h('span', { className: 'dab-super-ident' },
     h('span', { className: 'dab-super-title' },
       dabT('superOrchestrator'),
-      h('span', { className: 'dab-super-state', 'data-status': workspace?.status ?? 'unknown' },
-        h('span', { className: 'dab-dot', 'data-tone': layerTone, 'aria-hidden': 'true' }),
-        h('span', { className: 'dab-super-state-text' }, layerStatusLabel)),
-      h('span', { className: 'dab-super-layer', title: dabT('supervisionLayer') }, dabT('supervision'))),
+      // The supervision-layer status duplicates the agent state when collapsed:
+      // it belongs to the opened card, next to the supervision details.
+      open === true
+        ? h('span', { className: 'dab-super-state', 'data-status': workspace?.status ?? 'unknown' },
+          h('span', { className: 'dab-dot', 'data-tone': layerTone, 'aria-hidden': 'true' }),
+          h('span', { className: 'dab-super-state-text' }, layerStatusLabel))
+        : null,
+      open === true ? h('span', { className: 'dab-super-layer', title: dabT('supervisionLayer') }, dabT('supervision')) : null),
     h('span', { className: 'dab-super-sub' },
       projectText,
       h('span', { className: 'dab-super-sep', 'aria-hidden': 'true' }, '·'),
-      h('span', { className: 'dab-super-orch-count' }, orchestratorsText),
-      modeLabel === null ? null : h('span', { className: 'dab-tag' }, `${dabT('supervisionMode')} : ${modeLabel}`))),
+      h('span', { className: 'dab-super-orch-count' }, orchestratorsText))),
   h('span', { className: 'dab-caret', 'aria-hidden': 'true' }, open ? '▾' : '▸')),
 
   // ---- Super Agent AI session: visually distinct from the layer above.
@@ -8384,13 +8463,13 @@ function DabSuperOrchestratorBarImpl({
   controls,
 
   open === true && Array.isArray(projectRows) && projectRows.length > 0
-    ? dabSuperProjects(h, { rows: projectRows, busy, onToggleProject, onSetProjectLevel, onOpenProjects: onOpenProjects ?? onOpenSuperagent, onOpenSettings, needsProjects, globalLevel: typeof mandate?.level === 'string' ? mandate.level : facts.level })
+    ? dabSuperProjects(h, { rows: projectRows, busy, onToggleProject, onSetProjectLevel, onOpenProjects: onOpenProjects ?? onOpenSuperagent, onOpenSettings, needsProjects, globalLevel: typeof mandate?.level === 'string' ? mandate.level : facts.level, launchGranted: mandate?.actions?.launch === true })
     : null,
 
   // Mini orchestrator avatars: real agents only. A project without a declared
   // orchestrator is not rendered as a fake avatar.
   orchestrators.length === 0
-    ? h('span', { className: 'dab-super-none' }, dabT('superNoOrchestrator'))
+    ? (open === true ? h('span', { className: 'dab-super-none' }, dabT('superNoOrchestrator')) : null)
     : h('span', { className: 'dab-super-orchs', role: 'group', 'aria-label': orchestratorsText },
       visible.map(entry => h('button', {
         key: entry.orchestrator.id,
@@ -8936,7 +9015,12 @@ function dabSaSectionQ(h, key, title, quiet, ...children) {
 function dabSaMoment(value) {
   const ms = Number(value)
   if (!Number.isFinite(ms) || ms <= 0) return null
-  try { return new Date(ms).toISOString().slice(0, 16).replace('T', ' ') } catch { return null }
+  // Local wall-clock time (the ISO string was UTC: 18:06 shown for 19:06).
+  try {
+    const date = new Date(ms)
+    const pad = value => String(value).padStart(2, '0')
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  } catch { return null }
 }
 
 function dabAllProjectsConfirmValid(text) {
@@ -9165,13 +9249,12 @@ function DabSuperagentProjects({
           'aria-label': `${row.enabled ? dabT('superProjectDisable') : dabT('superProjectEnable')} : ${row.title}`,
           onClick: () => onToggleProject?.(row.id, !row.enabled),
         }, row.enabled ? dabT('superProjectEnabled') : dabT('superProjectDisabled')),
-        h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+        h('div', { className: 'dab-sa-field dab-sa-field-inline' },
           h('span', { className: 'dab-sa-field-label' }, dabT('superProjectLevel')),
-          h('select', {
-            className: 'dab-select dab-sa-level', value: row.level,
-            'aria-label': `${dabT('superProjectLevel')} : ${row.title}`,
-            onChange: event => onSetProjectLevel?.(row.id, event?.target?.value),
-          }, DAB_AUTONOMY_LEVELS.map(level => h('option', { key: level, value: level, title: dabLevelHint(level) }, dabLevelOption(level))))),
+          h(DabSelect, {
+            className: 'dab-sa-level', value: row.level, label: `${dabT('superProjectLevel')} : ${row.title}`,
+            options: dabLevelOptions(), onChange: value => onSetProjectLevel?.(row.id, value),
+          })),
         h('label', { className: 'dab-sa-field dab-sa-field-inline' },
           h('span', { className: 'dab-sa-field-label' }, dabT('superProjectPriority')),
           h('input', {
@@ -9244,23 +9327,21 @@ function DabDirectiveForm({ projects, busy, onAdd, initialText }) {
       onChange: event => setText(event?.target?.value ?? ''),
     })),
   h('div', { className: 'dab-sa-directive-row' },
-    h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+    h('div', { className: 'dab-sa-field dab-sa-field-inline' },
       h('span', { className: 'dab-sa-field-label' }, dabT('superDirectiveScope')),
-      h('select', {
-        className: 'dab-select dab-sa-directive-scope', value: scope, 'aria-label': dabT('superDirectiveScope'),
-        onChange: event => setScope(event?.target?.value === 'project' ? 'project' : 'global'),
-      },
-      h('option', { value: 'global' }, dabT('superDirectiveGlobal')),
-      h('option', { value: 'project' }, dabT('superDirectiveProjectScope')))),
+      h(DabSelect, {
+        className: 'dab-sa-directive-scope', value: scope, label: dabT('superDirectiveScope'),
+        options: [['global', dabT('superDirectiveGlobal')], ['project', dabT('superDirectiveProjectScope')]],
+        onChange: value => setScope(value === 'project' ? 'project' : 'global'),
+      })),
     scope === 'project'
-      ? h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+      ? h('div', { className: 'dab-sa-field dab-sa-field-inline' },
         h('span', { className: 'dab-sa-field-label' }, dabT('superDirectiveProject')),
-        h('select', {
-          className: 'dab-select dab-sa-directive-project', value: projectId, 'aria-label': dabT('superDirectiveProject'),
-          onChange: event => setProjectId(event?.target?.value ?? ''),
-        },
-        h('option', { value: '' }, dabT('superNotAvailable')),
-        options.map(project => h('option', { key: project.id, value: project.id }, project.title))))
+        h(DabSelect, {
+          className: 'dab-sa-directive-project', value: projectId, label: dabT('superDirectiveProject'),
+          options: [['', dabT('superModelChoose')], ...options.map(project => [project.id, project.title])],
+          onChange: value => setProjectId(value ?? ''),
+        }))
       : null,
     h('button', {
       type: 'submit', className: 'dab-btn dab-sa-directive-add', 'data-primary': 'true', disabled: busy === true || !valid,
@@ -9335,7 +9416,7 @@ function DabSuperagentModelEditor({ facts, models, busy, onSetModel, onModelInfo
   const providerModels = providers.find(entry => entry.id === provider)?.models ?? []
   const allRoutes = providers.flatMap(entry => (Array.isArray(entry.models) ? entry.models : []).map(candidate => ({ value: `${entry.id}/${candidate.id}`, label: `${entry.name ?? entry.id} · ${candidate.name ?? candidate.id}` })))
   const efforts = Array.isArray(info?.efforts) ? info.efforts : []
-  const field = (label, control) => h('label', { className: 'dab-sa-field dab-sa-model-field' }, h('span', { className: 'dab-sa-field-label' }, label), control)
+  const field = (label, control) => h('div', { className: 'dab-sa-field dab-sa-model-field' }, h('span', { className: 'dab-sa-field-label' }, label), control)
   if (models?.discovered !== true) {
     return h('div', { className: 'dab-sa-model-editor', 'data-discovered': 'false' },
       h('div', { className: 'dab-sa-model-row' },
@@ -9364,26 +9445,38 @@ function DabSuperagentModelEditor({ facts, models, busy, onSetModel, onModelInfo
     h('span', { className: 'dab-sa-field-label' }, dabT('superModelCurrent')),
     h('span', { className: 'dab-sa-model-primary' }, currentText)),
   h('div', { className: 'dab-sa-model-grid' },
-    field(dabT('superModelProvider'), h('select', {
-      className: 'dab-select dab-sa-model-provider', value: provider, 'aria-label': dabT('superModelProvider'),
-      onChange: event => { setProvider(event?.target?.value ?? ''); setModel(''); setEffort(''); setSaved(false) },
-    }, h('option', { value: '' }, dabT('superModelChoose')), providers.map(entry => h('option', { key: entry.id, value: entry.id }, String(entry.name ?? entry.id))))),
-    field(dabT('superModelName'), h('select', {
-      className: 'dab-select dab-sa-model-name', value: model, 'aria-label': dabT('superModelName'), disabled: provider === '',
-      onChange: event => { setModel(event?.target?.value ?? ''); setEffort(''); setSaved(false) },
-    }, h('option', { value: '' }, dabT('superModelChoose')), providerModels.map(entry => h('option', { key: entry.id, value: entry.id }, String(entry.name ?? entry.id))))),
+    field(dabT('superModelProvider'), h(DabSelect, {
+      className: 'dab-sa-model-provider', value: provider, label: dabT('superModelProvider'),
+      options: [['', dabT('superModelChoose')], ...providers.map(entry => [entry.id,
+        Array.isArray(entry.models) && entry.models.length === 0
+          ? `${String(entry.name ?? entry.id)} — ${dabT('superProviderNoModels')}`
+          : String(entry.name ?? entry.id),
+        typeof entry.error === 'string' ? { hint: entry.error } : undefined])],
+      onChange: value => { setProvider(value ?? ''); setModel(''); setEffort(''); setSaved(false) },
+    })),
+    field(dabT('superModelName'), h(DabSelect, {
+      className: 'dab-sa-model-name', value: model, label: dabT('superModelName'), disabled: provider === '',
+      options: [['', dabT('superModelChoose')], ...providerModels.map(entry => [entry.id, String(entry.name ?? entry.id)])],
+      onChange: value => { setModel(value ?? ''); setEffort(''); setSaved(false) },
+    })),
     field(dabT('superModelEffort'), efforts.length === 0
-      ? h('span', { className: 'dab-muted dab-sa-model-effort-none' }, valid ? dabT('superModelEffortNone') : '—')
-      : h('select', {
-        className: 'dab-select dab-sa-model-effort', value: effort, 'aria-label': dabT('superModelEffort'),
-        onChange: event => { setEffort(event?.target?.value ?? ''); setSaved(false) },
-      }, h('option', { value: '' }, `${dabT('superModelEffortDefault')}${typeof info?.defaultEffort === 'string' ? ` (${efforts.find(entry => entry.id === info.defaultEffort)?.name ?? info.defaultEffort})` : ''}`),
-      efforts.map(entry => h('option', { key: entry.id, value: entry.id, title: entry.description ?? undefined }, String(entry.name ?? entry.id))))),
-    [0, 1].map(index => field(dabT('superModelFallbackN', { n: index + 1 }), h('select', {
-      key: `fb-${index}`, className: 'dab-select dab-sa-model-fallback', value: fallbacks[index], 'aria-label': dabT('superModelFallbackN', { n: index + 1 }),
-      onChange: event => { const next = [...fallbacks]; next[index] = event?.target?.value ?? ''; setFallbacks(next); setSaved(false) },
-    }, h('option', { value: '' }, dabT('superModelFallbackNone')),
-    allRoutes.filter(route => route.value !== `${provider}/${model}`).map(route => h('option', { key: route.value, value: route.value }, route.label)))))),
+      ? h('span', { className: 'dab-muted dab-sa-model-effort-none', title: typeof info?.reason === 'string' ? info.reason : undefined },
+        !valid ? '—' : info === null ? dabT('superModelEffortLoading') : info.reason === 'no_reasoning_efforts' || info.reason === null ? dabT('superModelEffortNone') : dabReasonText(String(info.reason)))
+      : h(DabSelect, {
+        className: 'dab-sa-model-effort', value: effort, label: dabT('superModelEffort'),
+        options: [
+          ['', `${dabT('superModelEffortDefault')}${typeof info?.defaultEffort === 'string' ? ` (${efforts.find(entry => entry.id === info.defaultEffort)?.name ?? info.defaultEffort})` : ''}`],
+          ...efforts.map(entry => [entry.id, String(entry.name ?? entry.id), typeof entry.description === 'string' ? { hint: entry.description } : undefined]),
+        ],
+        onChange: value => { setEffort(value ?? ''); setSaved(false) },
+      })),
+    [0, 1].map(index => h('div', { key: `fb-${index}`, className: 'dab-sa-field dab-sa-model-field' },
+      h('span', { className: 'dab-sa-field-label' }, dabT('superModelFallbackN', { n: index + 1 })),
+      h(DabSelect, {
+        className: 'dab-sa-model-fallback', value: fallbacks[index], label: dabT('superModelFallbackN', { n: index + 1 }),
+        options: [['', dabT('superModelFallbackNone')], ...allRoutes.filter(route => route.value !== `${provider}/${model}`).map(route => [route.value, route.label])],
+        onChange: value => { const next = [...fallbacks]; next[index] = value ?? ''; setFallbacks(next); setSaved(false) },
+      })))),
   h('div', { className: 'dab-sa-model-actions' },
     h('span', { className: 'dab-muted' }, saved ? dabT('superModelSaved') : ''),
     h('button', { type: 'submit', className: 'dab-btn dab-sa-model-save', 'data-primary': 'true', disabled: busy === true || !valid }, dabT('superModelSave'))))
@@ -9415,12 +9508,12 @@ function DabSuperagentSettings({
     dabSaSection(h, 'model', dabT('superSettingsModel'),
       h(DabSuperagentModelEditor, { key: `${facts.modelText ?? ''}`, facts, models, busy, onSetModel, onModelInfo })),
     dabSaSection(h, 'level', dabT('superSettingsLevel'),
-      h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+      h('div', { className: 'dab-sa-field dab-sa-field-inline' },
         h('span', { className: 'dab-sa-field-label' }, dabT('superSettingsGlobalLevel')),
-        h('select', {
-          className: 'dab-select dab-sa-global-level', value: level, 'aria-label': dabT('superSettingsGlobalLevel'),
-          onChange: event => onSetLevel?.(event?.target?.value),
-        }, DAB_AUTONOMY_LEVELS.map(value => h('option', { key: value, value, title: dabLevelHint(value) }, dabLevelOption(value))))),
+        h(DabSelect, {
+          className: 'dab-sa-global-level', value: level, label: dabT('superSettingsGlobalLevel'),
+          options: dabLevelOptions(), onChange: value => onSetLevel?.(value),
+        })),
       h('div', { className: 'dab-muted dab-sa-level-hint' }, dabLevelHint(level))),
     dabSaSection(h, 'budget', dabT('superSettingsBudget'),
       budget === null
@@ -9741,49 +9834,6 @@ function dabIcon(name) {
     (DAB_ICONS[name] ?? []).map((d, index) => h('path', { key: index, d })))
 }
 
-/** Themed dropdown (the native <select> popup cannot follow the plugin look). */
-function DabSelect({ label, value, options, onChange, title, disabled, style }) {
-  const h = React.createElement
-  const [open, setOpen] = React.useState(false)
-  const [active, setActive] = React.useState(0)
-  const rootRef = React.useRef(null)
-  const listRef = React.useRef(null)
-  const current = options.find(([optionValue]) => optionValue === value) ?? options[0]
-  // HTML ids must not contain spaces: the translated label ("État Task Board")
-  // would break aria-activedescendant.
-  const slug = String(label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'select'
-  React.useEffect(() => {
-    if (!open) return undefined
-    const close = event => { if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false) }
-    document.addEventListener('pointerdown', close)
-    listRef.current?.focus()
-    return () => document.removeEventListener('pointerdown', close)
-  }, [open])
-  const show = () => { setActive(Math.max(0, options.findIndex(([optionValue]) => optionValue === value))); setOpen(true) }
-  const pick = index => { const option = options[index]; setOpen(false); rootRef.current?.querySelector('button')?.focus(); if (option && option[0] !== value) onChange(option[0]) }
-  const onListKey = event => {
-    if (event.key === 'ArrowDown') { event.preventDefault(); setActive(index => Math.min(options.length - 1, index + 1)) }
-    else if (event.key === 'ArrowUp') { event.preventDefault(); setActive(index => Math.max(0, index - 1)) }
-    else if (event.key === 'Home') { event.preventDefault(); setActive(0) }
-    else if (event.key === 'End') { event.preventDefault(); setActive(options.length - 1) }
-    else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick(active) }
-    else if (event.key === 'Escape' || event.key === 'Tab') { event.stopPropagation(); setOpen(false); if (event.key === 'Escape') rootRef.current?.querySelector('button')?.focus() }
-  }
-  return h('div', { className: 'dab-dd', ref: rootRef, style },
-    h('button', {
-      type: 'button', className: 'dab-select', 'aria-haspopup': 'listbox', 'aria-expanded': open, 'aria-label': `${label} : ${current?.[1] ?? ''}`, title: title ?? label, disabled,
-      onClick: () => (open ? setOpen(false) : show()),
-      onKeyDown: event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show() } },
-    }, h('span', { className: 'dab-dd-text' }, current?.[1] ?? '')),
-    open
-      ? h('ul', { className: 'dab-dd-pop', role: 'listbox', 'aria-label': label, tabIndex: -1, ref: listRef, onKeyDown: onListKey, 'aria-activedescendant': `dab-opt-${slug}-${active}` },
-        options.map(([optionValue, text], index) => h('li', {
-          key: optionValue, id: `dab-opt-${slug}-${index}`, role: 'option', className: 'dab-dd-opt', 'aria-selected': optionValue === value, 'data-active': index === active,
-          onPointerEnter: () => setActive(index), onClick: () => pick(index),
-        }, h('span', { className: 'dab-dd-text' }, text), optionValue === value ? h('span', { className: 'dab-dd-check', 'aria-hidden': 'true' }, '✓') : null)))
-      : null)
-}
-
 /**
  * One popover menu: a trigger button and a panel that closes on outside click
  * and Escape. Used for the filters, the settings and the narrow-panel menu.
@@ -9814,7 +9864,7 @@ function DabMenu({ label, icon, badge, open, setOpen, align = 'end', children, c
 function DabToolbar(props) {
   const h = React.createElement
   const {
-    counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh,
+    counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onStop, onResume, onRefresh,
     ui, setUi, projects, onHistory, narrow, iconOnly, taskStateAvailable, taskStateUnavailableReason, onToggleCompact, agentTotal,
   } = props
   const modeNotice = mode === 'off' ? dabT('offNotice') : mode === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice')
@@ -9873,17 +9923,6 @@ function DabToolbar(props) {
   const liveChip = h('span', { className: 'dab-live', 'data-tone': liveTone, title: hostDown ? (props.hostError ?? dabT('orchestratorDown')) : notice },
     h('span', { className: 'dab-dot', 'data-tone': liveTone, 'aria-hidden': 'true' }),
     narrow ? null : h('span', { className: 'dab-live-text' }, liveText))
-
-  const modeSeg = h('div', { className: 'dab-seg dab-mode', role: 'group', 'aria-label': dabT('orchestratorLabel') },
-    ['off', 'supervised', 'autonomous'].map(value => h('button', {
-      key: value,
-      type: 'button',
-      className: 'dab-seg-btn',
-      'aria-pressed': mode === value ? 'true' : 'false',
-      disabled: busy || hostDown || secondary,
-      title: value === 'off' ? dabT('offNotice') : value === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice'),
-      onClick: () => { if (mode !== value) onMode(value) },
-    }, dabT(value === 'off' ? 'modeObserve' : value))))
 
   // Below the label breakpoint the three views become identical square icon
   // buttons: same width, same height, icon dead-centre. The label is dropped
@@ -9952,7 +9991,6 @@ function DabToolbar(props) {
 
   const headActions = h('div', { className: 'dab-head-actions' },
     liveChip,
-    narrow ? null : modeSeg,
     narrow ? (canStop ? stopButton : null) : stopButton,
     narrow ? null : iconBtn('refresh', dabT('refresh'), onRefresh, { disabled: busy }),
     narrow ? null : iconBtn('history', dabT('history'), onHistory, { 'aria-haspopup': 'dialog' }),
@@ -9962,8 +10000,6 @@ function DabToolbar(props) {
     narrow
       ? h(DabMenu, { label: dabT('moreControls'), icon: 'more', open: menuOpen, setOpen: setMenuOpen },
         h('div', { className: 'dab-narrow-menu' },
-          h('div', { className: 'dab-menu-label' }, dabT('orchestratorLabel')),
-          modeSeg,
           h('div', { className: 'dab-menu-row dab-menu-row-actions' }, stopButton, h('span', { className: 'dab-grow' }),
             h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy }, dabT('refresh')))))
       : null)
@@ -10415,6 +10451,21 @@ function dabMakePage(store, ctx) {
         setBusy(false)
       }
     }
+    // Start / Resume: the per-project levels decide what may happen; the engine
+    // itself only needs to be ON (not 'off') and not under an operator Stop.
+    // 'autonomous' is the engine state where the mandate gate (levels, approvals,
+    // per-action grants) is the only authority.
+    const startEngineThen = async next => {
+      if (host.stoppedAt !== null && host.stoppedAt !== undefined) {
+        const cleared = await store.resume()
+        if (cleared?.ok !== true) return cleared
+      }
+      if (host.mode === 'off' || host.mode === 'supervised') {
+        const on = await store.setMode('autonomous')
+        if (on?.ok !== true) return on
+      }
+      return next()
+    }
     // Stable handlers for the band (it is memoized on its callbacks).
     const actRef = React.useRef(act)
     actRef.current = act
@@ -10468,7 +10519,7 @@ function dabMakePage(store, ctx) {
       capabilities,
       stopped: superContext.stopped,
       busy,
-      onStart: () => act('start', () => store.startSuperagent()),
+      onStart: () => act('start', () => startEngineThen(() => store.startSuperagent())),
       onPause: () => act('pause', () => store.pauseSuperagent()),
       // Stop is safe by design: stop board executions AND the AI session; the
       // first success is enough, the second result is reported only if it fails.
@@ -10477,9 +10528,9 @@ function dabMakePage(store, ctx) {
         const session = await store.stopSuperagent()
         return executions.ok || session.ok ? { ok: true } : session
       }),
-      // Reprendre clears the operator Stop (`/resume`) when stoppedAt is set,
-      // and resumes the session lifecycle otherwise.
-      onResume: () => act('resume', () => (superContext.stopped ? store.resume() : store.resumeSuperagent())),
+      // Reprendre is one gesture: clear the board Stop if any, turn the engine
+      // on, then resume (or restart) the Super Agent session.
+      onResume: () => act('resume', () => startEngineThen(() => store.resumeSuperagent())),
       onOpenSuperagent: openSuperagent,
       onOpenDecisions: openSuperagent,
       onOpenProjects: openSuperagentProjects,
@@ -10544,7 +10595,6 @@ function dabMakePage(store, ctx) {
       taskStateUnavailableReason: hierarchy.workspace.taskboard !== null && hierarchy.workspace.taskboard !== undefined && hierarchy.workspace.taskboard.available === false
         ? (typeof hierarchy.workspace.taskboard.reason === 'string' ? hierarchy.workspace.taskboard.reason : null)
         : null,
-      onMode: value => act('mode', () => store.setMode(value)),
       onStop: () => act('stop', () => store.stop()),
       onResume: () => act('resume', () => store.resume()),
       onRefresh: () => { void store.refreshHost(); void act('refresh', () => store.refreshHost()) },

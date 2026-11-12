@@ -31,6 +31,31 @@ const FINDING_KINDS = Object.freeze(['blocker', 'stale', 'risk', 'opportunity', 
 const DECISION_KINDS = Object.freeze(['approval', 'arbitration', 'missing_access', 'high_impact'])
 const RISKS = Object.freeze(['low', 'medium', 'high'])
 
+/**
+ * The exact output contract given to the model (allowed values + shapes + one
+ * example). The validator stays strict; the model must simply be told the rules.
+ * @param {number} schemaVersion
+ * @returns {string[]}
+ */
+export function assessmentSchemaLines(schemaVersion = ASSESSMENT_SCHEMA_VERSION) {
+  return [
+    'JSON SCHEMA (exact keys, exact allowed values):',
+    '{',
+    `  "schemaVersion": ${schemaVersion},`,
+    '  "situation": string  // one or two sentences, plain text (NOT an object)',
+    `  "findings": [ { "kind": one of ${FINDING_KINDS.map(value => `"${value}"`).join(' | ')}, "projectId": a project id from the portfolio or null, "summary": string, "refs": [string] } ],`,
+    `  "proposals": [ { "action": one of ${ASSESSMENT_ACTIONS.map(value => `"${value}"`).join(' | ')}, "projectId": a project id from the portfolio, "taskId": string or null, "rationale": string, "risk": "low" | "medium" | "high", "expectedEffect": string, "requiresApproval": boolean } ],`,
+    `  "decisions": [ { "kind": one of ${DECISION_KINDS.map(value => `"${value}"`).join(' | ')}, "projectId": id or null, "title": string, "context": string, "options": [ { "label": string, "effect": "approve" | "reject" } ], "recommendation": string, "urgency": "urgent" | "normal" } ],`,
+    '  "directiveEcho": [string]  // the operator directives you applied, quoted; [] if none',
+    '  "noopReason": string or null  // non-empty when there is nothing useful to do',
+    '}',
+    'Any other value for "kind" or "action" is rejected: if nothing fits, put the information in "situation" or use kind "info".',
+    'Ask a decision ONLY when no safe option exists inside the mandate; otherwise "decisions": [].',
+    'EXAMPLE (nothing to do):',
+    JSON.stringify({ schemaVersion, situation: 'All selected projects are idle; no ready task.', findings: [{ kind: 'info', projectId: null, summary: 'No ready task in scope.', refs: [] }], proposals: [], decisions: [], directiveEcho: [], noopReason: 'no ready task' }),
+  ]
+}
+
 const MAX_FINDINGS = 12
 const MAX_PROPOSALS = 8
 const MAX_DECISIONS = 8
@@ -224,7 +249,8 @@ export function buildAssessmentPrompt(input = {}) {
   lines.push(FENCE_END)
   lines.push('')
   lines.push('OUTPUT')
-  lines.push(`Return ONE JSON object with schemaVersion=${ASSESSMENT_SCHEMA_VERSION}.`)
+  lines.push(`Return ONE JSON object with schemaVersion=${ASSESSMENT_SCHEMA_VERSION}, no prose, no code fence.`)
+  lines.push(...assessmentSchemaLines(ASSESSMENT_SCHEMA_VERSION))
   lines.push('Use noopReason (non-empty) when there is nothing to do; never propose an action outside the mandate.')
   lines.push('If two operator directives contradict each other in meaning, add directiveConflicts: [{summary, quotes:[two exact excerpts], projectId|null}] and follow the more restrictive one meanwhile.')
 
@@ -658,7 +684,8 @@ export function buildRepairPrompt(errors, schemaVersion = ASSESSMENT_SCHEMA_VERS
     'Your previous answer was rejected by the validator. Nothing was executed.',
     'Errors:',
     ...(list.length === 0 ? ['- unknown'] : list),
-    `Return ONLY one JSON object with schemaVersion=${schemaVersion} and the fields: situation (string), findings (array), proposals (array), decisions (array), directiveEcho (array of strings), noopReason (string or null).`,
+    `Return ONLY one JSON object with schemaVersion=${schemaVersion}.`,
+    ...assessmentSchemaLines(schemaVersion),
     'Use only project ids and actions from the original request. No prose, no code fence.',
   ].join('\n')
 }

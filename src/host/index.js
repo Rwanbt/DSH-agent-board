@@ -640,6 +640,7 @@ export function apply(ctx, config = {}) {
         const id = String(entry?.id ?? entry?.name ?? entry?.provider ?? '')
         if (id === '') continue
         const models = []
+        let listError = null
         try {
           const discovered = await llm.listModels(id)
           for (const model of (Array.isArray(discovered) ? discovered : []).slice(0, 80)) {
@@ -652,8 +653,12 @@ export function apply(ctx, config = {}) {
               reasoningEfforts: Array.isArray(model?.reasoningEfforts) ? model.reasoningEfforts.filter(value => typeof value === 'string').slice(0, 8) : [],
             })
           }
-        } catch { /* a provider without discovery stays an empty, honest list */ }
-        providers.push({ id, name: String(entry?.name ?? id), locality: entry?.locality === 'local' ? 'local' : 'remote', models })
+        } catch (error) {
+          // A provider whose listing fails stays an empty list WITH its reason
+          // (it was swallowed before, which looked like 'no model, no effort').
+          listError = truncate(String(error?.message ?? error), 160)
+        }
+        providers.push({ id, name: String(entry?.name ?? id), locality: entry?.locality === 'local' ? 'local' : 'remote', models, ...(listError !== null ? { error: listError } : {}) })
       }
       modelSnapshot = {
         discovered: providers.length > 0,
@@ -3850,9 +3855,16 @@ export function apply(ctx, config = {}) {
                 agent.runtime = { ...agent.runtime, reason: 'paused_by_operator' }
                 audit({ type: 'superagent_paused', at: Date.now() })
               } else {
-                if (agent.identity.status !== 'paused') return sendJson(res, 409, { ok: false, error: 'not_paused' })
+                // Reprendre is ONE operator gesture whatever the state: from a pause it
+                // un-pauses; from a Stop (or a session that is not running) it starts
+                // a fresh session. Refusing with not_paused left the agent dead.
+                if (agent.identity.status !== 'paused' && agent.identity.session.active !== true) {
+                  const started = await ensureSuperAgentSession()
+                  if (!started.ok) return sendJson(res, 409, { ok: false, error: started.reason })
+                  agent.runtime = { available: true, reason: null, modelDiscovery: modelSnapshot.discovered ? 'live' : 'unavailable' }
+                }
                 agent.identity.status = 'idle'
-                agent.runtime = { ...agent.runtime, reason: agent.identity.session.active === true ? null : 'session_not_started' }
+                if (agent.identity.session.active !== true) agent.runtime = { ...agent.runtime, reason: 'session_not_started' }
                 audit({ type: 'superagent_resumed', at: Date.now() })
               }
               touch()

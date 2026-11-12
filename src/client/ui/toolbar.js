@@ -67,49 +67,6 @@ function dabIcon(name) {
     (DAB_ICONS[name] ?? []).map((d, index) => h('path', { key: index, d })))
 }
 
-/** Themed dropdown (the native <select> popup cannot follow the plugin look). */
-function DabSelect({ label, value, options, onChange, title, disabled, style }) {
-  const h = React.createElement
-  const [open, setOpen] = React.useState(false)
-  const [active, setActive] = React.useState(0)
-  const rootRef = React.useRef(null)
-  const listRef = React.useRef(null)
-  const current = options.find(([optionValue]) => optionValue === value) ?? options[0]
-  // HTML ids must not contain spaces: the translated label ("État Task Board")
-  // would break aria-activedescendant.
-  const slug = String(label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'select'
-  React.useEffect(() => {
-    if (!open) return undefined
-    const close = event => { if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false) }
-    document.addEventListener('pointerdown', close)
-    listRef.current?.focus()
-    return () => document.removeEventListener('pointerdown', close)
-  }, [open])
-  const show = () => { setActive(Math.max(0, options.findIndex(([optionValue]) => optionValue === value))); setOpen(true) }
-  const pick = index => { const option = options[index]; setOpen(false); rootRef.current?.querySelector('button')?.focus(); if (option && option[0] !== value) onChange(option[0]) }
-  const onListKey = event => {
-    if (event.key === 'ArrowDown') { event.preventDefault(); setActive(index => Math.min(options.length - 1, index + 1)) }
-    else if (event.key === 'ArrowUp') { event.preventDefault(); setActive(index => Math.max(0, index - 1)) }
-    else if (event.key === 'Home') { event.preventDefault(); setActive(0) }
-    else if (event.key === 'End') { event.preventDefault(); setActive(options.length - 1) }
-    else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick(active) }
-    else if (event.key === 'Escape' || event.key === 'Tab') { event.stopPropagation(); setOpen(false); if (event.key === 'Escape') rootRef.current?.querySelector('button')?.focus() }
-  }
-  return h('div', { className: 'dab-dd', ref: rootRef, style },
-    h('button', {
-      type: 'button', className: 'dab-select', 'aria-haspopup': 'listbox', 'aria-expanded': open, 'aria-label': `${label} : ${current?.[1] ?? ''}`, title: title ?? label, disabled,
-      onClick: () => (open ? setOpen(false) : show()),
-      onKeyDown: event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show() } },
-    }, h('span', { className: 'dab-dd-text' }, current?.[1] ?? '')),
-    open
-      ? h('ul', { className: 'dab-dd-pop', role: 'listbox', 'aria-label': label, tabIndex: -1, ref: listRef, onKeyDown: onListKey, 'aria-activedescendant': `dab-opt-${slug}-${active}` },
-        options.map(([optionValue, text], index) => h('li', {
-          key: optionValue, id: `dab-opt-${slug}-${index}`, role: 'option', className: 'dab-dd-opt', 'aria-selected': optionValue === value, 'data-active': index === active,
-          onPointerEnter: () => setActive(index), onClick: () => pick(index),
-        }, h('span', { className: 'dab-dd-text' }, text), optionValue === value ? h('span', { className: 'dab-dd-check', 'aria-hidden': 'true' }, '✓') : null)))
-      : null)
-}
-
 /**
  * One popover menu: a trigger button and a panel that closes on outside click
  * and Escape. Used for the filters, the settings and the narrow-panel menu.
@@ -140,7 +97,7 @@ function DabMenu({ label, icon, badge, open, setOpen, align = 'end', children, c
 function DabToolbar(props) {
   const h = React.createElement
   const {
-    counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onMode, onStop, onResume, onRefresh,
+    counts, visibleCount, mode, busy, hostDown, canStop, stopped, secondary, onStop, onResume, onRefresh,
     ui, setUi, projects, onHistory, narrow, iconOnly, taskStateAvailable, taskStateUnavailableReason, onToggleCompact, agentTotal,
   } = props
   const modeNotice = mode === 'off' ? dabT('offNotice') : mode === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice')
@@ -199,17 +156,6 @@ function DabToolbar(props) {
   const liveChip = h('span', { className: 'dab-live', 'data-tone': liveTone, title: hostDown ? (props.hostError ?? dabT('orchestratorDown')) : notice },
     h('span', { className: 'dab-dot', 'data-tone': liveTone, 'aria-hidden': 'true' }),
     narrow ? null : h('span', { className: 'dab-live-text' }, liveText))
-
-  const modeSeg = h('div', { className: 'dab-seg dab-mode', role: 'group', 'aria-label': dabT('orchestratorLabel') },
-    ['off', 'supervised', 'autonomous'].map(value => h('button', {
-      key: value,
-      type: 'button',
-      className: 'dab-seg-btn',
-      'aria-pressed': mode === value ? 'true' : 'false',
-      disabled: busy || hostDown || secondary,
-      title: value === 'off' ? dabT('offNotice') : value === 'supervised' ? dabT('supervisedNotice') : dabT('autonomousNotice'),
-      onClick: () => { if (mode !== value) onMode(value) },
-    }, dabT(value === 'off' ? 'modeObserve' : value))))
 
   // Below the label breakpoint the three views become identical square icon
   // buttons: same width, same height, icon dead-centre. The label is dropped
@@ -278,7 +224,6 @@ function DabToolbar(props) {
 
   const headActions = h('div', { className: 'dab-head-actions' },
     liveChip,
-    narrow ? null : modeSeg,
     narrow ? (canStop ? stopButton : null) : stopButton,
     narrow ? null : iconBtn('refresh', dabT('refresh'), onRefresh, { disabled: busy }),
     narrow ? null : iconBtn('history', dabT('history'), onHistory, { 'aria-haspopup': 'dialog' }),
@@ -288,8 +233,6 @@ function DabToolbar(props) {
     narrow
       ? h(DabMenu, { label: dabT('moreControls'), icon: 'more', open: menuOpen, setOpen: setMenuOpen },
         h('div', { className: 'dab-narrow-menu' },
-          h('div', { className: 'dab-menu-label' }, dabT('orchestratorLabel')),
-          modeSeg,
           h('div', { className: 'dab-menu-row dab-menu-row-actions' }, stopButton, h('span', { className: 'dab-grow' }),
             h('button', { type: 'button', className: 'dab-btn', onClick: onRefresh, disabled: busy }, dabT('refresh')))))
       : null)
