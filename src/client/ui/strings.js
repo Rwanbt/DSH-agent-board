@@ -1234,6 +1234,7 @@ const DAB_REASON_TEXT = {
     rate_limited: 'limite de requêtes atteinte, nouvel essai plus tard',
     credentials_rejected: 'identifiants refusés',
     unsupported_version: 'version non prise en charge',
+    host_outdated: 'le host DSH en cours d’exécution précède cette fonction : redémarrez DSH, puis rechargez la page',
   },
   en: {
     mode_off: 'Observe mode: switch to Supervised or Autonomous to act',
@@ -1284,6 +1285,7 @@ const DAB_REASON_TEXT = {
     rate_limited: 'rate limited, retrying later',
     credentials_rejected: 'credentials rejected',
     unsupported_version: 'unsupported version',
+    host_outdated: 'the running DSH host predates this feature: restart DSH, then reload the page',
   },
 }
 

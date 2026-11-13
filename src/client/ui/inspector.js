@@ -707,7 +707,11 @@ function DabSelfTest({ busy, onSelfTest }) {
       const value = response?.payload?.value ?? null
       if (response?.ok !== true || value === null) {
         setResult(null)
-        setFailure(response?.payload?.error ?? response?.error ?? 'internal_error')
+        // `404` means the RUNNING host predates this panel (host modules load at
+        // startup), not an internal failure: name the fix instead of "internal error".
+        setFailure(Number(response?.status ?? 0) === 404
+          ? 'host_outdated'
+          : (response?.payload?.error ?? response?.error ?? 'internal_error'))
         return
       }
       setResult(value)
