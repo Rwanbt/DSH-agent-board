@@ -43,7 +43,7 @@ Ce document décrit ce qui a été corrigé, et surtout ce qui **reste** non pro
 3. **Modèle worker : corrigé.** L’inspecteur permet de choisir, par projet, une route du catalogue réel (`/mandate/project` refuse un modèle absent ou une découverte indisponible).
 4. **Actions sans exécuteur : clarifiées.** `merge`, `push_branch`, `protected_branch_write`, `secrets`, `policy_change`, `delete_task`, `schedule` sont **réservées à l’opérateur par conception** (`human_only_action`). `open_pr` et `delegate` restent sans exécuteur (`no_adapter_for_action`) : une case cochée ne les rend pas fonctionnelles.
 5. **Le dry-run** partage le préflight ; l’autotest profond prouve la création et le confinement d’une session, pas un lancement Task Board complet ni ses écritures.
-6. **Idempotence du vault** : `vault.py check` reste rouge sur une génération d’un autre projet (`projects/ravum-flow/BOARD.md`), donc pas de commit/push du vault.
+6. **Idempotence du vault : corrigée le 13 novembre.** La projection `projects/ravum-flow/BOARD.md` était en retard sur la carte `FLOW-INIT-20261109found` (une ligne de carte). Régénérée par l’outil du contrat (`vault.py board --project ravum-flow`), `vault.py check` est désormais vert sur lint/liens/idempotence/migrate/root-cleanup, et la note de session a été commitée puis poussée (vault `2f79e4d`).
 
 ## Suite 2 — limites restantes traitées (13 novembre 2026)
 
@@ -83,6 +83,20 @@ Tant que ces quatre étapes n’ont pas été exécutées, aucune validation liv
 ### Outil d’inspection des contrats installés
 
 `scripts/asar-read.mjs` lit l’`app.asar` de l’installation (sans le modifier) pour vérifier les contrats réels : `list <regex>`, `read <entrée>`, `grep <regex> [chemin]`. Il a servi à confirmer `CreateAgentOptions.setup` (commit optionnel après les awaits, publication ensuite) et `AgentHandle.dispose(): Promise<void>` — les deux fondations de l’autotest profond. Chemin surchargeable par `DSH_ASAR`.
+
+## Suite 3 — hôte périmé et idempotence (13 novembre 2026)
+
+### 1. Un host périmé est nommé, pas déguisé en erreur interne
+
+Les modules hôte ne sont chargés qu’au démarrage de DSH : après une mise à jour du plugin, la page rechargée peut afficher la nouvelle interface alors que l’API répond encore avec l’ancien host. Un `GET /selftest` reçoit alors `404`, ce qui s’affichait comme « erreur interne » — un faux blocage. Le panneau affiche désormais « le host DSH en cours d’exécution précède cette fonction : redémarrez DSH, puis rechargez la page » (`host_outdated`, FR/EN), testé dans `tests/cockpit-superagent.test.js`.
+
+### 2. Idempotence du vault réparée par l’outil du contrat
+
+Le rouge `board-not-idempotent:projects/ravum-flow/BOARD.md` venait d’une projection générée en retard sur sa carte (le fichier carte de `FLOW-INIT-20261109found` avait été mis à jour sans régénérer). Le diff calculé sans écriture montrait une seule ligne de carte + l’horodatage. Régénération par `vault.py board --project ravum-flow` (2 fichiers, 6 insertions / 6 suppressions), puis `vault.py check` : lint, liens, idempotence, migrate, root-cleanup **tous verts**. Les fichiers sales d’autres chantiers ont été laissés hors commit.
+
+### 3. État du host au moment du contrôle
+
+PID 1264 (GUI) démarré le 13/11/2026 à 16:37:39 ; `src/host/index.js` modifié à 20:00:19 : le host en cours d’exécution n’a pas chargé la Suite 2. Le plugin du profil est un lien symbolique `C:\Users\barat\.dsh\profiles\desktop\node_modules\dsh-agent-board` → `D:\App\DSH-agent-board`, donc un redémarrage charge bien le nouveau code hôte, et le bundle client servi après rechargement est celui du dépôt (SHA-256 identiques). La recette live reste à exécuter par l’opérateur (redémarrage + 4 étapes ci-dessus).
 
 ## Fichiers principaux
 

@@ -1065,4 +1065,27 @@ test('the self-test panel asks the host on demand and renders every contract che
   refusalTree = drawRefusal()
   assert.match(textOf(refusalTree), /confirmation required/)
   assert.equal(collect(refusalTree, node => node.props?.['data-check'] !== undefined).length, 0)
+
+  // A host that predates the route (404) must name the fix, not "internal error".
+  const staleState = []
+  let staleCursor = 0
+  const drawStale = () => {
+    staleCursor = 0
+    React.useState = initial => {
+      const slot = staleCursor++
+      if (!(slot in staleState)) staleState[slot] = typeof initial === 'function' ? initial() : initial
+      return [staleState[slot], value => { staleState[slot] = typeof value === 'function' ? value(staleState[slot]) : value }]
+    }
+    try {
+      return render(cockpit.DabSelfTest({
+        busy: false,
+        onSelfTest: () => Promise.resolve({ ok: false, status: 404, payload: null }),
+      }))
+    } finally { React.useState = original }
+  }
+  let staleTree = drawStale()
+  byClass(staleTree, 'dab-sa-selftest-run')[0].props.onClick()
+  await new Promise(resolve => setTimeout(resolve, 10))
+  staleTree = drawStale()
+  assert.match(textOf(staleTree), /restart DSH, then reload/i)
 })
