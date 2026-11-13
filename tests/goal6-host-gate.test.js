@@ -607,7 +607,18 @@ test('Reprendre after a Stop restarts the Super Agent instead of answering not_p
 })
 
 test('route patches preserve priority and allow explicit level/model inheritance resets', async () => {
-  await withHost({ mandate: TEST_MANDATE }, async ({ routes }) => {
+  const llm = {
+    listProviders: () => [{ id: 'primary', name: 'Primary' }],
+    listModels: async provider => [{ provider, id: 'big', name: 'Big' }],
+  }
+  await withHost({ mandate: TEST_MANDATE, llm }, async ({ routes }) => {
+    await waitFor(async () => (await callJson(routes, 'GET', '/state')).body.value.host.models.discovered === true)
+    const unknown = await callJson(routes, 'POST', '/mandate/project', { projectId: 'w1', model: { provider: 'primary', model: 'invented' } })
+    assert.equal(unknown.status, 409)
+    assert.equal(unknown.body.error, 'model_not_registered')
+    const malformed = await callJson(routes, 'POST', '/mandate/project', { projectId: 'w1', model: { provider: 'primary' } })
+    assert.equal(malformed.status, 409)
+    assert.equal(malformed.body.error, 'invalid_model')
     const first = await callJson(routes, 'POST', '/mandate/project', { projectId: 'w1', priority: 9, level: 'L2', model: { provider: 'primary', model: 'big' } })
     assert.equal(first.status, 200, JSON.stringify(first.body))
     const minimal = await callJson(routes, 'POST', '/mandate/project', { projectId: 'w1', enabled: true })
@@ -622,6 +633,17 @@ test('route patches preserve priority and allow explicit level/model inheritance
     assert.equal(project.priority, 9)
     assert.equal(project.level, null)
     assert.equal(project.model, null)
+  })
+})
+
+test('a project worker model is refused while the host cannot verify it', async () => {
+  await withHost({ mandate: TEST_MANDATE }, async ({ routes }) => {
+    const refused = await callJson(routes, 'POST', '/mandate/project', { projectId: 'w1', model: { provider: 'primary', model: 'big' } })
+    assert.equal(refused.status, 409, JSON.stringify(refused.body))
+    assert.equal(refused.body.error, 'model_discovery_unavailable')
+    // An absent model field still leaves the stored value alone.
+    const untouched = await callJson(routes, 'POST', '/mandate/project', { projectId: 'w1', priority: 4 })
+    assert.equal(untouched.status, 200, JSON.stringify(untouched.body))
   })
 })
 
@@ -642,5 +664,59 @@ test('minimal store-style action grants are accepted under selected and all scop
       assert.equal(after.projects.w1.enabled, before.projects.w1.enabled)
       assert.equal(after.actions.delete_task, before.actions.delete_task)
     }
+  })
+})
+
+test('self-test inventories the RUNNING contracts and can dispose one confined probe session', async () => {
+  await withHost({ mandate: TEST_MANDATE }, async ({ routes }) => {
+    const shallow = await callJson(routes, 'GET', '/selftest')
+    assert.equal(shallow.status, 200, JSON.stringify(shallow.body))
+    const checks = shallow.body.value.checks
+    assert.ok(Array.isArray(checks) && checks.length > 0)
+    // Presence is observed, not assumed: agents.create exists in this fake.
+    assert.equal(checks.find(entry => entry.id === 'agents.create').ok, true)
+    // Missing services are reported with a reason instead of crashing the panel.
+    const missing = checks.find(entry => entry.id === 'permissionPresets.resolve')
+    assert.equal(missing.ok, false)
+    assert.equal(missing.reason, 'runtime_unavailable')
+    assert.equal(shallow.body.value.deep, null, 'a shallow run never creates a session')
+
+    const unconfirmed = await callJson(routes, 'POST', '/selftest', { deep: true })
+    assert.equal(unconfirmed.status, 400)
+    assert.equal(unconfirmed.body.error, 'confirmation_required')
+
+    const deep = await callJson(routes, 'POST', '/selftest', { deep: true, confirm: 'EPHEMERAL_SESSION' })
+    assert.equal(deep.status, 200, JSON.stringify(deep.body))
+    assert.equal(deep.body.value.deep.ok, true, JSON.stringify(deep.body.value.deep))
+    assert.equal(deep.body.value.deep.disposed, true)
+    assert.equal(deep.body.value.deep.applied, null)
+    assert.equal(deep.body.value.deep.verifiedBy, 'setup')
+    assert.match(deep.body.value.deep.sessionId, /^session-agentboard-selftest-/)
+  })
+})
+
+test('the deep self-test stays an operator diagnostic, even after Stop', async () => {
+  await withHost({ mandate: TEST_MANDATE }, async ({ routes }) => {
+    await callJson(routes, 'POST', '/stop', {})
+    const deep = await callJson(routes, 'POST', '/selftest', { deep: true, confirm: 'EPHEMERAL_SESSION' })
+    assert.equal(deep.status, 200, JSON.stringify(deep.body))
+    assert.equal(deep.body.value.deep.disposed, true)
+    // The test session is not a task execution: it never enters the board.
+    const assignments = (await callJson(routes, 'GET', '/state')).body.value.assignments
+    assert.deepEqual(assignments, [])
+  })
+})
+
+test('capabilities name human-only actions instead of pretending an adapter is missing', async () => {
+  await withHost({ mandate: TEST_MANDATE }, async ({ routes }) => {
+    const caps = (await callJson(routes, 'GET', '/state')).body.value.capabilities
+    for (const action of ['merge', 'push_branch', 'protected_branch_write', 'secrets', 'policy_change', 'delete_task', 'schedule']) {
+      assert.equal(caps[action].state, 'unavailable', action)
+      assert.equal(caps[action].reason, 'human_only_action', action)
+      assert.equal(caps[action].source, 'design', action)
+    }
+    assert.equal(caps.open_pr.reason, 'no_adapter_for_action')
+    assert.equal(caps.launch.implemented, true)
+    assert.equal(caps.merge.implemented, false)
   })
 })

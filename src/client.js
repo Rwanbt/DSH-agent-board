@@ -4523,6 +4523,12 @@ function createBoardStore(ctx, options = {}) {
     /** Exact-route efforts for one model (read-only; no state refresh). */
     modelInfo: (provider, model) => request('POST', '/models/info', { provider, model }),
     probeTaskboard: () => post('/integrations/taskboard/probe', {}),
+    /**
+     * Runtime contract self-test. A read-only question (the deep variant creates
+     * and disposes one disposable confined session), so the shared state is NOT
+     * refreshed: the panel renders the returned value directly.
+     */
+    selfTest: deep => request('POST', '/selftest', deep === true ? { deep: true, confirm: 'EPHEMERAL_SESSION' } : {}),
     addDirective: input => post('/superagent/directives', {
       text: String(input?.text ?? ''),
       scope: input?.scope === 'project' ? 'project' : 'global',
@@ -4886,6 +4892,16 @@ const DAB_STRINGS = {
     superCycleNow: 'Faire un point maintenant',
     superCycleNowHint: 'Lance un cycle d’analyse immédiat (compte dans le budget de cycles).',
     superTaskboardProbe: 'Tester la connexion',
+    superSelfTest: 'Vérifier l’installation',
+    superSelfTestHint: 'Contrôle les services DSH réellement présents dans cette version (confinement, permissions, Task Board, modèles). Rien n’est modifié.',
+    superSelfTestDeep: 'Créer aussi une session de test éphémère (sans modèle)',
+    superSelfTestDeepHint: 'Une session confinée en lecture seule est créée puis supprimée immédiatement : c’est la seule preuve live que le confinement s’applique.',
+    superSelfTestRun: 'Lancer les contrôles',
+    superSelfTestRunning: 'Contrôles en cours…',
+    superSelfTestOk: '{n} contrôles réussis',
+    superSelfTestFailed: '{n} contrôle(s) en échec',
+    superSelfTestDeepOk: 'Session de test créée, confinée puis supprimée',
+    superSelfTestDeepFailed: 'Session de test en échec',
     superProjectsNoneHint: 'Activez un projet pour que le Super Agent puisse agir dessus.',
     superProjectsMore: 'Tous les projets ({n})',
     superProjectLevelOf: 'Niveau d’autonomie : {project}',
@@ -4898,6 +4914,9 @@ const DAB_STRINGS = {
     superActionAuto: 'Automatique dans le mandat',
     superProjectLevelInherited: 'Hérité — {level}',
     superProjectModelReset: 'Réinitialiser le modèle worker (hériter)',
+    superProjectModel: 'Modèle worker',
+    superProjectModelInherited: 'Hérité du Super Agent',
+    superModelUnknown: 'absent du catalogue actuel',
     superProjectSearch: 'Rechercher un projet',
     superProjectPages: 'Pages des projets',
     superProjectPage: 'Page {page}/{pages} — {n} projets',
@@ -5366,6 +5385,16 @@ const DAB_STRINGS = {
     superCycleNow: 'Run a check now',
     superCycleNowHint: 'Starts an immediate analysis cycle (counts against the cycle budget).',
     superTaskboardProbe: 'Test the connection',
+    superSelfTest: 'Verify the installation',
+    superSelfTestHint: 'Checks the DSH services this build really provides (confinement, permissions, Task Board, models). Nothing is changed.',
+    superSelfTestDeep: 'Also create one disposable test session (no model)',
+    superSelfTestDeepHint: 'A read-only confined session is created and immediately disposed: it is the only live proof that confinement applies.',
+    superSelfTestRun: 'Run the checks',
+    superSelfTestRunning: 'Running checks…',
+    superSelfTestOk: '{n} checks passed',
+    superSelfTestFailed: '{n} check(s) failed',
+    superSelfTestDeepOk: 'Test session created, confined and disposed',
+    superSelfTestDeepFailed: 'Test session failed',
     superProjectsNoneHint: 'Enable a project so the Super Agent can act on it.',
     superProjectsMore: 'All projects ({n})',
     superProjectLevelOf: 'Autonomy level: {project}',
@@ -5378,6 +5407,9 @@ const DAB_STRINGS = {
     superActionAuto: 'Automatic within mandate',
     superProjectLevelInherited: 'Inherited — {level}',
     superProjectModelReset: 'Reset worker model (inherit)',
+    superProjectModel: 'Worker model',
+    superProjectModelInherited: 'Inherited from the Super Agent',
+    superModelUnknown: 'not in the current catalog',
     superProjectSearch: 'Search projects',
     superProjectPages: 'Project pages',
     superProjectPage: 'Page {page}/{pages} — {n} projects',
@@ -5751,6 +5783,7 @@ const DAB_REASON_TEXT = {
     concurrency_limit: 'nombre maximal d’agents simultanés atteint',
     no_candidate_work: 'aucune tâche prête dans le périmètre',
     no_adapter_for_action: 'pas encore pris en charge dans cette version',
+    human_only_action: 'réservée à vous : le Super Agent ne l’exécute jamais',
     contract_unavailable: 'Task Board ne propose pas encore le contrat d’exécution',
     taskboard_write_api_unavailable: 'Task Board accessible en lecture seule pour l’instant',
     public_api_disabled: 'API Task Board désactivée : redémarrez DSH',
@@ -5800,6 +5833,7 @@ const DAB_REASON_TEXT = {
     concurrency_limit: 'maximum concurrent agents reached',
     no_candidate_work: 'no ready task in scope',
     no_adapter_for_action: 'not supported yet in this version',
+    human_only_action: 'yours only: the Super Agent never executes it',
     contract_unavailable: 'Task Board does not offer the execution contract yet',
     taskboard_write_api_unavailable: 'Task Board is read-only for now',
     public_api_disabled: 'Task Board API disabled: restart DSH',
@@ -6691,8 +6725,17 @@ const DAB_CSS = `
 .dab-level[data-level="L4"] .dab-level-dot, .dab-level-dot[data-level="L4"] { background: #a855f7; }
 .dab-sa-sub .dab-level { padding: 0 7px; border-radius: 999px; background: var(--dab-chip-fill); line-height: 18px; }
 /* Model editor */
-.dab-sa-model-editor { display: flex; flex-direction: column; gap: 10px; }
-.dab-sa-model-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+.dab-sa-selftest { display: flex; flex-direction: column; gap: 10px; }
+.dab-sa-selftest-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dab-sa-selftest-result { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: var(--dsw-radius-sm);
+  background: var(--dab-card-fill); border: 1px solid var(--dsw-alias-border-l2, var(--dsw-alias-border-l3)); }
+.dab-sa-selftest-result[data-ok="false"] { border-color: var(--dsw-alias-state-warn-primary); }
+.dab-sa-selftest-summary { font-size: 12px; font-weight: 600; }
+.dab-sa-selftest-result[data-ok="false"] .dab-sa-selftest-summary { color: var(--dsw-alias-state-warn-primary); }
+.dab-sa-selftest-result code { font-size: 11px; }
+.dab-sa-selftest-deep-result { font-size: 12px; }
+.dab-sa-selftest-deep-result[data-ok="false"] { color: var(--dsw-alias-state-warn-primary); }
+.dab-sa-model-editor { display: flex; flex-direction: column; gap: 10px; }.dab-sa-model-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
 .dab-sa-model-field .dab-select { width: 100%; min-height: 30px; }
 .dab-sa-model-actions { display: flex; align-items: center; gap: 10px; justify-content: space-between; flex-wrap: wrap; font-size: 11px; }
 .dab-sa-model-save { margin-left: auto; }
@@ -9243,6 +9286,27 @@ function DabSuperagentProjects({
   const [query, setQuery] = React.useState('')
   const [page, setPage] = React.useState(0)
   const rows = dabProjectPolicyRows(host, superagent, mandate)
+  // The picker offers ONLY routes the host really discovered: choosing a model
+  // that does not exist would produce a launch failure later.
+  const models = dabSaObject(host?.host?.models) ?? dabSaObject(host?.models)
+  const modelRoutes = models?.discovered === true && Array.isArray(models.providers)
+    ? models.providers.flatMap(entry => (Array.isArray(entry?.models) ? entry.models : []).map(candidate => [
+      `${entry.id}/${candidate.id}`,
+      `${entry.name ?? entry.id} · ${candidate.name ?? candidate.id}`,
+    ]))
+    : []
+  const currentRouteOf = row => (row.modelInherited ? '' : `${row.model?.provider ?? ''}/${row.model?.model ?? ''}`)
+  // A stored override that the current catalog no longer lists stays VISIBLE as
+  // itself: silently showing the inherited label while an override is stored
+  // would misrepresent the effective worker model.
+  const modelOptionsFor = row => {
+    const current = currentRouteOf(row)
+    const known = modelRoutes.some(([value]) => value === current)
+    const inherited = [['', dabT('superProjectModelInherited')]]
+    return current === '' || known
+      ? [...inherited, ...modelRoutes]
+      : [...inherited, [current, `${current} — ${dabT('superModelUnknown')}`], ...modelRoutes]
+  }
   const search = query.trim().toLocaleLowerCase()
   const matches = rows.filter(row => `${row.title} ${row.id}`.toLocaleLowerCase().includes(search))
   const pageCount = Math.max(1, Math.ceil(matches.length / DAB_SUPER_PROJECT_LIMIT))
@@ -9315,7 +9379,23 @@ function DabSuperagentProjects({
             onChange: event => onSetProjectPriority?.(row.id, Number(event?.target?.value)),
           }))),
       h('div', { className: 'dab-sa-project-facts' },
-        h('span', { className: 'dab-sa-model' }, `${dabT('model')} : ${row.modelInherited ? dabT('superModelInherited') : `${row.model.provider ?? '?'}/${row.model.model ?? '?'}`}`),
+        typeof onSetProjectModel === 'function' && modelRoutes.length > 0
+          ? h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+            h('span', { className: 'dab-sa-field-label' }, dabT('superProjectModel')),
+            h(DabSelect, {
+              className: 'dab-sa-project-model',
+              value: currentRouteOf(row),
+              label: `${dabT('superProjectModel')} : ${row.title}`,
+              disabled: busy === true,
+              options: modelOptionsFor(row),
+              onChange: value => {
+                if (typeof value !== 'string' || value === '') return onSetProjectModel(row.id, null)
+                const cut = value.indexOf('/')
+                if (cut <= 0 || cut >= value.length - 1) return
+                onSetProjectModel(row.id, { provider: value.slice(0, cut), model: value.slice(cut + 1) })
+              },
+            }))
+          : h('span', { className: 'dab-sa-model' }, `${dabT('model')} : ${row.modelInherited ? dabT('superModelInherited') : `${row.model?.provider ?? '?'}/${row.model?.model ?? '?'}`}`),
         !row.modelInherited && typeof onSetProjectModel === 'function'
           ? h('button', { type: 'button', className: 'dab-btn', disabled: busy === true,
             'aria-label': `${dabT('superProjectModelReset')} : ${row.title}`,
@@ -9555,9 +9635,73 @@ function DabSuperagentModelEditor({ facts, models, busy, onSetModel, onModelInfo
     h('button', { type: 'submit', className: 'dab-btn dab-sa-model-save', 'data-primary': 'true', disabled: busy === true || !valid }, dabT('superModelSave'))))
 }
 
+/**
+ * Runtime self-test of THIS installation. The shallow run only reports which
+ * DSH services exist and whether the permission presets resolve; the deep run
+ * additionally creates ONE disposable read-only session through the production
+ * confinement path and disposes it. The result is rendered from the response,
+ * never from a refreshed state (a test is a question, not a mutation).
+ */
+function DabSelfTest({ busy, onSelfTest }) {
+  const h = React.createElement
+  const [deep, setDeep] = React.useState(false)
+  const [running, setRunning] = React.useState(false)
+  const [result, setResult] = React.useState(null)
+  const [failure, setFailure] = React.useState(null)
+  if (typeof onSelfTest !== 'function') return null
+  const run = () => {
+    setRunning(true)
+    setFailure(null)
+    Promise.resolve(onSelfTest(deep)).then(response => {
+      const value = response?.payload?.value ?? null
+      if (response?.ok !== true || value === null) {
+        setResult(null)
+        setFailure(response?.payload?.error ?? response?.error ?? 'internal_error')
+        return
+      }
+      setResult(value)
+    }).catch(error => { setResult(null); setFailure(String(error?.message ?? error)) })
+      .finally(() => setRunning(false))
+  }
+  const checks = Array.isArray(result?.checks) ? result.checks.filter(entry => entry !== null && typeof entry === 'object') : []
+  const failed = checks.filter(entry => entry.ok !== true)
+  const deepResult = result?.deep !== null && typeof result?.deep === 'object' ? result.deep : null
+  return h('div', { className: 'dab-sa-selftest' },
+    h('div', { className: 'dab-sa-selftest-actions' },
+      h('button', {
+        type: 'button', className: 'dab-btn dab-sa-selftest-run',
+        disabled: busy === true || running === true, onClick: run,
+      }, running === true ? dabT('superSelfTestRunning') : dabT('superSelfTestRun')),
+      h('label', { className: 'dab-sa-check' },
+        h('input', {
+          type: 'checkbox', className: 'dab-sa-selftest-deep', checked: deep,
+          'aria-label': dabT('superSelfTestDeep'),
+          onChange: event => setDeep(event?.target?.checked === true),
+        }),
+        h('span', null, dabT('superSelfTestDeep')))),
+    h('div', { className: 'dab-muted' }, deep ? dabT('superSelfTestDeepHint') : dabT('superSelfTestHint')),
+    failure === null ? null : dabSaReason(h, failure),
+    result === null ? null : h('div', {
+      className: 'dab-sa-selftest-result', 'data-ok': failed.length === 0 ? 'true' : 'false',
+    },
+    h('div', { className: 'dab-sa-selftest-summary' }, failed.length === 0
+      ? dabT('superSelfTestOk', { n: checks.length })
+      : dabT('superSelfTestFailed', { n: failed.length })),
+    h('ul', { className: 'dab-sa-list' }, checks.map(entry => h('li', {
+      key: String(entry.id), 'data-check': String(entry.id), 'data-ok': entry.ok === true ? 'true' : 'false',
+    },
+    h('code', null, String(entry.id)),
+    entry.ok === true ? ' ✓' : ` — ${dabReasonText(typeof entry.reason === 'string' ? entry.reason : 'unknown')}`))),
+    deepResult === null ? null : h('div', {
+      className: 'dab-sa-selftest-deep-result', 'data-ok': deepResult.ok === true ? 'true' : 'false',
+    }, deepResult.ok === true
+      ? dabT('superSelfTestDeepOk')
+      : `${dabT('superSelfTestDeepFailed')} — ${dabReasonText(typeof deepResult.reason === 'string' ? deepResult.reason : 'unknown')}`)))
+}
+
 function DabSuperagentSettings({
   superagent, mandate, capabilities, host, context, ui, busy, taskboard,
-  onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle,
+  onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
 }) {
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
@@ -9656,6 +9800,7 @@ function DabSuperagentSettings({
       notes.length === 0
         ? h('div', { className: 'dab-muted' }, dabT('superReconcileNone'))
         : h('ul', { className: 'dab-sa-list' }, notes.map((note, index) => h('li', { key: `n-${index}`, title: typeof note === 'object' ? JSON.stringify(note).slice(0, 400) : undefined }, dabReconcileNoteText(note))))),
+    dabSaSection(h, 'selftest', dabT('superSelfTest'), h(DabSelfTest, { busy, onSelfTest })),
     dabSaSection(h, 'taskboard', dabT('superSettingsTaskboard'),
       h('div', { className: 'dab-sa-connector' },
         h('span', { className: 'dab-sa-connector-state', 'data-reachable': connector?.reachable === true ? 'true' : 'false' }, connectorState),
@@ -9678,7 +9823,7 @@ function DabSuperagentInspector(props) {
     superagent, mandate, capabilities, portfolio, host, context, dryRun, dryRunBusy, busy, narrow, taskboard, ui, workspace, initialTab,
     onClose, onOpenDetail, onDryRun, onToggleProject, onSetProjectLevel, onSetProjectPriority, onSetProjectModel, onConfirmAllProjects,
     onAddDirective, onRevokeDirective, onAnswerDecision, onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume,
-    onSetModel, onModelInfo, onProbeTaskboard, onCycle,
+    onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
   } = props
   const facts = dabSuperagentFacts(superagent, mandate, context)
   const [tab, setTab] = React.useState(typeof initialTab === 'string' ? initialTab : 'overview')
@@ -9758,7 +9903,7 @@ function DabSuperagentInspector(props) {
       : activeTab === 'settings'
         ? h(DabSuperagentSettings, {
           superagent, mandate, capabilities, host, context, ui, busy, taskboard,
-          onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle,
+          onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
         })
         : h(DabSuperagentOverview, {
           superagent, mandate, capabilities, host, context, busy, workspace,
@@ -10762,6 +10907,7 @@ function dabMakePage(store, ctx) {
         onSetModel: model => actRef.current('model', () => store.setSuperagentModel(model)),
         onModelInfo: (provider, model) => store.modelInfo(provider, model),
         onProbeTaskboard: () => act('taskboard', () => store.probeTaskboard()),
+        onSelfTest: deep => store.selfTest(deep),
         onCycle: () => act('cycle', () => store.cycleSuperagent('manual')),
         onSetAction: (action, enabled) => act('action', () => store.setAction(action, enabled)),
         onSetActionMode: (action, mode) => act('action', () => store.setActionMode(action, mode)),
