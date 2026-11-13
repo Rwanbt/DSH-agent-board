@@ -85,7 +85,7 @@ return {
   DabSuperagentDirectives, DabSuperagentSettings, DabSuperagentDecisions, DabAllProjectsConfirm,
   dabSuperagentFacts, dabProjectPolicyRows, dabEffectiveCapabilities, dabCapabilityEntry,
   dabActionRefusalReason, dabSuperagentPortfolio, dabDecisionGroups, dabAllProjectsConfirmValid,
-  dabSaBound, dabReasonText, dabLevelLabel, dabLevelHint, dabLevelOptions, DabSuperagentModelEditor, DabSelect,
+  dabSaBound, dabReasonText, dabLevelLabel, dabLevelHint, dabLevelOptions, DabSuperagentModelEditor, DabSelect, DabSelfTest,
 }`
 
 const cockpit = new Function('React', CODE)(React)
@@ -952,6 +952,26 @@ test('inherited project level displays global level and explicit overrides can r
   collect(override, row => row.props?.role === 'option' && row.props['data-value'] === '')[0].props.onClick()
   byTag(override, 'button').find(row => row.props['aria-label']?.startsWith('Reset worker model')).props.onClick()
   assert.deepEqual(changes, [{ id: 'ws:b', level: null }, { id: 'ws:b', model: null }])
+
+  // The worker model is an operator choice, offered from the REAL catalog only.
+  const picker = render(cockpit.DabSuperagentProjects({ host: makeHost(), mandate, superagent: makeInactiveSuperagent(),
+    onSetProjectModel: (id, value) => changes.push({ id, model: value }),
+  }))
+  const inheritedRow = byClass(picker, 'dab-sa-project').find(row => row.props['data-project-id'] === 'ws:a')
+  const modelSelect = byClass(inheritedRow, 'dab-sa-project-model')[0]
+  assert.ok(modelSelect, 'a discovered catalog yields a model picker')
+  assert.deepEqual(collect(modelSelect, node => node.props?.role === 'option').map(node => node.props['data-value']), ['', 'deepseek/v4'])
+  collect(modelSelect, node => node.props?.role === 'option' && node.props['data-value'] === 'deepseek/v4')[0].props.onClick()
+  assert.deepEqual(changes.at(-1), { id: 'ws:a', model: { provider: 'deepseek', model: 'v4' } })
+  // An override missing from the current catalog stays visible as itself.
+  const overrideRow = byClass(picker, 'dab-sa-project').find(row => row.props['data-project-id'] === 'ws:b')
+  const overrideModel = byClass(overrideRow, 'dab-sa-project-model')[0]
+  assert.equal(overrideModel.props['data-value'], 'p/m')
+  assert.equal(collect(overrideModel, node => node.props?.role === 'option' && node.props['data-value'] === 'p/m').length, 1)
+  // Without discovery nothing is invented: the display stays read-only.
+  const noCatalog = render(cockpit.DabSuperagentProjects({ host: { ...makeHost(), models: { discovered: false, providers: [], reason: 'llm_service_unavailable' } },
+    mandate, superagent: makeInactiveSuperagent(), onSetProjectModel: () => {} }))
+  assert.equal(collect(noCatalog, node => node.props?.className === 'dab-sa-project-model').length, 0)
 })
 
 test('permission modes are tri-state and unsupported actions stay unavailable', () => {
@@ -970,4 +990,79 @@ test('permission modes are tri-state and unsupported actions stay unavailable', 
   assert.deepEqual(changes, [['launch', 'deny']])
   const merge = byClass(tree, 'dab-sa-permission').find(row => row.props['data-action'] === 'merge')
   assert.equal(byTag(merge, 'button')[0].props.disabled, true)
+})
+
+test('the self-test panel asks the host on demand and renders every contract check', async () => {
+  const calls = []
+  const state = []
+  let cursor = 0
+  const original = React.useState
+  const draw = () => {
+    cursor = 0
+    React.useState = initial => {
+      const slot = cursor++
+      if (!(slot in state)) state[slot] = typeof initial === 'function' ? initial() : initial
+      return [state[slot], value => { state[slot] = typeof value === 'function' ? value(state[slot]) : value }]
+    }
+    try {
+      return render(cockpit.DabSelfTest({
+        busy: false,
+        onSelfTest: deep => {
+          calls.push(deep)
+          return Promise.resolve({ ok: true, payload: { value: {
+            at: 1,
+            checks: [
+              { id: 'agents.create', ok: true },
+              { id: 'permission.read-only', ok: false, reason: 'preset_sandbox_mismatch' },
+              { id: 'models.catalog', ok: true },
+            ],
+            deep: deep ? { ok: true, disposed: true, verifiedBy: 'preset' } : null,
+          } } })
+        },
+      }))
+    } finally { React.useState = original }
+  }
+  let tree = draw()
+  assert.ok(byClass(tree, 'dab-sa-selftest-run')[0], 'the panel offers a run button')
+  byClass(tree, 'dab-sa-selftest-run')[0].props.onClick()
+  await new Promise(resolve => setTimeout(resolve, 10))
+  tree = draw()
+  assert.deepEqual(calls, [false], 'a shallow run never asks for a session')
+  assert.match(textOf(tree), /1 check\(s\) failed/)
+  const failed = collect(tree, node => node.props?.['data-check'] === 'permission.read-only')[0]
+  assert.equal(failed.props['data-ok'], 'false')
+  assert.match(textOf(failed), /preset sandbox mismatch/)
+  assert.equal(collect(tree, node => node.props?.['data-check'] === 'agents.create')[0].props['data-ok'], 'true')
+
+  byClass(tree, 'dab-sa-selftest-deep')[0].props.onChange({ target: { checked: true } })
+  tree = draw()
+  byClass(tree, 'dab-sa-selftest-run')[0].props.onClick()
+  await new Promise(resolve => setTimeout(resolve, 10))
+  tree = draw()
+  assert.deepEqual(calls, [false, true])
+  assert.match(textOf(tree), /Test session created, confined and disposed/)
+
+  // A host refusal is a readable sentence, never a blank panel.
+  const refusalState = []
+  let refusalCursor = 0
+  const drawRefusal = () => {
+    refusalCursor = 0
+    React.useState = initial => {
+      const slot = refusalCursor++
+      if (!(slot in refusalState)) refusalState[slot] = typeof initial === 'function' ? initial() : initial
+      return [refusalState[slot], value => { refusalState[slot] = typeof value === 'function' ? value(refusalState[slot]) : value }]
+    }
+    try {
+      return render(cockpit.DabSelfTest({
+        busy: false,
+        onSelfTest: () => Promise.resolve({ ok: false, payload: { ok: false, error: 'confirmation_required' } }),
+      }))
+    } finally { React.useState = original }
+  }
+  let refusalTree = drawRefusal()
+  byClass(refusalTree, 'dab-sa-selftest-run')[0].props.onClick()
+  await new Promise(resolve => setTimeout(resolve, 10))
+  refusalTree = drawRefusal()
+  assert.match(textOf(refusalTree), /confirmation required/)
+  assert.equal(collect(refusalTree, node => node.props?.['data-check'] !== undefined).length, 0)
 })

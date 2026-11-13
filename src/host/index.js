@@ -54,6 +54,7 @@ import { ASSESSMENT_SCHEMA_VERSION, buildAssessmentPrompt, buildRepairPrompt, pa
 import { buildPortfolio } from '../plan/portfolio.js'
 import { fairOrder } from '../plan/scheduler.js'
 import { createSecuredAgent, effectiveWorkerPermission, secureAssessmentAgent, secureWorkerAgent } from './security.js'
+import { sanitizeBoardPayload } from '../contracts/board-writes.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -706,6 +707,26 @@ export function apply(ctx, config = {}) {
     } catch (error) {
       return { efforts: [], defaultEffort: null, reason: `model_info_failed:${truncate(String(error?.message ?? error), 120)}` }
     }
+  }
+
+  /**
+   * A project worker-model override is an operator choice, so it must name a
+   * route the host can actually see. `null` clears it; absent leaves it alone.
+   * An unverified model would only fail later, when a card of that project is
+   * launched, so it is refused here instead.
+   */
+  function normalizeProjectModel(value) {
+    if (value === undefined) return { ok: true, model: undefined }
+    if (value === null) return { ok: true, model: null }
+    if (typeof value !== 'object' || Array.isArray(value)) return { ok: false, reason: 'invalid_model' }
+    const provider = typeof value.provider === 'string' ? value.provider.trim() : ''
+    const model = typeof value.model === 'string' ? value.model.trim() : ''
+    if (provider === '' || model === '') return { ok: false, reason: 'invalid_model' }
+    if (modelSnapshot.discovered !== true) return { ok: false, reason: 'model_discovery_unavailable' }
+    const known = modelSnapshot.providers.some(entry => entry.id === provider
+      && Array.isArray(entry.models) && entry.models.some(candidate => candidate.id === model))
+    if (!known) return { ok: false, reason: 'model_not_registered' }
+    return { ok: true, model: { provider, model } }
   }
 
   function audit(event) {
@@ -1367,14 +1388,18 @@ export function apply(ctx, config = {}) {
   /** Persist a concrete, immutable operation; a model question is not a grant. */
   function requestOperationApproval(proposal, task = null) {
     const agent = ensureSuperAgent()
+    // The operation is what gets replayed after the human answer: store the
+    // canonical payload, never the raw model object.
+    const sanitized = proposal.action === 'launch' ? { ok: true, payload: {} } : sanitizeBoardPayload(proposal.action, proposal.payload)
+    if (!sanitized.ok) return { ok: false, reason: sanitized.reason, fields: sanitized.fields ?? [] }
     const expiresAt = Date.now() + 60 * 60 * 1000
     const operation = {
       action: proposal.action, projectId: proposal.projectId,
       taskId: proposal.taskId ?? null, taskVersion: task?.version ?? null,
       payload: proposal.action === 'create_task'
-        ? { ...(proposal.payload ?? {}), title: typeof proposal.payload?.title === 'string' && proposal.payload.title.trim() !== ''
-          ? proposal.payload.title.trim() : String(proposal.rationale ?? '').trim().slice(0, 120) }
-        : (proposal.payload ?? {}),
+        ? { ...sanitized.payload, title: typeof sanitized.payload.title === 'string' && sanitized.payload.title.trim() !== ''
+          ? sanitized.payload.title.trim() : String(proposal.rationale ?? '').trim().slice(0, 120) }
+        : sanitized.payload,
     }
     const intent = createApprovalIntent({ ...operation, mandateRevision: state.mandate.revision, expiry: expiresAt })
     // Dedupe the operation, not the newly sampled expiry.
@@ -1397,7 +1422,7 @@ export function apply(ctx, config = {}) {
     }, { now: Date.now() })
     agent.decisions = result.inbox
     touch()
-    return result.decision
+    return { ok: true, decision: result.decision }
   }
 
   async function executeApprovedOperation(decisionId) {
@@ -1421,6 +1446,23 @@ export function apply(ctx, config = {}) {
     if (!gate.allowed) return { ok: false, reason: gate.reason }
     if (operation.action !== 'launch' && !taskboardWritesReady()) return { ok: false, reason: 'taskboard_writes_unavailable' }
     if (superagentHardStop() !== null) return { ok: false, reason: superagentHardStop() }
+    // Re-apply the owner-field allowlist to the STORED bytes: an operation is a
+    // model-authored payload replayed later, and an owner field (`permission`,
+    // `model`, `execution`, `isolation`) must never ride an approved write.
+    // Refusing — not dropping — keeps the executed object identical to the one
+    // the operator approved, and does NOT burn the approval.
+    const sanitized = operation.action === 'launch' ? { ok: true, payload: {} } : sanitizeBoardPayload(operation.action, operation.payload)
+    if (!sanitized.ok) return { ok: false, reason: sanitized.reason, fields: sanitized.fields ?? [] }
+    const payload = sanitized.payload
+    if (operation.action === 'create_task' && (typeof payload.title !== 'string' || payload.title.trim() === '')) {
+      return { ok: false, reason: 'payload_invalid' }
+    }
+    if (operation.action === 'comment' && (typeof payload.body !== 'string' || payload.body.trim() === '')) {
+      return { ok: false, reason: 'payload_invalid' }
+    }
+    if (operation.action === 'update_task' && Object.keys(payload).length === 0) {
+      return { ok: false, reason: 'payload_invalid' }
+    }
     // At most once: burn and durably save BEFORE the external effect. A crash can
     // lose an action, never replay it. Retrying requires a fresh human decision.
     if (typeof stored.usedAt === 'number') return { ok: false, reason: 'approval_consumed' }
@@ -1433,11 +1475,11 @@ export function apply(ctx, config = {}) {
     let result
     try {
       if (operation.action === 'launch') result = await launchTask({ task, source: 'approval' })
-      else if (operation.action === 'create_task') result = { ok: true, value: await adapter.create({ ...operation.payload, workspaceId: operation.projectId }) }
-      else if (operation.action === 'update_task') result = { ok: true, value: await adapter.update(operation.taskId, { ...operation.payload, ifVersion: operation.taskVersion }, {
+      else if (operation.action === 'create_task') result = { ok: true, value: await adapter.create({ ...payload, workspaceId: operation.projectId }) }
+      else if (operation.action === 'update_task') result = { ok: true, value: await adapter.update(operation.taskId, { ...payload, ifVersion: operation.taskVersion }, {
         beforeWrite: () => assertOperationGate(operation.action, operation.projectId, { approved: true, revision: intent.mandateRevision }),
       }) }
-      else result = { ok: true, value: await adapter.comment(operation.taskId, operation.payload.body) }
+      else result = { ok: true, value: await adapter.comment(operation.taskId, payload.body) }
     } catch (error) { result = { ok: false, reason: error?.code ?? 'adapter_error' } }
     stored.execution = { at: Date.now(), ok: result.ok === true, reason: result.reason ?? null }
     audit({ type: 'approved_operation_executed', at: Date.now(), decisionId, action: operation.action, ok: result.ok === true, reason: result.reason ?? null })
@@ -1457,6 +1499,13 @@ export function apply(ctx, config = {}) {
   // authorize them and then nothing would happen. They are published as
   // unavailable with an explicit reason until a real adapter exists.
   const IMPLEMENTED_ACTIONS = Object.freeze(new Set(['launch', 'create_task', 'update_task', 'comment']))
+  // Actions that are NOT waiting for an adapter: they are human decisions by
+  // design. A merge, a protected-branch push, a secret read, a policy change or
+  // a deletion must not become reachable because a checkbox exists. Saying
+  // "not implemented yet" for those would be both false and misleading.
+  const HUMAN_ONLY_ACTIONS = Object.freeze(new Set([
+    'merge', 'push_branch', 'protected_branch_write', 'secrets', 'policy_change', 'delete_task', 'schedule',
+  ]))
   // Board-content actions executed through the Task Board public API. The
   // execution config, model and preset stay operator-owned; `done` is
   // unreachable through every one of them.
@@ -1487,7 +1536,9 @@ export function apply(ctx, config = {}) {
     // This matrix describes the Super Agent executor, not unrelated manual
     // forge HTTP routes: a configured forge cannot implement a missing brain action.
     if (!IMPLEMENTED_ACTIONS.has(action)) {
-      return { state: 'unavailable', reason: 'no_adapter_for_action', source: 'host' }
+      return HUMAN_ONLY_ACTIONS.has(action)
+        ? { state: 'unavailable', reason: 'human_only_action', source: 'design' }
+        : { state: 'unavailable', reason: 'no_adapter_for_action', source: 'host' }
     }
     if (TASKBOARD_WRITE_ACTIONS.has(action) && !taskboardWritesReady()) {
       return { state: 'unavailable', reason: 'taskboard_writes_unavailable', source: 'integration' }
@@ -1495,9 +1546,6 @@ export function apply(ctx, config = {}) {
     if (action === 'launch') {
       const backend = backendReadiness()
       if (!backend.ok) return { state: 'unavailable', reason: backend.reason, source: 'backend' }
-    }
-    if (action === 'delegate' && typeof ctx.agents?.create !== 'function') {
-      return { state: 'unavailable', reason: 'runtime_unavailable', source: 'runtime' }
     }
     const integration = 'board'
     const mandate = state.mandate
@@ -3405,10 +3453,34 @@ export function apply(ctx, config = {}) {
         refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, taskId: proposal.taskId ?? null, reason: 'no_adapter_for_action' })
         continue
       }
+      // Board-content writes are the only model-authored payloads with an
+      // effect. Canonicalize them ONCE: the same bytes must reach the approval
+      // intent, the decision display and the adapter call. Owner fields
+      // (`permission`, `model`, `execution`, `isolation`, `status`) are refused,
+      // never silently dropped: the executed object must stay the displayed one.
+      let boardPayload = null
+      if (TASKBOARD_WRITE_ACTIONS.has(proposal.action)) {
+        const sanitized = sanitizeBoardPayload(proposal.action, proposal.payload)
+        if (!sanitized.ok) {
+          refused.push({
+            id: proposal.id, action: proposal.action, projectId: proposal.projectId,
+            taskId: proposal.taskId ?? null, reason: sanitized.reason, fields: sanitized.fields ?? [],
+          })
+          continue
+        }
+        boardPayload = sanitized.payload
+      }
       const base = effectiveFor(proposal.action, { projectId: proposal.projectId })
       const decision = base
       if (base.reason === 'approval_required') {
-        requestOperationApproval(proposal, targetTask)
+        const requested = requestOperationApproval({ ...proposal, payload: boardPayload ?? proposal.payload }, targetTask)
+        if (requested.ok !== true) {
+          refused.push({
+            id: proposal.id, action: proposal.action, projectId: proposal.projectId,
+            taskId: proposal.taskId ?? null, reason: requested.reason, fields: requested.fields ?? [],
+          })
+          continue
+        }
       }
       if (!decision.allowed) {
         refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, taskId: proposal.taskId ?? null, reason: decision.reason })
@@ -3433,7 +3505,7 @@ export function apply(ctx, config = {}) {
           executed.push({ proposalId: proposal.id, ok: false, reason: 'no_adapter_for_action', action: proposal.action })
           continue
         }
-        const payload = proposal.payload ?? {}
+        const payload = boardPayload ?? {}
         try {
           if (proposal.action === 'create_task') {
             const title = typeof payload.title === 'string' && payload.title.trim() !== ''
@@ -3451,10 +3523,7 @@ export function apply(ctx, config = {}) {
             if (typeof proposal.taskId !== 'string' || proposal.taskId === '') {
               throw Object.assign(new Error('taskId is required for update_task'), { code: 'payload_invalid' })
             }
-            const patch = {}
-            for (const key of ['title', 'description', 'prompt', 'urgency', 'blocked', 'waitingForHuman', 'waitingReason']) {
-              if (payload[key] !== undefined) patch[key] = payload[key]
-            }
+            const patch = { ...payload }
             if (Object.keys(patch).length === 0) throw Object.assign(new Error('empty update payload'), { code: 'payload_invalid' })
             // The connector reads the card's CURRENT version right before the
             // write; the gate is re-checked after that await boundary. The
@@ -3692,6 +3761,109 @@ export function apply(ctx, config = {}) {
     return result
   }
 
+  /**
+   * Runtime contract inventory. Every safety claim of this board rests on DSH
+   * services (`agents.create`, `tools.restrict/guard/setExecutor`,
+   * `permissionPresets.resolve/set/current`). Until now those were verified
+   * against the inspected contracts, never against the RUNNING host: this
+   * inventory answers "what does THIS build actually provide?" instead of
+   * assuming. It changes nothing.
+   */
+  function contractChecks() {
+    const checks = []
+    const check = (id, ok, extra = {}) => {
+      checks.push({ id, ok: ok === true, ...extra })
+      return ok === true
+    }
+    check('agents.create', typeof ctx.agents?.create === 'function', ctx.agents?.create === undefined ? { reason: 'runtime_unavailable' } : {})
+    const tools = ctx.get?.('tools')
+    for (const method of ['restrict', 'guard', 'setExecutor']) {
+      check(`tools.${method}`, typeof tools?.[method] === 'function', tools?.[method] === undefined ? { reason: 'runtime_unavailable' } : {})
+    }
+    const presets = ctx.get?.('permissionPresets')
+    for (const method of ['resolve', 'set', 'current']) {
+      check(`permissionPresets.${method}`, typeof presets?.[method] === 'function', presets?.[method] === undefined ? { reason: 'runtime_unavailable' } : {})
+    }
+    for (const name of ['read-only', 'workspace-write', 'danger-full-access']) {
+      let ok = false
+      let reason = null
+      try {
+        const spec = presets?.resolve?.(name)
+        ok = spec !== null && spec !== undefined && spec.sandbox === name
+        if (!ok) reason = 'preset_sandbox_mismatch'
+      } catch (error) {
+        reason = truncate(String(error?.message ?? error), 120)
+      }
+      check(`permission.${name}`, ok, reason === null ? {} : { reason })
+    }
+    const ledger = coordinationModel
+    check('taskboard.ledger', ledger?.available === true, ledger?.available === true ? {} : { reason: ledger === null || ledger === undefined ? 'ledger_not_read_yet' : (ledger.reason ?? 'ledger_unavailable') })
+    check('taskboard.writes', taskboardWritesReady(), taskboardWritesReady() ? {} : { reason: 'taskboard_writes_unavailable' })
+    check('models.catalog', modelSnapshot.discovered === true && modelSnapshot.providers.length > 0,
+      modelSnapshot.discovered !== true ? { reason: modelSnapshot.reason ?? 'models_not_discovered' }
+        : (modelSnapshot.providers.length === 0 ? { reason: 'no_model' } : {}))
+    const workspaces = workspaceList()
+    const usable = workspaces.filter(workspace => typeof workspace.path === 'string' && workspace.path !== '')
+    check('workspace.registered', usable.length > 0,
+      usable.length > 0 ? {} : { reason: workspaces.length === 0 ? 'no_workspace' : 'workspace_path_unavailable' })
+    check('mandate.confirmed', state.mandate?.requiresConfiguration !== true,
+      state.mandate?.requiresConfiguration === true ? { reason: 'requires_configuration' } : {})
+    return checks
+  }
+
+  /**
+   * DEEP self-test: create ONE real, disposable worker session (no model call,
+   * no prompt, never attached to a workspace) with the read-only preset applied
+   * through the SAME fail-closed path production uses, verify the applied
+   * preset, then dispose it. This is the only check that proves the confinement
+   * live; it leaves no session behind because `dispose()` unregisters and
+   * removes it.
+   */
+  async function probeDisposableSession() {
+    if (typeof ctx.agents?.create !== 'function') return { ok: false, reason: 'runtime_unavailable' }
+    const selected = Array.isArray(state.mandate?.selectedWorkspaces) ? state.mandate.selectedWorkspaces : []
+    const directory = selected
+      .map(projectId => resolveWorkspace(projectId)?.path)
+      .find(path => typeof path === 'string' && path !== '')
+      ?? workspaceList().find(workspace => typeof workspace.path === 'string' && workspace.path !== '')?.path
+      ?? ctx.get?.('workingDirectory')?.defaultDirectory
+      ?? null
+    if (directory === null) return { ok: false, reason: 'no_working_directory' }
+    const sessionId = `session-agentboard-selftest-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`
+    let handle
+    try {
+      handle = await createSecuredAgent(ctx.agents, { sessionId, meta: { cwd: directory } },
+        (agentCtx, agent) => secureWorkerAgent(agentCtx, agent, 'read-only'))
+    } catch (error) {
+      const reason = typeof error?.code === 'string' ? error.code : 'agent_creation_failed'
+      audit({ type: 'selftest_probe', at: Date.now(), ok: false, reason })
+      return { ok: false, reason, message: truncate(String(error?.message ?? error), 200) }
+    }
+    let applied = null
+    try { applied = ctx.get?.('permissionPresets')?.current?.(handle.agent.session) ?? null } catch { applied = null }
+    let disposed = false
+    try { await handle.dispose?.(); disposed = true } catch (error) {
+      return { ok: false, reason: 'dispose_failed', message: truncate(String(error?.message ?? error), 200), sessionId }
+    }
+    if (disposed !== true) {
+      // Never report success for a session that would linger in the session list.
+      return { ok: false, reason: 'dispose_unavailable', sessionId }
+    }
+    const identityMatches = handle.agent?.session?.id === sessionId
+    // `null` means the host-level service is not exposed here; the preset was
+    // still applied AND verified inside `setup` before publication.
+    const ok = identityMatches && (applied === null || applied === 'read-only')
+    const result = {
+      ok, sessionId, disposed, identityMatches,
+      permission: 'read-only',
+      applied,
+      verifiedBy: applied === 'read-only' ? 'preset' : 'setup',
+      ...(ok ? {} : { reason: applied === null || applied === 'read-only' ? 'identity_mismatch' : 'permission_not_applied' }),
+    }
+    audit({ type: 'selftest_probe', at: Date.now(), ok, reason: result.reason ?? null, verifiedBy: result.verifiedBy })
+    return result
+  }
+
   /** Operator diagnostics: versions, real connector state, last tick, mandate. */
   function diagnostics() {
     return {
@@ -3716,6 +3888,7 @@ export function apply(ctx, config = {}) {
       },
       adapters: connectors?.describe?.() ?? [],
       models: modelSnapshot,
+      contracts: contractChecks(),
       lastTick: state.lastTick,
       reconcileNotes,
     }
@@ -4024,6 +4197,11 @@ export function apply(ctx, config = {}) {
           void readyPromise.then(() => sendJson(res, 200, { ok: true, value: diagnostics() }))
           return
         }
+        // Shallow self-test: what does THIS running build provide? Read-only.
+        if (method === 'GET' && route === '/selftest') {
+          void readyPromise.then(() => sendJson(res, 200, { ok: true, value: { at: Date.now(), checks: contractChecks(), deep: null } }))
+          return
+        }
         // Simulation is read-only by construction: no session, no ledger write.
         if (method === 'GET' && route === '/dry-run') {
           void readyPromise
@@ -4153,11 +4331,15 @@ export function apply(ctx, config = {}) {
               if (projectId === '') return sendJson(res, 400, { ok: false, error: 'projectId_required' })
               if (resolveWorkspace(projectId) === undefined) return sendJson(res, 404, { ok: false, error: 'unknown_project' })
               const current = projectPolicyOf(projectId) ?? {}
+              const nextModel = normalizeProjectModel(Object.hasOwn(body, 'model') ? body.model : undefined)
+              if (nextModel.ok !== true) return sendJson(res, 409, { ok: false, error: nextModel.reason })
               const patch = {
                 enabled: body.enabled === undefined ? current.enabled === true : body.enabled === true,
                 level: Object.hasOwn(body, 'level') ? body.level : (current.level ?? null),
                 priority: body.priority ?? current.priority ?? 5,
-                model: Object.hasOwn(body, 'model') ? body.model : (current.model ?? null),
+                // Absent keeps the inherited/stored value; an explicit `null`
+                // clears the override. Only a verified route is stored.
+                model: nextModel.model === undefined ? (current.model ?? null) : nextModel.model,
                 budget: { maxTasksPerHour: body.budget?.maxTasksPerHour ?? current.budget?.maxTasksPerHour ?? 6 },
                 note: body.note ?? current.note ?? '',
               }
@@ -4355,6 +4537,18 @@ export function apply(ctx, config = {}) {
             if (route === '/integrations/taskboard/probe') {
               const value = await probePublicTaskBoard()
               return sendJson(res, 200, { ok: true, value })
+            }
+            // Deep self-test: one real, disposable session, never prompted and
+            // never attached. Requires an explicit confirmation token so a
+            // simple reload of the panel can never create one.
+            if (route === '/selftest') {
+              if (body.deep !== true) return sendJson(res, 200, { ok: true, value: { at: Date.now(), checks: contractChecks(), deep: null } })
+              if (body.confirm !== 'EPHEMERAL_SESSION') return sendJson(res, 400, { ok: false, error: 'confirmation_required' })
+              // Operator diagnostics, not autonomous work: the probe creates no
+              // task, calls no model and disposes its session immediately, so it
+              // stays available in Observe mode and after Stop (like /diagnostics).
+              const deep = await probeDisposableSession()
+              return sendJson(res, 200, { ok: true, value: { at: Date.now(), checks: contractChecks(), deep } })
             }
             // -------------------------------------------------- forge (GitHub)
             // Writes are behind TWO independent walls: the config opt-in

@@ -569,6 +569,7 @@ function dabMakePage(store, ctx) {
         onSetModel: model => actRef.current('model', () => store.setSuperagentModel(model)),
         onModelInfo: (provider, model) => store.modelInfo(provider, model),
         onProbeTaskboard: () => act('taskboard', () => store.probeTaskboard()),
+        onSelfTest: deep => store.selfTest(deep),
         onCycle: () => act('cycle', () => store.cycleSuperagent('manual')),
         onSetAction: (action, enabled) => act('action', () => store.setAction(action, enabled)),
         onSetActionMode: (action, mode) => act('action', () => store.setActionMode(action, mode)),

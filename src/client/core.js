@@ -415,6 +415,12 @@ export function createBoardStore(ctx, options = {}) {
     /** Exact-route efforts for one model (read-only; no state refresh). */
     modelInfo: (provider, model) => request('POST', '/models/info', { provider, model }),
     probeTaskboard: () => post('/integrations/taskboard/probe', {}),
+    /**
+     * Runtime contract self-test. A read-only question (the deep variant creates
+     * and disposes one disposable confined session), so the shared state is NOT
+     * refreshed: the panel renders the returned value directly.
+     */
+    selfTest: deep => request('POST', '/selftest', deep === true ? { deep: true, confirm: 'EPHEMERAL_SESSION' } : {}),
     addDirective: input => post('/superagent/directives', {
       text: String(input?.text ?? ''),
       scope: input?.scope === 'project' ? 'project' : 'global',
