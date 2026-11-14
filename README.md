@@ -15,6 +15,10 @@
   host + client plugin · no runtime dependency
 </p>
 
+<p align="center">
+  English · <a href="README_fr.md"><b>Français</b></a>
+</p>
+
 > **About the screenshots:** they are rendered from the plugin's real client
 > bundle with a **fictional dataset** (no personal project, session or path).
 > Regenerate them with `node scripts/capture-demo-screenshots.mjs` — see
@@ -35,6 +39,7 @@ inside your mandate, executes.
 | **Cockpit** | One card per session and sub-agent, grouped by project, attention-first, real statuses and model. |
 | **Explicit mandate** | `scopeMode` + level L0–L4 + per-action grants. Deny by default; nothing launches outside it. |
 | **Super Agent** | A durable identity (memory, directives, decisions) that assesses the portfolio and acts inside the mandate. |
+| **Operator-owned execution** | The agent writes card content; the execution prompt, model, permission, isolation and status stay yours. |
 | **Autonomy without a Task Board** | Accepted ADRs, roadmap/TODO checklists and open issues become real dispatched work. |
 | **Backlog triage at L4** | One unblocked backlog card can move to `todo` through the owner's own native tool. Never to `done`. |
 | **Real executors** | Launch, delegate, comment, create/update, schedule, delete, project policy, GitHub PR, native merge — each behind its own gate. |
@@ -108,6 +113,11 @@ inside your mandate, executes.
   `taskboard` (canonical record via the Task Board executor, model pinned) and
   `contract` (canonical record **and** failover). The contract backend refuses to
   run when the extension is absent instead of faking an execution.
+- **Operator-owned execution fields** — `prompt`, `model`, `execution`,
+  `permission`, `isolation` and `status` belong to the operator. The Super Agent
+  writes the card's content (`title`/`description`); a `prompt` it proposes is
+  stripped at ingestion, and a stored approval carrying one is refused on replay
+  (`payload_field_forbidden`) without consuming the consent.
 - **Autonomy without a Task Board** — accepted ADR follow-ups, roadmap/TODO
   checklists and open forge issues are detected as **work items** and dispatched
   into real worker sessions, one fingerprint per item (completed never replayed,
@@ -185,6 +195,8 @@ can never widen it.
   `create_task`, `update_task`, `promote_task`, `comment`, `open_pr`,
   `push_branch`, `delete_task`, `schedule`, `merge`, `policy_change`. A level
   never implies an action; critical actions always need a single-use approval.
+  `push_branch`, `protected_branch_write` and `secrets` stay human-only: no
+  executor exists in this build.
 - **Decisions** — the Super Agent never crosses the gate: it writes a
   DecisionInbox item, the operator answers, and an approval is **single-use**.
 - **Directives & memory** — persisted operator directives (global/project), a
@@ -213,6 +225,12 @@ completed item is never dispatched twice, a failed one is retried with a delay
 (`[decision]`, assigned/labelled issue) is refused with `needs_human_decision`
 and shown in the panel instead of being executed. When no credential exists the
 document sources keep working; the forge source is simply empty.
+
+At most **one synthetic work item per project** runs at a time: `launch_work`
+forces `isolation: 'none'` in the project's own working tree, so a second item of
+the same project waits with `project_work_in_progress` and becomes dispatchable
+as soon as the first settles. Other projects keep their parallelism; Task Board
+cards are unaffected (their isolation is an operator-owned field).
 
 ## Backlog triage at maximum autonomy (L4)
 
@@ -279,6 +297,9 @@ POST /dsh-agent-board/api/v2/policy
 ## Safety invariants
 
 - `done` is never set by the board or a launched agent.
+- `prompt` is operator-owned: the Super Agent writes card content, never the
+  execution prompt; a stored approval carrying one is refused on replay
+  (`payload_field_forbidden`) without consuming it.
 - The Task Board ledger is never written by the **execution path**: only the
   official `taskboard_*` tools act on it from the launched session, or the
   proposed execution contract (lease/attach/report/release/settle, never `done`).
@@ -321,6 +342,7 @@ through `ctx.connection.requestRejection` before the handler runs.
 | POST | `/mandate/projects/:id` | project override (enabled, level, model, budget, priority) |
 | GET | `/dry-run` | simulate one tick: every candidate with `allowed`/`reason` |
 | GET | `/diagnostics` | host diagnostics (state, lock, adapters, model discovery) |
+| GET/POST | `/selftest` | runtime contract inventory; POST `{deep:true, confirm:"EPHEMERAL_SESSION"}` probes one disposable read-only session |
 | GET/POST | `/superagent`, `/superagent/start\|stop\|model\|directive\|cycle` | Super Agent runtime and controls |
 | POST | `/superagent/decision` | answer a DecisionInbox item (approval is single-use) |
 | POST | `/integrations/taskboard/probe` | real public-v1 negotiation (no secret returned) |
@@ -351,7 +373,7 @@ a layout regression is visible without opening the image.
 ## Tests
 
 ```sh
-node --test tests/                 # full suite: 690 tests (unit, contract, host, security, perf)
+node --test tests/                 # full suite: 693 tests (unit, contract, host, security, perf)
 node scripts/build-client.mjs      # regenerate src/client.js after editing src/client/**
 node scripts/build-assets.mjs      # regenerate the inlined SVG data URIs (never hand-edit)
 node scripts/capture-demo-screenshots.mjs  # regenerate the public demo screenshots
