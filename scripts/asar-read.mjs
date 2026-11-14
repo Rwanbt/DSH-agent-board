@@ -45,9 +45,32 @@ function* walk(node, prefix = '') {
   }
 }
 
-function readEntry(archive, entry) {
-  const buffer = Buffer.alloc(entry.size)
-  readSync(archive.fd, buffer, 0, entry.size, archive.dataStart + Number(entry.offset))
+/** Raised when an entry exists in the header but its bytes cannot be read. */
+class UnreadableEntryError extends Error {
+  constructor(path, reason) {
+    super(`unreadable (${reason}): ${path}`)
+    this.name = 'UnreadableEntryError'
+    this.entryPath = path
+  }
+}
+
+function readEntry(archive, entry, path) {
+  // Entries can be unpacked (`entry.unpacked === true`): their payload lives
+  // next to the archive in `app.asar.unpacked`, so both size and offset are
+  // meaningless here and must never reach readSync (NaN would throw a
+  // RangeError instead of a message the caller can act on).
+  if (entry.unpacked === true) throw new UnreadableEntryError(path, 'unpacked')
+  const offset = Number(entry.offset)
+  const size = Number(entry.size)
+  if (!Number.isFinite(offset) || offset < 0 || !Number.isFinite(size) || size < 0) {
+    throw new UnreadableEntryError(path, `invalid offset/size: offset=${entry.offset} size=${entry.size}`)
+  }
+  const buffer = Buffer.alloc(size)
+  try {
+    readSync(archive.fd, buffer, 0, size, archive.dataStart + offset)
+  } catch (error) {
+    throw new UnreadableEntryError(path, `read failed: ${error.message}`)
+  }
   return buffer
 }
 
@@ -65,8 +88,14 @@ try {
         process.exitCode = 1
         continue
       }
-      process.stdout.write(readEntry(archive, file.entry))
-      process.stdout.write('\n')
+      try {
+        process.stdout.write(readEntry(archive, file.entry, file.path))
+        process.stdout.write('\n')
+      } catch (error) {
+        if (!(error instanceof UnreadableEntryError)) throw error
+        console.error(error.message)
+        process.exitCode = 1
+      }
     }
   } else if (command === 'grep') {
     const pattern = new RegExp(rest[0] ?? '.')
@@ -75,7 +104,15 @@ try {
     for (const file of walk(archive.header)) {
       if (file.entry.size > 2_000_000) continue
       if (!pathPattern.test(file.path)) continue
-      const text = readEntry(archive, file.entry).toString('utf8')
+      let text
+      try {
+        text = readEntry(archive, file.entry, file.path).toString('utf8')
+      } catch (error) {
+        // Unpacked entries live outside the archive and cannot be searched
+        // here; skip them instead of aborting the whole scan.
+        if (error instanceof UnreadableEntryError) continue
+        throw error
+      }
       if (!pattern.test(text)) continue
       hits += 1
       for (const line of text.split('\n')) if (pattern.test(line)) console.log(`${file.path}: ${line.trim().slice(0, 300)}`)
