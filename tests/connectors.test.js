@@ -144,7 +144,7 @@ test('github adapter stays honest: disabled without a repository, read-only when
   const listed = await enabled.list()
   assert.equal(listed.items[0].canonicalId, 'github:7')
   const caps = enabled.describe().capabilities
-  assert.deepEqual(Object.keys(caps).filter(key => caps[key]).sort(), ['checks', 'get', 'list'])
+  assert.deepEqual(Object.keys(caps).filter(key => caps[key]).sort(), ['checks', 'get', 'list', 'listIssues'])
   assert.equal(caps.create, false, 'writes are opt-in, off by default')
   assert.equal(caps.merge, false, 'this build never merges')
   assert.equal(typeof enabled.runTask, 'undefined')

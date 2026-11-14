@@ -92,3 +92,23 @@ export async function executeNativeScheduledCreate(ctx, { workspace, task, befor
       : { ok: false, reason: 'native_tool_bad_result' }),
   })
 }
+
+/**
+ * Backlog triage, executed by the OWNER pipeline: the native `taskboard_move`
+ * tool applies its own approval, dependency, claim and project-boundary rules.
+ * `done` stays unreachable here (the tool refuses it); this executor only ever
+ * asks for `backlog -> todo`.
+ */
+export async function executeNativeTaskPromotion(ctx, { workspace, taskId, taskVersion, beforeExecute }) {
+  if (typeof taskId !== 'string' || taskId === '' || !Number.isInteger(taskVersion)) return { ok: false, reason: 'payload_invalid' }
+  return runNativeTool(ctx, {
+    workspace, name: 'taskboard_move', beforeExecute,
+    args: { id: taskId, status: 'todo', ifVersion: taskVersion },
+    interpret: value => {
+      if (value.task && typeof value.task.id === 'string' && value.task.status === 'todo') {
+        return { ok: true, value: { taskId: value.task.id, status: value.task.status, version: value.task.version ?? null } }
+      }
+      return { ok: false, reason: 'native_tool_bad_result' }
+    },
+  })
+}

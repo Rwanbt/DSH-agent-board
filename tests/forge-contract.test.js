@@ -136,7 +136,7 @@ test('github: the declared capability contract is read-only and honest', () => {
   const adapter = createGithubAdapter({ repository: 'o/r', token: '' })
   const described = adapter.describe()
   assert.equal(described.validatedLive, false)
-  assert.deepEqual(Object.entries(described.capabilities).filter(([, value]) => value).map(([key]) => key).sort(), ['checks', 'get', 'list'])
+  assert.deepEqual(Object.entries(described.capabilities).filter(([, value]) => value).map(([key]) => key).sort(), ['checks', 'get', 'list', 'listIssues'])
   assert.equal(described.capabilities.create, false)
   assert.equal(described.capabilities.merge, false)
   assert.equal(described.writeEnabled, false)

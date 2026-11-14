@@ -946,9 +946,13 @@ test('revoking delegation during worker creation sends no work and disposes the 
 test('Stop while GitHub lookup is awaiting prevents the PR POST', async () => {
   await withAssessmentHost(async ({ host, cycle, transport }) => {
     await callJson(host.routes, 'POST', '/mandate/level', { level: 'L4' })
-    transport.control.github = async (_url, init) => {
-      assert.notEqual(init?.method, 'POST', 'no effect is permitted after Stop')
-      await callJson(host.routes, 'POST', '/stop', {})
+    transport.control.github = async (url, init) => {
+      // The cycle also reads open issues as a work source (read-only). The Stop
+      // must land during the PR LOOKUP, which is the awaited read before the POST.
+      if (String(url).includes('/pulls')) {
+        assert.notEqual(init?.method, 'POST', 'no effect is permitted after Stop')
+        await callJson(host.routes, 'POST', '/stop', {})
+      }
       return { ok: true, status: 200, json: async () => [] }
     }
     const result = await cycle([prProposal()])

@@ -3,6 +3,11 @@ import { BOARD_PAYLOAD_ACTIONS, sanitizeBoardPayload } from './board-writes.js'
 
 const ACTION_PAYLOAD_FIELDS = Object.freeze({
   launch: [], delegate: [],
+  // A work item is resolved by its stable id (the project's own document or
+  // issue): the model never supplies the item's content, only its identity.
+  launch_work: ['workItemId'],
+  // The triage justification is stored on the card and in the audit log.
+  promote_task: ['reason'],
   open_pr: ['title', 'body', 'head', 'base', 'repository'],
   delete_task: ['reason'], policy_change: ['priority', 'maxTasksPerHour'],
   schedule: ['title', 'description', 'prompt', 'urgency', 'cron', 'runAt'],
@@ -73,6 +78,10 @@ export function sanitizeActionPayload(action, raw) {
     if (!['merge', 'squash', 'rebase'].includes(payload.method)) return { ok: false, reason: 'payload_invalid' }
   }
   if (action === 'delete_task' && !payload.reason) return { ok: false, reason: 'payload_invalid' }
+  if (action === 'promote_task' && !payload.reason) return { ok: false, reason: 'payload_invalid' }
+  if (action === 'launch_work' && !/^work-[a-f0-9]{8,32}$/.test(payload.workItemId ?? '')) {
+    return { ok: false, reason: 'payload_invalid' }
+  }
   if (action === 'open_pr') {
     if (payload.repository !== undefined && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(payload.repository)) return { ok: false, reason: 'payload_invalid' }
     if (!payload.title || !payload.head || !payload.base || payload.head === payload.base) return { ok: false, reason: 'payload_invalid' }

@@ -4959,6 +4959,10 @@ const DAB_STRINGS = {
     superOverviewSteps: 'Étapes récentes',
     superOverviewResult: 'Résultat factuel',
     superNoCycle: 'Aucun cycle exécuté pour l’instant.',
+    superOverviewWork: 'Travail détecté (ADR, roadmap, issues)',
+    superNoWork: 'Aucun travail détecté dans les documents du projet (ADR acceptés, roadmap/TODO, issues ouvertes).',
+    superWorkReady: 'prêt',
+    superWorkNeedsDecision: 'décision requise',
     superOverviewOutcome: 'Résultat',
     superOverviewProposals: 'Propositions',
     superOverviewApplied: 'Appliquées',
@@ -5065,7 +5069,9 @@ const DAB_STRINGS = {
     actionComment: 'Commenter',
     actionCreateTask: 'Créer une tâche',
     actionUpdateTask: 'Mettre à jour une tâche',
+    actionPromoteTask: 'Sortir une carte du backlog',
     actionLaunch: 'Lancer une session',
+    actionLaunchWork: 'Démarrer un travail du projet',
     actionDelegate: 'Déléguer',
     actionSchedule: 'Planifier',
     actionPushBranch: 'Pousser une branche',
@@ -5454,6 +5460,10 @@ const DAB_STRINGS = {
     superOverviewSteps: 'Recent steps',
     superOverviewResult: 'Factual result',
     superNoCycle: 'No cycle has run yet.',
+    superOverviewWork: 'Detected work (ADR, roadmap, issues)',
+    superNoWork: 'No work detected in the project documents (accepted ADRs, roadmap/TODO, open issues).',
+    superWorkReady: 'ready',
+    superWorkNeedsDecision: 'decision required',
     superOverviewOutcome: 'Outcome',
     superOverviewProposals: 'Proposals',
     superOverviewApplied: 'Applied',
@@ -5560,7 +5570,9 @@ const DAB_STRINGS = {
     actionComment: 'Comment',
     actionCreateTask: 'Create a task',
     actionUpdateTask: 'Update a task',
+    actionPromoteTask: 'Move a card out of the backlog',
     actionLaunch: 'Launch a session',
+    actionLaunchWork: 'Start project work',
     actionDelegate: 'Delegate',
     actionSchedule: 'Schedule',
     actionPushBranch: 'Push a branch',
@@ -7902,6 +7914,10 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
     runtime,
     nextWakeAt: Number.isFinite(Number(sa?.nextWakeAt)) ? Number(sa.nextWakeAt) : null,
     lastCycle: sa?.lastCycle !== null && typeof sa?.lastCycle === 'object' ? sa.lastCycle : null,
+    // Work the host detected OUTSIDE the Task Board (accepted ADR follow-ups,
+    // roadmap/TODO checklists, forge issues). Absent on an older host: null.
+    work: sa?.work !== null && typeof sa?.work === 'object' && !Array.isArray(sa.work) ? sa.work : null,
+    promotions: Array.isArray(sa?.promotions) ? sa.promotions.filter(entry => entry !== null && typeof entry === 'object') : [],
     memory: sa?.memory !== null && typeof sa?.memory === 'object' ? sa.memory : null,
     paused: context?.paused === true || mandate?.paused === true || identityStatus === 'paused',
   }
@@ -7982,7 +7998,9 @@ const DAB_ACTION_ROWS = Object.freeze([
   ['comment', 'actionComment'],
   ['create_task', 'actionCreateTask'],
   ['update_task', 'actionUpdateTask'],
+  ['promote_task', 'actionPromoteTask'],
   ['launch', 'actionLaunch'],
+  ['launch_work', 'actionLaunchWork'],
   ['delegate', 'actionDelegate'],
   ['schedule', 'actionSchedule'],
   ['push_branch', 'actionPushBranch'],
@@ -7997,7 +8015,7 @@ const DAB_CRITICAL_ACTIONS = Object.freeze(['merge', 'protected_branch_write', '
 const DAB_ACTION_MIN_LEVEL = Object.freeze({
   // `launch` is possible from L2, but only after a valid human approval; the
   // helper below therefore returns `approval_required` below L3.
-  comment: 'L3', create_task: 'L3', update_task: 'L3', launch: 'L2', delegate: 'L4',
+  comment: 'L3', create_task: 'L3', update_task: 'L3', launch: 'L2', launch_work: 'L2', promote_task: 'L4', delegate: 'L4',
   schedule: 'L3', push_branch: 'L3', open_pr: 'L4', merge: 'L4', protected_branch_write: 'L4',
   delete_task: 'L4', secrets: 'L4', policy_change: 'L4',
 })
@@ -9244,6 +9262,11 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
     ...facts.pendingDecisions.slice(0, 2).map(decision => `${dabT('superOverviewDecision')} : ${String(decision.title ?? decision.id)}`),
   ]
   const journal = dabSaBound(activity.slice(-20), 4)
+  const work = facts.work
+  const workRows = [
+    ...(Array.isArray(work?.ready) ? work.ready : []).map(item => ({ ...item, state: 'ready' })),
+    ...(Array.isArray(work?.needsDecision) ? work.needsDecision : []).map(item => ({ ...item, state: 'decision' })),
+  ]
 
   return h('div', { className: 'dab-sa-tab dab-sa-overview' },
     dabSaSectionQ(h, 'objective', dabT('superOverviewObjective'), objectives.length === 0,
@@ -9272,6 +9295,15 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
           h('dt', null, dabT('superOverviewApplied')), h('dd', null, String(lastCycle.applied ?? 0)),
           h('dt', null, dabT('superOverviewAt')), h('dd', null, dabSaMoment(lastCycle.at) ?? dabT('superNotAvailable')),
           h('dt', null, dabT('superOverviewDuration')), h('dd', null, `${Number(lastCycle.durationMs) || 0} ms`))),
+    dabSaSectionQ(h, 'work', dabT('superOverviewWork'), workRows.length === 0,
+      workRows.length === 0
+        ? h('div', { className: 'dab-muted' }, facts.available
+          ? (work !== null && work.at !== null ? dabT('superNoWork') : dabT('superNoCycle'))
+          : dabReasonText('superagent_not_published'))
+        : h('ul', { className: 'dab-sa-list' }, workRows.slice(0, 6).map(item => h('li', { key: String(item.id), title: String(item.ref ?? '') },
+          h('span', { className: 'dab-sa-list-title' }, String(item.title ?? item.id)),
+          h('span', { className: 'dab-tag' }, item.state === 'ready' ? dabT('superWorkReady') : dabT('superWorkNeedsDecision')),
+          h('span', { className: 'dab-muted' }, ` · ${String(item.source ?? '?')} · ${String(item.projectId ?? '')}`))))),
     dabSaSection(h, 'capabilities', dabT('superOverviewCapabilities'),
       workspace !== null && workspace !== undefined && workspace.capabilities !== undefined
         ? dabCapabilityMatrix(h, workspace.capabilities, workspace.capabilityReasons, context)

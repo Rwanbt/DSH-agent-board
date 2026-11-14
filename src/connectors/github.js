@@ -310,6 +310,36 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
       }
     },
     /**
+     * Open issues of the configured repository (bounded, read-only). This is the
+     * "issues" work source of the Super Agent: it feeds project work items when
+     * the Task Board is not installed. A failure is returned, never thrown, so a
+     * discovery error cannot break an autonomy cycle.
+     */
+    async listIssues({ limit = 20 } = {}) {
+      if (!enabled) return { ok: false, reason: 'not_configured', issues: [] }
+      const perPage = Math.min(50, Math.max(1, Math.trunc(Number(limit) || 20)))
+      try {
+        const { body } = await request(`${API}/repos/${repository}/issues?state=open&sort=updated&direction=desc&per_page=${perPage}`)
+        const list = Array.isArray(body) ? body : []
+        return {
+          ok: true,
+          issues: list
+            .filter(entry => entry !== null && typeof entry === 'object' && entry.pull_request === undefined)
+            .slice(0, perPage)
+            .map(entry => ({
+              number: Number(entry.number),
+              title: String(entry.title ?? ''),
+              body: typeof entry.body === 'string' ? entry.body.slice(0, 1200) : '',
+              labels: Array.isArray(entry.labels) ? entry.labels.map(label => String(label?.name ?? '')).filter(Boolean) : [],
+              assignees: Array.isArray(entry.assignees) ? entry.assignees.map(assignee => String(assignee?.login ?? '')).filter(Boolean) : [],
+              updatedAt: typeof entry.updated_at === 'string' ? entry.updated_at : null,
+            })),
+        }
+      } catch (error) {
+        return { ok: false, reason: typeof error?.code === 'string' ? error.code : 'transport', issues: [] }
+      }
+    },
+    /**
      * Create an issue. `idempotencyKey` is required and embedded as a marker: a
      * retry returns the SAME issue instead of opening a duplicate.
      */
@@ -359,6 +389,7 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
         writeEnabled: writesEnabled,
         capabilities: {
           list: enabled, get: enabled, checks: enabled, subscribe: false,
+          listIssues: enabled,
           create: writesEnabled, update: false, comment: writesEnabled, open_pr: writesEnabled,
           // Never implemented on purpose: a merge is a critical human decision.
           merge: false, push_protected: false, delete: false,
