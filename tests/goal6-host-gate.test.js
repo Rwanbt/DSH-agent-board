@@ -116,7 +116,10 @@ function installFetch(tasks = [TASK]) {
 async function withHost({ mandate, stateDocument, tasks, llm } = {}, run) {
   const home = await mkdtemp(join(tmpdir(), 'dab-goal6-'))
   const previousHome = process.env.DSH_HOME
+  const previousGithubToken = process.env.GITHUB_TOKEN
   process.env.DSH_HOME = home
+  // Deterministic credential state: no env token, no `gh` probe.
+  delete process.env.GITHUB_TOKEN
   if (stateDocument !== undefined) {
     const { writeFile, mkdir } = await import('node:fs/promises')
     await mkdir(join(home, 'agent-board'), { recursive: true })
@@ -124,7 +127,10 @@ async function withHost({ mandate, stateDocument, tasks, llm } = {}, run) {
   }
   const restoreFetch = installFetch(tasks)
   const made = makeCtx({ llm })
-  const dispose = apply(made.ctx, mandate === undefined ? {} : { mandate })
+  const dispose = apply(made.ctx, {
+    githubTokenDiscovery: 'env',
+    ...(mandate === undefined ? {} : { mandate }),
+  })
   try {
     await callJson(made.routes, 'GET', '/state')
     await run({ ...made, home })
@@ -133,6 +139,8 @@ async function withHost({ mandate, stateDocument, tasks, llm } = {}, run) {
     restoreFetch()
     if (previousHome === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = previousHome
+    if (previousGithubToken === undefined) delete process.env.GITHUB_TOKEN
+    else process.env.GITHUB_TOKEN = previousGithubToken
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 }
@@ -288,7 +296,7 @@ test('capabilities are truthful in OFF and after a Stop', async () => {
     assert.equal(off.capabilities.delegate.state, 'unavailable')
     assert.equal(off.capabilities.delegate.reason, 'mode_off')
     assert.equal(off.capabilities.delegate.implemented, true)
-    assert.equal(off.capabilities.open_pr.reason, 'github_not_configured')
+    assert.equal(off.capabilities.open_pr.reason, 'github_token_missing')
     assert.equal(off.capabilities.create_task.reason, 'taskboard_writes_unavailable')
     assert.equal(off.capabilities.launch.reason, 'mode_off')
 
@@ -715,7 +723,7 @@ test('capabilities name human-only actions instead of pretending an adapter is m
       assert.equal(caps[action].reason, 'human_only_action', action)
       assert.equal(caps[action].source, 'design', action)
     }
-    assert.equal(caps.open_pr.reason, 'github_not_configured')
+    assert.equal(caps.open_pr.reason, 'github_token_missing')
     assert.equal(caps.open_pr.implemented, true)
     assert.equal(caps.delegate.implemented, true)
     assert.equal(caps.launch.implemented, true)

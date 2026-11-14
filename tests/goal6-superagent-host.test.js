@@ -665,12 +665,16 @@ test('Super Agent: a semantic directive conflict becomes ONE arbitration decisio
   }
 })
 
-async function withAssessmentHost(run, { forge = false } = {}) {
+async function withAssessmentHost(run, { forge = false, repositoryConfig = true } = {}) {
   const home = await mkdtemp(join(tmpdir(), 'dab-assessment-security-'))
   const previousHome = process.env.DSH_HOME
   const previousToken = process.env.DSH_TASKBOARD_PUBLIC_TOKEN
+  const previousGithubToken = process.env.GITHUB_TOKEN
   process.env.DSH_HOME = home
   process.env.DSH_TASKBOARD_PUBLIC_TOKEN = 'test-assessment-token'
+  // Deterministic credential state: env only, no `gh` probe.
+  if (forge) process.env.GITHUB_TOKEN = 'test-github-token'
+  else delete process.env.GITHUB_TOKEN
   const transport = installFetch({ isolated: true })
   const workspacePath = forge ? join(home, 'project') : undefined
   if (forge) {
@@ -682,7 +686,10 @@ async function withAssessmentHost(run, { forge = false } = {}) {
     })
   }
   const host = await boot({ home, workspacePath,
-    config: forge ? { githubRepository: 'owner/project', allowGithubWrites: true } : {},
+    config: {
+      githubTokenDiscovery: 'env',
+      ...(forge && repositoryConfig ? { githubRepository: 'owner/project', allowGithubWrites: true } : {}),
+    },
   })
   try {
     await callJson(host.routes, 'POST', '/mode', { mode: 'autonomous' })
@@ -702,6 +709,8 @@ async function withAssessmentHost(run, { forge = false } = {}) {
     else process.env.DSH_HOME = previousHome
     if (previousToken === undefined) delete process.env.DSH_TASKBOARD_PUBLIC_TOKEN
     else process.env.DSH_TASKBOARD_PUBLIC_TOKEN = previousToken
+    if (previousGithubToken === undefined) delete process.env.GITHUB_TOKEN
+    else process.env.GITHUB_TOKEN = previousGithubToken
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 }
@@ -1094,4 +1103,15 @@ test('schedule creates one scheduled card through the owner tool, automatically 
     await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
     assert.equal(host.control.nativeCreate.calls.length, 2)
   })
+})
+
+test('open_pr works from each project remote without a global repository setting', async () => {
+  await withAssessmentHost(async ({ host, cycle, transport }) => {
+    await callJson(host.routes, 'POST', '/mandate/level', { level: 'L4' })
+    const result = await cycle([prProposal()])
+    assert.equal(result.body.value.executed[0].ok, true, JSON.stringify(result.body))
+    const writes = transport.calls.filter(entry => entry.method === 'POST' && entry.url.startsWith('https://api.github.com/'))
+    assert.equal(writes[0].url, 'https://api.github.com/repos/owner/project/pulls')
+    assert.equal(JSON.parse(writes[0].body).head, 'feat/test')
+  }, { forge: true, repositoryConfig: false })
 })
