@@ -137,6 +137,7 @@ export function ensureAssignment(assignments, draft) {
   const assignment = {
     id: draft.id ?? newId('asg'),
     idempotencyKey: key,
+    authorizationAction: draft.authorizationAction === 'delegate' ? 'delegate' : 'launch',
     taskId: String(draft.taskId),
     taskTitle: typeof draft.taskTitle === 'string' ? draft.taskTitle : null,
     taskDescription: typeof draft.taskDescription === 'string' ? draft.taskDescription : null,

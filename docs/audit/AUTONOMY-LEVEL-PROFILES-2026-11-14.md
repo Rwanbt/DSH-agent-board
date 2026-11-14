@@ -34,4 +34,15 @@ Aucune migration silencieuse n’est faite au chargement : pour une ancienne con
 
 ## En cours : actions manquantes
 
-Le premier lot ne prétend PAS rendre exécutables les 9 actions précédemment non implémentées. Leur raccordement à des exécuteurs réels, aux intentions d’approbation exactes et aux dépendances runtime reste l’étape suivante du même chantier. Les anciennes qualifications « jamais par conception » ne constituent pas une réponse à cette nouvelle demande utilisateur.
+Le premier lot ne prétend PAS rendre exécutables les 9 actions précédemment non implémentées. Les anciennes qualifications « jamais par conception » ne constituent pas une réponse à cette nouvelle demande utilisateur.
+
+### Lot 2 — délégation et PR raccordées
+
+- `delegate` utilise la tâche canonique du Task Board, le même lancement sécurisé et le même journal de délégation que les workers existants. Les permissions `delegate` ET `launch` sont requises ; périmètre, état prêt, doublons, quotas et confinement restent applicables. Une révocation pendant la création supprime la session sans lui envoyer de travail. Il s’agit de déléguer une carte à un worker, pas de fabriquer une arborescence native de sous-agents distincte.
+- `open_pr` atteint réellement `openPullRequest` de l’adaptateur GitHub, en automatique ou depuis une approbation exacte. Le dépôt configuré doit correspondre au `remote origin` Git du projet autorisé ; l’appel est refusé si cette correspondance n’est pas vérifiable. Le dépôt est inclus dans le payload haché de l’intention et affiché dans la demande humaine : une configuration modifiée après redémarrage ne redirige pas un accord vers un autre dépôt.
+- La recherche de PR existante et les marqueurs d’idempotence évitent les doubles créations. Le contrôle est répété immédiatement avant le POST après la lecture GitHub : Stop/révocation pendant cette lecture interdit l’écriture.
+- Les payloads ont une liste blanche partagée pour l’exécution automatique et les octets stockés. Aucune commande, permission worker ou sélection de jeton ne peut être transmise par le modèle.
+- Une répétition de demande d’approbation retourne désormais le même type `{ok:true,decision}` qu’une création (ancien défaut : retour direct de la décision, produisant une raison de refus indéfinie).
+- Preuves : suite complète 653/653 après raccordement ; après ajout du contrôle pré-POST et du test Stop pendant lecture GitHub, 37/37 tests ciblés passent. Bundle reconstruit ; syntaxe, smoke et diff-check verts. Aucune création réelle de PR ni lancement live n’est revendiqué (transports et contexte de test contrôlés).
+
+Restent à raccorder : `schedule`, `push_branch`, `merge`, `protected_branch_write`, `delete_task`, `secrets`, `policy_change`. Les cases ne seront pas simplement déclarées fonctionnelles sans leurs effets réels et leurs contrôles.

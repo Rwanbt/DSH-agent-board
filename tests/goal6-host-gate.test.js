@@ -284,11 +284,11 @@ test('dry-run writes nothing: no session, no tick, no ledger mutation', async ()
 test('capabilities are truthful in OFF and after a Stop', async () => {
   await withHost({ mandate: TEST_MANDATE }, async ({ routes }) => {
     const off = (await callJson(routes, 'GET', '/state')).body.value
-    // No adapter exists for these actions at all, so the reason is structural,
-    // not a temporary mode refusal: nothing pretends they are available.
+    // Delegation has a worker executor; PRs require the configured forge.
     assert.equal(off.capabilities.delegate.state, 'unavailable')
-    assert.equal(off.capabilities.delegate.reason, 'no_adapter_for_action')
-    assert.equal(off.capabilities.open_pr.reason, 'no_adapter_for_action')
+    assert.equal(off.capabilities.delegate.reason, 'mode_off')
+    assert.equal(off.capabilities.delegate.implemented, true)
+    assert.equal(off.capabilities.open_pr.reason, 'github_not_configured')
     assert.equal(off.capabilities.create_task.reason, 'taskboard_writes_unavailable')
     assert.equal(off.capabilities.launch.reason, 'mode_off')
 
@@ -715,7 +715,9 @@ test('capabilities name human-only actions instead of pretending an adapter is m
       assert.equal(caps[action].reason, 'human_only_action', action)
       assert.equal(caps[action].source, 'design', action)
     }
-    assert.equal(caps.open_pr.reason, 'no_adapter_for_action')
+    assert.equal(caps.open_pr.reason, 'github_not_configured')
+    assert.equal(caps.open_pr.implemented, true)
+    assert.equal(caps.delegate.implemented, true)
     assert.equal(caps.launch.implemented, true)
     assert.equal(caps.merge.implemented, false)
   })
