@@ -55,6 +55,7 @@ import { buildPortfolio } from '../plan/portfolio.js'
 import { fairOrder } from '../plan/scheduler.js'
 import { createSecuredAgent, effectiveWorkerPermission, secureAssessmentAgent, secureWorkerAgent } from './security.js'
 import { sanitizeActionPayload } from '../contracts/action-payloads.js'
+import { executeNativeTaskDelete, nativeToolsReady } from './native-tools.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -1392,6 +1393,24 @@ export function apply(ctx, config = {}) {
     if (reason) throw Object.assign(new Error(reason), { code: reason })
   }
 
+  /** A project grant cannot edit global authorization, worker rights or scope.
+   * Only these project scheduling preferences are changed, after exact consent.
+   */
+  function applyProjectPolicyOperation(projectId, payload, revision) {
+    assertOperationGate('policy_change', projectId, { approved: true, revision })
+    if (!resolveWorkspace(projectId)) return { ok: false, reason: 'unknown_project' }
+    const current = projectPolicyOf(projectId)
+      ?? normalizeMandate({ projects: { [projectId]: { enabled: true } } }, state.mandate).projects[projectId]
+    const result = applyMandatePatch(state.mandate, { projects: { [projectId]: {
+      ...current,
+      ...(payload.priority === undefined ? {} : { priority: payload.priority }),
+      ...(payload.maxTasksPerHour === undefined ? {} : { budget: { ...current.budget, maxTasksPerHour: payload.maxTasksPerHour } }),
+    } } }, { now: Date.now(), by: 'operator-approved-superagent' })
+    if (!result.ok) return result
+    commitMandate(result.mandate, { source: 'approved_project_policy', projectId })
+    return { ok: true, value: { projectId, policy: projectPolicyOf(projectId), revision: state.mandate.revision } }
+  }
+
   /** Persist a concrete, immutable operation; a model question is not a grant. */
   function requestOperationApproval(proposal, task = null) {
     const agent = ensureSuperAgent()
@@ -1455,6 +1474,7 @@ export function apply(ctx, config = {}) {
       if (!task || task.workspaceId !== operation.projectId) return { ok: false, reason: 'task_project_mismatch' }
       if (task.version !== operation.taskVersion) return { ok: false, reason: 'version_conflict' }
     }
+    if (TASK_TARGET_ACTIONS.has(operation.action) && !task) return { ok: false, reason: 'task_not_found' }
     const gate = operationGate(operation.action, operation.projectId, { approved: true })
     if (!gate.allowed) return { ok: false, reason: gate.reason }
     const ready = operationReadiness(operation.action)
@@ -1498,13 +1518,21 @@ export function apply(ctx, config = {}) {
         idempotencyKey: `${operation.projectId}:pr:${intent.payloadHash}`,
         beforeWrite: () => assertOperationGate('open_pr', operation.projectId, { approved: true, revision: intent.mandateRevision }),
       }) }
+      else if (operation.action === 'delete_task') result = await executeNativeTaskDelete(ctx, {
+        workspace: resolveWorkspace(operation.projectId), taskId: operation.taskId, taskVersion: operation.taskVersion, reason: payload.reason,
+        beforeExecute: () => assertOperationGate('delete_task', operation.projectId, { approved: true, revision: intent.mandateRevision }),
+      })
+      else if (operation.action === 'policy_change') result = applyProjectPolicyOperation(operation.projectId, payload, intent.mandateRevision)
       else if (operation.action === 'create_task') result = { ok: true, value: await adapter.create({ ...payload, workspaceId: operation.projectId }) }
       else if (operation.action === 'update_task') result = { ok: true, value: await adapter.update(operation.taskId, { ...payload, ifVersion: operation.taskVersion }, {
         beforeWrite: () => assertOperationGate(operation.action, operation.projectId, { approved: true, revision: intent.mandateRevision }),
       }) }
       else result = { ok: true, value: await adapter.comment(operation.taskId, payload.body) }
     } catch (error) { result = { ok: false, reason: error?.code ?? 'adapter_error' } }
-    stored.execution = { at: Date.now(), ok: result.ok === true, reason: result.reason ?? null }
+    stored.execution = { at: Date.now(), ok: result.ok === true,
+      reason: result.pendingApproval ? 'dependency_approval_pending' : (result.reason ?? null),
+      ...(result.pendingApproval ? { pendingApproval: result.pendingApproval } : {}),
+    }
     audit({ type: 'approved_operation_executed', at: Date.now(), decisionId, action: operation.action, ok: result.ok === true, reason: result.reason ?? null })
     touch()
     return result
@@ -1519,13 +1547,14 @@ export function apply(ctx, config = {}) {
   ])
   // Implemented means a real execution path exists, not that the configured
   // backend, project scope and external integration are ready right now.
-  const IMPLEMENTED_ACTIONS = Object.freeze(new Set(['launch', 'delegate', 'open_pr', 'create_task', 'update_task', 'comment']))
+  const IMPLEMENTED_ACTIONS = Object.freeze(new Set(['launch', 'delegate', 'open_pr', 'create_task', 'update_task', 'comment', 'delete_task', 'policy_change']))
+  const TASK_TARGET_ACTIONS = Object.freeze(new Set(['launch', 'delegate', 'update_task', 'comment', 'delete_task']))
   // Actions that are NOT waiting for an adapter: they are human decisions by
   // design. A merge, a protected-branch push, a secret read, a policy change or
   // a deletion must not become reachable because a checkbox exists. Saying
   // "not implemented yet" for those would be both false and misleading.
   const HUMAN_ONLY_ACTIONS = Object.freeze(new Set([
-    'merge', 'push_branch', 'protected_branch_write', 'secrets', 'policy_change', 'delete_task', 'schedule',
+    'merge', 'push_branch', 'protected_branch_write', 'secrets', 'schedule',
   ]))
   // Board-content actions executed through the Task Board public API. The
   // execution config, model and preset stay operator-owned; `done` is
@@ -1548,6 +1577,7 @@ export function apply(ctx, config = {}) {
   }
 
   function operationReadiness(action) {
+    if (action === 'delete_task' && !nativeToolsReady(ctx)) return { ok: false, reason: 'native_tool_unavailable' }
     if (TASKBOARD_WRITE_ACTIONS.has(action) && !taskboardWritesReady()) return { ok: false, reason: 'taskboard_writes_unavailable' }
     if (action === 'launch' || action === 'delegate') return backendReadiness()
     if (action === 'open_pr') {
@@ -1612,7 +1642,7 @@ export function apply(ctx, config = {}) {
         ...capabilityOf(action),
         implemented: IMPLEMENTED_ACTIONS.has(action),
         executor: IMPLEMENTED_ACTIONS.has(action)
-          ? (action === 'launch' || action === 'delegate' ? 'worker' : action === 'open_pr' ? 'github' : 'taskboard') : null,
+          ? ({ launch: 'worker', delegate: 'worker', open_pr: 'github', delete_task: 'native-taskboard', policy_change: 'project-policy' }[action] ?? 'taskboard') : null,
       }
     }
     // Read/analyse are always possible: diagnostics must survive OFF and Stop.
@@ -3507,7 +3537,7 @@ export function apply(ctx, config = {}) {
       }
       // A model-supplied project id is never proof of a task's ownership.
       const targetTask = typeof proposal.taskId === 'string' ? tasks.find(task => task.id === proposal.taskId) : null
-      if (proposal.action === 'launch' || proposal.action === 'delegate' || proposal.action === 'update_task' || proposal.action === 'comment') {
+      if (TASK_TARGET_ACTIONS.has(proposal.action)) {
         if (!targetTask || String(targetTask.workspaceId ?? '') !== proposal.projectId) {
           refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, taskId: proposal.taskId ?? null, reason: targetTask ? 'task_project_mismatch' : 'task_not_found' })
           continue

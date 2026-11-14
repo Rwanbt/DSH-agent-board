@@ -21,3 +21,17 @@ test('canonical action payloads reject owner fields, commands and malformed bran
   assert.equal(sanitizeActionPayload('launch', { prompt: 'override' }).ok, false)
   assert.deepEqual(sanitizeActionPayload('comment', { body: 'ok' }), { ok: true, payload: { body: 'ok' } })
 })
+
+test('delete and policy payloads cannot carry lifecycle, global rights or worker escalation', () => {
+  assert.deepEqual(sanitizeActionPayload('delete_task', { reason: 'Duplicate' }), { ok: true, payload: { reason: 'Duplicate' } })
+  assert.equal(sanitizeActionPayload('delete_task', {}).ok, false)
+  assert.equal(sanitizeActionPayload('delete_task', { reason: 'x', force: true }).reason, 'payload_field_forbidden')
+  assert.deepEqual(sanitizeActionPayload('policy_change', { priority: 0, maxTasksPerHour: 100 }),
+    { ok: true, payload: { priority: 0, maxTasksPerHour: 100 } })
+  for (const payload of [{}, { priority: 10 }, { priority: 1.5 }, { maxTasksPerHour: -1 }, { maxTasksPerHour: 101 }]) {
+    assert.equal(sanitizeActionPayload('policy_change', payload).ok, false)
+  }
+  for (const key of ['scopeMode', 'level', 'actions', 'allowedPermissions', 'permission', 'model', 'maxConcurrent']) {
+    assert.equal(sanitizeActionPayload('policy_change', { [key]: 'hostile' }).reason, 'payload_field_forbidden', key)
+  }
+})

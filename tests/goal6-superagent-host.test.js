@@ -107,6 +107,18 @@ function makeCtx() {
           },
         }
         const fixture = secureAgentContext({ sessionId: options.sessionId })
+        if (control.nativeDeletion && options.sessionId.startsWith('session-agentboard-operation-')) {
+          fixture.tools.executable = name => name === 'taskboard_delete' ? { name } : undefined
+          fixture.tools.execute = async input => {
+            const call = input.calls[0]
+            const args = JSON.parse(call.arguments)
+            const exec = { agent: input.agent, callId: call.id, name: call.name, arguments: args }
+            const denied = fixture.state.guards.map(guard => guard(exec)).find(Boolean)
+            if (denied) return { results: [{ callId: call.id, result: { isError: true, error: { info: { code: 'GUARD_DENIED' } } } }] }
+            control.nativeDeletion.calls.push(args)
+            return { results: [{ callId: call.id, result: { isError: false, value: control.nativeDeletion.value } }] }
+          }
+        }
         if (control.brainToolsUnavailable && options.sessionId.startsWith('session-superagent-')) fixture.agentCtx.get = () => undefined
         const security = await applyAgentSetup(options, agent, fixture)
         // A real model step resolves tools before assembling its prompt.
@@ -126,6 +138,7 @@ function makeCtx() {
     get(name) {
       if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'fake-provider', model: 'fake-model' }) }
       if (name === 'llm') return llm
+      if (name === 'tools' && control.nativeDeletion) return { execute() {}, get: name => name === 'taskboard_delete' ? { name } : undefined }
       if (name === 'sessions') return { get: () => undefined }
       return undefined
     },
@@ -919,4 +932,70 @@ test('Stop while GitHub lookup is awaiting prevents the PR POST', async () => {
     assert.equal(result.body.value.executed[0].reason, 'stopped_by_operator')
     assert.equal(transport.calls.filter(entry => entry.method === 'POST' && entry.url.startsWith('https://api.github.com/')).length, 0)
   }, { forge: true })
+})
+
+test('delete_task requires exact human consent and invokes the native owner once', async () => {
+  await withAssessmentHost(async ({ host, cycle, view, transport }) => {
+    host.control.nativeDeletion = { calls: [], value: { trashed: true, task: { id: 't1', version: 2 } } }
+    await callJson(host.routes, 'POST', '/mandate/level', { level: 'L4' })
+    const proposal = commentProposal({ id: 'delete-one', action: 'delete_task', payload: { reason: 'Duplicate task' } })
+    const reply = await cycle([proposal])
+    assert.equal(reply.body.value.refused[0].reason, 'approval_required')
+    assert.equal(host.control.nativeDeletion.calls.length, 0)
+    const decision = (await view()).superagent.decisions.pending.find(entry => entry.intent?.action === 'delete_task')
+    assert.ok(decision)
+    const answer = await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(answer.body.execution.ok, true, JSON.stringify(answer.body))
+    assert.equal(answer.body.execution.disposed, true)
+    assert.deepEqual(host.control.nativeDeletion.calls, [{ id: 't1', ifVersion: 1, reason: 'Duplicate task' }])
+    const operation = host.created.find(entry => entry.sessionId.startsWith('session-agentboard-operation-'))
+    assert.equal(host.messages.filter(entry => entry.sessionId === operation.sessionId).length, 0, 'no model prompt')
+    assert.equal(host.ctx.agents.get(operation.sessionId), undefined)
+    await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(host.control.nativeDeletion.calls.length, 1)
+    assert.equal(transport.calls.filter(entry => entry.method === 'POST' && /\/delete|\/trash/.test(entry.url)).length, 0,
+      'no GUI route or public route is impersonated')
+  })
+})
+
+test('delete_task retains native dependent approval and refuses a foreign canonical task', async () => {
+  await withAssessmentHost(async ({ host, cycle, view }) => {
+    host.control.nativeDeletion = { calls: [], value: { pendingApproval: { id: 'dependency-approval', kind: 'trash-prerequisite', affected: ['dependent'] } } }
+    await callJson(host.routes, 'POST', '/mandate/level', { level: 'L4' })
+    const foreign = await cycle([commentProposal({ action: 'delete_task', taskId: 't3', payload: { reason: 'No' } })])
+    assert.equal(foreign.body.value.refused[0].reason, 'task_project_mismatch')
+    await cycle([commentProposal({ action: 'delete_task', payload: { reason: 'Request removal' } })])
+    const decision = (await view()).superagent.decisions.pending.find(entry => entry.intent?.action === 'delete_task')
+    const answer = await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(answer.body.execution.ok, true)
+    assert.equal(answer.body.execution.pendingApproval.id, 'dependency-approval')
+    assert.equal(answer.body.execution.value.trashed, undefined)
+  })
+})
+
+test('policy_change applies only approved project preferences, never global or worker permissions', async () => {
+  await withAssessmentHost(async ({ host, cycle, view }) => {
+    await callJson(host.routes, 'POST', '/mandate/level', { level: 'L4' })
+    const before = await view()
+    const reply = await cycle([commentProposal({ id: 'project-policy', action: 'policy_change', taskId: null,
+      payload: { priority: 8, maxTasksPerHour: 2 } })])
+    assert.equal(reply.body.value.refused[0].reason, 'approval_required')
+    assert.deepEqual((await view()).mandate.projects, before.mandate.projects)
+    const decision = (await view()).superagent.decisions.pending.find(entry => entry.intent?.action === 'policy_change')
+    assert.deepEqual(decision.operation.payload, { priority: 8, maxTasksPerHour: 2 })
+    const answer = await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(answer.body.execution.ok, true, JSON.stringify(answer.body))
+    const after = await view()
+    assert.equal(after.mandate.projects.w1.priority, 8)
+    assert.equal(after.mandate.projects.w1.budget.maxTasksPerHour, 2)
+    assert.deepEqual(after.mandate.projects.w2, before.mandate.projects.w2)
+    for (const key of ['scopeMode', 'selectedWorkspaces', 'level', 'actions', 'actionModes']) {
+      assert.deepEqual(after.mandate[key], before.mandate[key], key)
+    }
+    assert.deepEqual(after.policy, before.policy)
+    assert.equal(after.mandate.projects.w1.level, before.mandate.projects.w1.level)
+    assert.equal(after.mandate.projects.w1.model, before.mandate.projects.w1.model)
+    await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal((await view()).mandate.revision, after.mandate.revision)
+  })
 })

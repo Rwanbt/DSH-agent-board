@@ -5074,7 +5074,7 @@ const DAB_STRINGS = {
     actionProtectedBranch: 'Écrire sur une branche protégée',
     actionDeleteTask: 'Supprimer une tâche',
     actionSecrets: 'Accéder aux secrets',
-    actionPolicyChange: 'Modifier la politique',
+    actionPolicyChange: 'Modifier la politique du projet',
   },
   en: {
     title: 'Agent Board',
@@ -5569,7 +5569,7 @@ const DAB_STRINGS = {
     actionProtectedBranch: 'Write to a protected branch',
     actionDeleteTask: 'Delete a task',
     actionSecrets: 'Access secrets',
-    actionPolicyChange: 'Change the policy',
+    actionPolicyChange: 'Change the project policy',
   },
 }
 
@@ -5796,6 +5796,9 @@ const DAB_REASON_TEXT = {
     no_inbound_orchestrator_report_channel: 'les orchestrateurs ne remontent pas encore de rapports',
     github_not_configured: 'GitHub non configuré',
     github_writes_disabled: 'écritures GitHub désactivées',
+    native_tool_unavailable: 'outil natif Task Board indisponible : vérifiez le plugin et le preset',
+    dependency_approval_pending: 'La suppression attend encore votre validation des dépendances dans le Task Board ; la tâche n’est pas supprimée.',
+    operation_session_cleanup_failed: 'La session technique n’a pas pu être supprimée ; vérifiez le résultat de l’opération avant de réessayer.',
     forge_project_mismatch: 'le dépôt GitHub configuré ne correspond pas au projet autorisé',
     forge_project_unverifiable: 'impossible de vérifier le dépôt du projet : vérifiez son remote Git origin',
     not_started: 'le Super Agent n’a pas encore démarré',
@@ -5849,6 +5852,9 @@ const DAB_REASON_TEXT = {
     no_inbound_orchestrator_report_channel: 'orchestrators do not send reports yet',
     github_not_configured: 'GitHub not configured',
     github_writes_disabled: 'GitHub writes disabled',
+    native_tool_unavailable: 'native Task Board tool unavailable: check the plugin and preset',
+    dependency_approval_pending: 'Deletion still needs your dependency approval in Task Board; the task has not been deleted.',
+    operation_session_cleanup_failed: 'The technical session could not be disposed; check the operation outcome before retrying.',
     forge_project_mismatch: 'the configured GitHub repository does not match the authorized project',
     forge_project_unverifiable: 'cannot verify the project repository: check its Git origin remote',
     not_started: 'the Super Agent has not started yet',
@@ -10715,7 +10721,10 @@ function dabMakePage(store, ctx) {
       try {
         const result = await operation()
         const error = String(result?.payload?.error ?? result?.error ?? result?.status ?? 'failed')
-        setNotice(result?.ok === true ? '' : `${label}: ${typeof dabReasonText === 'function' ? dabReasonText(error) : error}`)
+        const pendingOwnerApproval = result?.payload?.execution?.pendingApproval
+        setNotice(result?.ok === true
+          ? (pendingOwnerApproval ? dabReasonText('dependency_approval_pending') : '')
+          : `${label}: ${typeof dabReasonText === 'function' ? dabReasonText(error) : error}`)
       } finally {
         setBusy(false)
       }
