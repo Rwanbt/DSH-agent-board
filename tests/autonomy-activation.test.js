@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { ACTIONS, READ_ONLY_ACTIONS, CRITICAL_ACTIONS, actionModesForLevel,
+import { ACTIONS, READ_ONLY_ACTIONS, CRITICAL_ACTIONS, HUMAN_ONLY_ACTIONS, actionModesForLevel,
   applyMandatePatch, normalizeMandate, actionModeOf, effectivePolicyOf } from '../src/contracts/mandate.js'
 
 const scoped = () => normalizeMandate({ level: 'L0', scopeMode: 'selected', selectedWorkspaces: ['ws:a'],
@@ -18,6 +18,7 @@ for (const level of ['L0', 'L1', 'L2', 'L3', 'L4']) {
     for (const action of ACTIONS.filter(action => !READ_ONLY_ACTIONS.includes(action))) {
       const mode = actionModeOf(result.mandate, action)
       if (level === 'L0' || level === 'L1') assert.equal(mode, 'deny')
+      else if (HUMAN_ONLY_ACTIONS.includes(action)) assert.equal(mode, 'deny')
       else if (CRITICAL_ACTIONS.includes(action)) assert.equal(mode, level === 'L4' ? 'ask' : 'deny')
       else if (level === 'L2') assert.equal(mode, 'ask')
       else if (level === 'L4') assert.equal(mode, 'auto')

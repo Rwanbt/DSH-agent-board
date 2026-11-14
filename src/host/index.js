@@ -24,7 +24,7 @@ import { promisify } from 'node:util'
 
 import { DEFAULT_POLICY, INTERRUPTED_TURN_KINDS, MODES, STATUS, allowedPermissionOf, isMode, newId, normalizePolicy, textOfContent, truncate } from '../contracts/model.js'
 import {
-  ACTIONS, CRITICAL_ACTIONS, READ_ONLY_ACTIONS, applyMandatePatch, describeMandate, effectivePolicyOf,
+  ACTIONS, CRITICAL_ACTIONS, HUMAN_ONLY_ACTIONS, READ_ONLY_ACTIONS, applyMandatePatch, describeMandate, effectivePolicyOf,
   emptyMandate, migrateLegacyPolicy, normalizeMandate,
 } from '../contracts/mandate.js'
 import { buildProjection, normalizeSessions } from '../supervisor/projection.js'
@@ -55,7 +55,7 @@ import { buildPortfolio } from '../plan/portfolio.js'
 import { fairOrder } from '../plan/scheduler.js'
 import { createSecuredAgent, effectiveWorkerPermission, secureAssessmentAgent, secureWorkerAgent } from './security.js'
 import { sanitizeActionPayload } from '../contracts/action-payloads.js'
-import { executeNativeTaskDelete, nativeToolsReady } from './native-tools.js'
+import { executeNativeScheduledCreate, executeNativeTaskDelete, nativeToolAvailable, nativeToolsReady } from './native-tools.js'
 import { executeNativeMerge, nativeMergeReady, prepareNativeMerge } from './native-forge.js'
 
 const execFileAsync = promisify(execFile)
@@ -1523,6 +1523,10 @@ export function apply(ctx, config = {}) {
         workspace: resolveWorkspace(operation.projectId), payload,
         beforeExecute: () => assertOperationGate('merge', operation.projectId, { approved: true, revision: intent.mandateRevision }),
       })
+      else if (operation.action === 'schedule') result = await executeNativeScheduledCreate(ctx, {
+        workspace: resolveWorkspace(operation.projectId), task: scheduledTaskArgs(operation.projectId, payload),
+        beforeExecute: () => assertOperationGate('schedule', operation.projectId, { approved: true, revision: intent.mandateRevision }),
+      })
       else if (operation.action === 'delete_task') result = await executeNativeTaskDelete(ctx, {
         workspace: resolveWorkspace(operation.projectId), taskId: operation.taskId, taskVersion: operation.taskVersion, reason: payload.reason,
         beforeExecute: () => assertOperationGate('delete_task', operation.projectId, { approved: true, revision: intent.mandateRevision }),
@@ -1552,15 +1556,11 @@ export function apply(ctx, config = {}) {
   ])
   // Implemented means a real execution path exists, not that the configured
   // backend, project scope and external integration are ready right now.
-  const IMPLEMENTED_ACTIONS = Object.freeze(new Set(['launch', 'delegate', 'open_pr', 'merge', 'create_task', 'update_task', 'comment', 'delete_task', 'policy_change']))
+  const IMPLEMENTED_ACTIONS = Object.freeze(new Set(['launch', 'delegate', 'open_pr', 'merge', 'create_task', 'update_task', 'comment', 'delete_task', 'policy_change', 'schedule']))
   const TASK_TARGET_ACTIONS = Object.freeze(new Set(['launch', 'delegate', 'update_task', 'comment', 'delete_task']))
   // Actions that are NOT waiting for an adapter: they are human decisions by
-  // design. A merge, a protected-branch push, a secret read, a policy change or
-  // a deletion must not become reachable because a checkbox exists. Saying
-  // "not implemented yet" for those would be both false and misleading.
-  const HUMAN_ONLY_ACTIONS = Object.freeze(new Set([
-    'push_branch', 'protected_branch_write', 'secrets', 'schedule',
-  ]))
+  // design (shared with the level profile so a level never advertises them).
+  const HUMAN_ONLY = new Set(HUMAN_ONLY_ACTIONS)
   // Board-content actions executed through the Task Board public API. The
   // execution config, model and preset stay operator-owned; `done` is
   // unreachable through every one of them.
@@ -1581,7 +1581,22 @@ export function apply(ctx, config = {}) {
     return { ok: true, reason: null }
   }
 
+  /** Canonical arguments for the owner's scheduled-creation tool. */
+  function scheduledTaskArgs(projectId, payload) {
+    return {
+      title: payload.title,
+      workspaceId: projectId,
+      urgency: payload.urgency ?? 'normal',
+      ...(payload.description ? { description: payload.description } : {}),
+      ...(payload.prompt ? { prompt: payload.prompt } : {}),
+      execution: payload.cron
+        ? { mode: 'scheduled', cron: payload.cron }
+        : { mode: 'scheduled', runAt: payload.runAt },
+    }
+  }
+
   function operationReadiness(action) {
+    if (action === 'schedule' && !nativeToolAvailable(ctx, 'taskboard_create')) return { ok: false, reason: 'native_tool_unavailable' }
     if (action === 'merge' && !nativeMergeReady(ctx)) return { ok: false, reason: 'native_forge_unavailable' }
     if (action === 'delete_task' && !nativeToolsReady(ctx)) return { ok: false, reason: 'native_tool_unavailable' }
     if (TASKBOARD_WRITE_ACTIONS.has(action) && !taskboardWritesReady()) return { ok: false, reason: 'taskboard_writes_unavailable' }
@@ -1621,7 +1636,7 @@ export function apply(ctx, config = {}) {
     // This matrix describes the Super Agent executor, not unrelated manual
     // forge HTTP routes: a configured forge cannot implement a missing brain action.
     if (!IMPLEMENTED_ACTIONS.has(action)) {
-      return HUMAN_ONLY_ACTIONS.has(action)
+      return HUMAN_ONLY.has(action)
         ? { state: 'unavailable', reason: 'human_only_action', source: 'design' }
         : { state: 'unavailable', reason: 'no_adapter_for_action', source: 'host' }
     }
@@ -1648,7 +1663,7 @@ export function apply(ctx, config = {}) {
         ...capabilityOf(action),
         implemented: IMPLEMENTED_ACTIONS.has(action),
         executor: IMPLEMENTED_ACTIONS.has(action)
-          ? ({ launch: 'worker', delegate: 'worker', open_pr: 'github', merge: 'native-forge', delete_task: 'native-taskboard', policy_change: 'project-policy' }[action] ?? 'taskboard') : null,
+          ? ({ launch: 'worker', delegate: 'worker', open_pr: 'github', merge: 'native-forge', delete_task: 'native-taskboard', schedule: 'native-taskboard', policy_change: 'project-policy' }[action] ?? 'taskboard') : null,
       }
     }
     // Read/analyse are always possible: diagnostics must survive OFF and Stop.
@@ -3640,6 +3655,18 @@ export function apply(ctx, config = {}) {
           executed.push({ proposalId: proposal.id, action: 'open_pr', ok: true, value })
         } catch (error) {
           executed.push({ proposalId: proposal.id, action: 'open_pr', ok: false, reason: error?.code ?? 'adapter_error' })
+        }
+      } else if (proposal.action === 'schedule') {
+        try {
+          const revision = state.mandate.revision
+          const value = await executeNativeScheduledCreate(ctx, {
+            workspace: resolveWorkspace(proposal.projectId),
+            task: scheduledTaskArgs(proposal.projectId, boardPayload),
+            beforeExecute: () => assertOperationGate('schedule', proposal.projectId, { revision }),
+          })
+          executed.push({ proposalId: proposal.id, action: 'schedule', ...value })
+        } catch (error) {
+          executed.push({ proposalId: proposal.id, action: 'schedule', ok: false, reason: error?.code ?? 'native_tool_error' })
         }
       } else if (TASKBOARD_WRITE_ACTIONS.has(proposal.action)) {
         // Real board-content writes (audit A03): create / update / comment go

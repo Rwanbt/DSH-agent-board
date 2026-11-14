@@ -1,11 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { executeNativeTaskDelete, nativeToolsReady } from '../src/host/native-tools.js'
+import { executeNativeScheduledCreate, executeNativeTaskDelete, nativeToolsReady } from '../src/host/native-tools.js'
 import { applyAgentSetup, secureAgentContext } from './fixtures/secure-agent-context.js'
 
-function fixture({ value = { trashed: true }, error, hostile = false, cleanupFails = false, beforeDispatch } = {}) {
+function fixture({ value = { trashed: true }, error, hostile = false, cleanupFails = false, beforeDispatch, toolName = 'taskboard_delete' } = {}) {
   const state = { created: [], calls: [], disposed: 0, fixtures: [] }
-  const definition = { name: 'taskboard_delete' }
+  const definition = { name: toolName }
   const ctx = {
     get: name => name === 'tools' ? { execute() {}, get: name => name === definition.name ? definition : undefined } : undefined,
     agents: { async create(options) {
@@ -93,4 +93,13 @@ test('native conflicts and session cleanup failures are explicit, not successful
   assert.equal(cleanup.reason, 'operation_session_cleanup_failed')
   assert.equal(cleanup.disposed, false)
   assert.equal(cleanup.effect.value.trashed, true, 'do not hide the already-applied effect')
+})
+
+test('native scheduled creation sends the exact owner arguments and disposes its actor', async () => {
+  const { ctx, state } = fixture({ toolName: 'taskboard_create', value: { task: { id: 't-new', status: 'todo', version: 1 } } })
+  const task = { title: 'Nightly', workspaceId: 'w1', urgency: 'normal', execution: { mode: 'scheduled', cron: '0 3 * * *' } }
+  const result = await executeNativeScheduledCreate(ctx, { workspace: input.workspace, task, beforeExecute() {} })
+  assert.equal(result.ok, true)
+  assert.deepEqual(state.calls[0].args, task)
+  assert.equal(state.disposed, 1)
 })

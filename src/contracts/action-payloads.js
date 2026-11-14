@@ -5,6 +5,7 @@ const ACTION_PAYLOAD_FIELDS = Object.freeze({
   launch: [], delegate: [],
   open_pr: ['title', 'body', 'head', 'base', 'repository'],
   delete_task: ['reason'], policy_change: ['priority', 'maxTasksPerHour'],
+  schedule: ['title', 'description', 'prompt', 'urgency', 'cron', 'runAt'],
   merge: ['number', 'headSha', 'method', 'repository', 'base', 'baseSha'],
 })
 
@@ -34,10 +35,34 @@ export function sanitizeActionPayload(action, raw) {
       payload[key] = source[key]
       continue
     }
+    if (action === 'schedule' && key === 'runAt' && typeof source[key] === 'number') {
+      payload.runAt = source[key]
+      continue
+    }
     if (typeof source[key] !== 'string') return { ok: false, reason: 'payload_invalid' }
     const max = key === 'body' ? 2000 : key === 'reason' ? 500 : key === 'title' ? 200 : key === 'repository' && action === 'merge' ? 512 : 120
     if (['head', 'base', 'repository', 'headSha', 'baseSha'].includes(key) && source[key].trim().length > max) return { ok: false, reason: 'payload_invalid' }
     payload[key] = source[key].trim().slice(0, max)
+  }
+  if (action === 'schedule') {
+    if (!payload.title) return { ok: false, reason: 'payload_invalid' }
+    payload.urgency = ['urgent', 'normal', 'relaxed'].includes(payload.urgency) ? payload.urgency : 'normal'
+    const cron = typeof payload.cron === 'string' ? payload.cron.trim() : ''
+    const hasRunAt = payload.runAt !== undefined && payload.runAt !== ''
+    if ((cron !== '') === hasRunAt) return { ok: false, reason: 'payload_invalid' }
+    if (cron !== '') {
+      const parts = cron.split(/\s+/)
+      if (parts.length !== 5 || !parts.every(part => /^[0-9*/,/-]+$/.test(part))) return { ok: false, reason: 'payload_invalid' }
+      payload.cron = cron
+      delete payload.runAt
+    } else {
+      const ms = typeof payload.runAt === 'number' ? payload.runAt : Date.parse(String(payload.runAt))
+      // A schedule is a future effect: a past instant is refused, never clamped.
+      if (!Number.isFinite(ms) || ms <= Date.now()) return { ok: false, reason: 'payload_invalid' }
+      payload.runAt = new Date(ms).toISOString()
+      delete payload.cron
+    }
+    return { ok: true, payload }
   }
   if (action === 'merge') {
     if (!payload.number || (payload.headSha !== undefined && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(payload.headSha))) return { ok: false, reason: 'payload_invalid' }
