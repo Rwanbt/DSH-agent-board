@@ -397,7 +397,7 @@ export function workItemReadinessOf(item, { assignments = [], now = Date.now() }
  * @param {{directives?: string[], projectTitle?: string, projectId?: string}} [options]
  * @returns {string}
  */
-export function workPromptOf(item, { directives = [], projectTitle = '', projectId = '' } = {}) {
+export function workPromptOf(item, { directives = [], projectTitle = '', projectId = '', permission = null } = {}) {
   const blocks = [
     'The Agent Board dispatches this work item because NO Task Board card is available for it: the project itself declares it.',
     '',
@@ -414,6 +414,10 @@ export function workPromptOf(item, { directives = [], projectTitle = '', project
   if (directives.length > 0) {
     blocks.push('OPERATOR DIRECTIVES (constraints, most restrictive first):')
     for (const directive of directives) blocks.push(`- ${directive}`)
+    blocks.push('')
+  }
+  if (permission === 'read-only') {
+    blocks.push('APPLIED PERMISSION: read-only. You cannot modify files: produce an exact, verifiable change plan (files, edits, tests) and report it. Never claim the work is done.')
     blocks.push('')
   }
   blocks.push(

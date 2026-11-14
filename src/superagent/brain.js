@@ -192,6 +192,7 @@ export function buildAssessmentPrompt(input = {}) {
       task.ready === false ? `ready=false(${boundedText(task.readinessReason, 80) || 'unknown'})` : 'ready=true',
       task.blocked === true ? 'blocked=true' : null,
       task.waitingForHuman === true ? 'waitingForHuman=true' : null,
+      task.promotable === true ? 'promotable=true' : (typeof task.triageReason === 'string' ? `triage=${boundedText(task.triageReason, 80)}` : null),
       Array.isArray(task.dependsOn) && task.dependsOn.length > 0
         ? `dependsOn=${task.dependsOn.slice(0, 10).map(value => boundedText(value, 120)).filter(Boolean).join(',')}`
         : null,
