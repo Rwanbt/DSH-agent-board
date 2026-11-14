@@ -12,8 +12,8 @@
  *   node scripts/capture-demo-screenshots.mjs
  *
  * Output:
- *   docs/screenshots/demo-dark-desktop.png   (1440x900, dark)
- *   docs/screenshots/demo-dark-mobile.png    (390x844, dark)
+ *   docs/demo/demo-dark-desktop.png   (1440x900, dark)
+ *   docs/demo/demo-dark-mobile.png    (390x844, dark)
  *
  * The Chromium binary is discovered from $CHROMIUM, then the Playwright cache,
  * then the usual Chrome/Edge locations. The script has no npm dependency.
@@ -27,7 +27,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WORK = join(ROOT, '.ux-harness', 'demo')
-const OUT = join(ROOT, 'docs', 'screenshots')
+const OUT = join(ROOT, 'docs', 'demo')
 const REACT = 'https://unpkg.com/react@18.3.1/umd/react.production.min.js'
 const REACT_DOM = 'https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js'
 

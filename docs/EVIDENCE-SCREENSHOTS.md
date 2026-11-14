@@ -21,8 +21,8 @@ valables, les PNG ne sont simplement plus publiés.
 
 | Fichier | Contenu |
 |---|---|
-| `docs/screenshots/demo-dark-desktop.png` | cockpit sombre, 1440×900, **données fictives** |
-| `docs/screenshots/demo-dark-mobile.png` | cockpit sombre, 390×844, **données fictives** |
+| `docs/demo/demo-dark-desktop.png` | cockpit sombre, 1440×900, **données fictives** |
+| `docs/demo/demo-dark-mobile.png` | cockpit sombre, 390×844, **données fictives** |
 
 Ces deux images sont rendues par **le vrai bundle client du plugin**
 (`src/client.js`) — composants réels, styles réels — alimenté par un état
@@ -40,7 +40,7 @@ node scripts/capture-demo-screenshots.mjs
 - Le jeu de données vit **dans le script** (`PROJECTS`, `SESSIONS`) : pour changer
   la démo, on édite le script, jamais une capture.
 - Chromium est découvert via `$CHROMIUM`, le cache Playwright, puis Chrome/Edge.
-- La sortie est écrasée dans `docs/screenshots/` ; le script imprime la largeur de
+- La sortie est écrasée dans `docs/demo/` ; le script imprime la largeur de
   viewport réelle et le nombre de cartes rendues (contrôle anti-régression).
 - L'état factice est chargé **avant** la première peinture et la capture attend
   `data-demo-ready` : les cartes « non lues » / « en attente » ne dépendent pas

@@ -69,9 +69,9 @@ personnelle) : `node scripts/capture-demo-screenshots.mjs`. Les anciennes captur
 réelles ont été retirées du dépôt **et de son historique** — voir
 [docs/EVIDENCE-SCREENSHOTS.md](docs/EVIDENCE-SCREENSHOTS.md).
 
-![Cockpit sombre, 1440×900, projets fictifs](docs/screenshots/demo-dark-desktop.png)
+![Cockpit sombre, 1440×900, projets fictifs](docs/demo/demo-dark-desktop.png)
 
-![Cockpit sombre, 390×844, projets fictifs](docs/screenshots/demo-dark-mobile.png)
+![Cockpit sombre, 390×844, projets fictifs](docs/demo/demo-dark-mobile.png)
 
 ## Branches
 
