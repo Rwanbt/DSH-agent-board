@@ -45,6 +45,7 @@ const SESSIONS = [
   { id: 's-orion-1', ws: 'ws-orion', title: 'Refactor the invoice export', running: true, turns: 4, steps: 12 },
   { id: 's-orion-2', ws: 'ws-orion', title: 'Add the ADR-0007 journal rename test', doneAt: 12, read: false },
   { id: 's-orion-3', ws: 'ws-orion', title: 'Approve the export schema change', waiting: true },
+  { id: 's-orion-4', ws: 'ws-orion', title: 'invoice-review', parent: 's-orion-1', origin: 'subagent', running: true },
   { id: 's-nebula-1', ws: 'ws-nebula', title: 'Harden the webhook signature check', running: true, turns: 2, steps: 7 },
   { id: 's-nebula-2', ws: 'ws-nebula', title: 'api-review', parent: 's-nebula-1', origin: 'subagent', waiting: true },
   { id: 's-nebula-3', ws: 'ws-nebula', title: 'Rotate the staging keys', doneAt: 40, read: true },
@@ -294,6 +295,18 @@ function mountScript() {
     addEventListener() {}
     close() {}
   }
+  // The demo can open a specific view (?view=projects) without a click, and the
+  // seeded state is ALWAYS written so a reused browser profile cannot leak the
+  // previous capture's view into this one.
+  const demoView = new URLSearchParams(location.search).get('view')
+  try {
+    localStorage.setItem('dsh-agent-board:ui:v2', JSON.stringify({
+      schema: 2, viewMode: demoView === 'projects' || demoView === 'hierarchy' ? demoView : 'global',
+      filter: 'attention', query: '', project: null, compact: false,
+      folded: [], expanded: [], collapsed: [], dismissed: [],
+      roleFilter: null, statusFilter: null, taskStateFilter: null, supervisionOpen: false, notifications: true,
+    }))
+  } catch { /* local file: storage may be disabled */ }
   const store = createBoardStore(fakeCtx, { fetchImpl: fakeFetch, EventSourceImpl: FakeEventSource, apiBase: '/demo' })
   // Load the fake host state BEFORE the first paint: the projection needs the
   // acks/turn-end facts to decide which cards are unread or waiting.
@@ -319,6 +332,10 @@ function mountScript() {
           toolbar: box(document.querySelector('.dab-toolbar')),
           rootBox: box(rootEl),
           cards: cards.length,
+          projectGroups: document.querySelectorAll('.dab-project').length,
+          branches: document.querySelectorAll('.dab-branch').length,
+          kids: document.querySelectorAll('.dab-kids').length,
+          links: document.querySelectorAll('.dab-links').length,
           firstCard: box(cards[0] ?? null),
           secondCard: box(cards[1] ?? null),
           overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
@@ -422,8 +439,8 @@ async function pollJson(url, timeoutMs = 15_000) {
  * lays out in, and the page reports when the fake state is painted, so the PNG
  * is deterministic instead of racing the first render.
  */
-async function shoot(chromium, url, { width, height, file, audit = false }) {
-  const profile = join(WORK, 'profile-' + width + 'x' + height)
+async function shoot(chromium, url, { width, height, file, audit = false, view = null }) {
+  const profile = join(WORK, 'profile-' + width + 'x' + height + '-' + (view ?? 'global'))
   const port = 9200 + Math.floor(Math.random() * 600)
   const child = spawn(chromium, [
     '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run', '--no-default-browser-check',
@@ -471,7 +488,11 @@ async function shoot(chromium, url, { width, height, file, audit = false }) {
       width, height, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: height,
     })
     const loaded = once('Page.loadEventFired')
-    await send('Page.navigate', { url: url + (audit ? '?audit=1' : '') })
+    const query = new URLSearchParams()
+    if (audit) query.set('audit', '1')
+    if (view !== null) query.set('view', view)
+    const suffix = query.toString() === '' ? '' : '?' + query.toString()
+    await send('Page.navigate', { url: url + suffix })
     await loaded
     const ready = await send('Runtime.evaluate', {
       awaitPromise: true, returnByValue: true,
@@ -498,6 +519,7 @@ const url = await buildPage()
 const chromium = findChromium()
 const shots = [
   { width: 1440, height: 900, file: join(OUT, 'demo-dark-desktop.png') },
+  { width: 1440, height: 1024, file: join(OUT, 'demo-dark-projects-desktop.png'), view: 'projects' },
   { width: 390, height: 844, file: join(OUT, 'demo-dark-mobile.png') },
 ]
 for (const shot of shots) {

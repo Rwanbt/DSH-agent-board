@@ -71,6 +71,11 @@ réelles ont été retirées du dépôt **et de son historique** — voir
 
 ![Cockpit sombre, 1440×900, projets fictifs](docs/demo/demo-dark-desktop.png)
 
+Vue **Projets** (1440×1024) : les sous-agents sont reliés à leur parent par les
+connecteurs de l'arbre — deux branches visibles sur des projets factices.
+
+![Vue Projets avec sous-agents reliés, 1440×1024, projets fictifs](docs/demo/demo-dark-projects-desktop.png)
+
 ![Cockpit sombre, 390×844, projets fictifs](docs/demo/demo-dark-mobile.png)
 
 ## Branches

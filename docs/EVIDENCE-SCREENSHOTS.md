@@ -22,6 +22,7 @@ valables, les PNG ne sont simplement plus publiés.
 | Fichier | Contenu |
 |---|---|
 | `docs/demo/demo-dark-desktop.png` | cockpit sombre, 1440×900, **données fictives** |
+| `docs/demo/demo-dark-projects-desktop.png` | vue **Projets**, 1440×1024 : groupes de projets et **sous-agents reliés** à leur parent (connecteurs SVG), **données fictives** |
 | `docs/demo/demo-dark-mobile.png` | cockpit sombre, 390×844, **données fictives** |
 
 Ces deux images sont rendues par **le vrai bundle client du plugin**
