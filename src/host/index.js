@@ -4495,6 +4495,13 @@ export function apply(ctx, config = {}) {
       }
       check(`permission.${name}`, ok, reason === null ? {} : { reason })
     }
+    // The native executors (schedule / promote / delete) need the owner's exact
+    // tools present in THIS host's pipeline: absence is a real refusal, not a
+    // later surprise. Read-only inventory, like every other check here.
+    for (const name of ['taskboard_create', 'taskboard_move', 'taskboard_delete']) {
+      const ok = nativeToolAvailable(ctx, name)
+      check(`native.tool.${name}`, ok, ok ? {} : { reason: 'native_tool_unavailable' })
+    }
     const ledger = coordinationModel
     check('taskboard.ledger', ledger?.available === true, ledger?.available === true ? {} : { reason: ledger === null || ledger === undefined ? 'ledger_not_read_yet' : (ledger.reason ?? 'ledger_unavailable') })
     check('taskboard.writes', taskboardWritesReady(), taskboardWritesReady() ? {} : { reason: 'taskboard_writes_unavailable' })

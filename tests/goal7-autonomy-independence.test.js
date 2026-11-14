@@ -23,6 +23,7 @@ import test from 'node:test'
 
 import { apply } from '../src/host/index.js'
 import { workItemIdOf } from '../src/orchestrator/project-work.js'
+import { intentPayloadHash } from '../src/superagent/decisions.js'
 import { applyAgentSetup, secureAgentContext } from './fixtures/secure-agent-context.js'
 
 const ADR = `# ADR 0007 — Atomic journal writes
@@ -50,7 +51,7 @@ const TODO = `# TODO
 - [ ] Add the restart test
 `
 
-function mandateFor(level) {
+function mandateFor(level, actionModes) {
   return {
     scopeMode: 'selected',
     selectedWorkspaces: ['w1'],
@@ -59,6 +60,7 @@ function mandateFor(level) {
       launch: true, launch_work: true, promote_task: true, comment: true,
       create_task: true, update_task: true, schedule: true,
     },
+    ...(actionModes === undefined ? {} : { actionModes }),
     projects: { w1: { enabled: true, budget: { maxTasksPerHour: 20 } } },
     requiresConfiguration: false,
   }
@@ -166,7 +168,7 @@ function installFetch({ tasks = null } = {}) {
   return restore
 }
 
-async function boot({ tasks = null, nativeMove = null, docs = {}, level = 'L3' }) {
+async function boot({ tasks = null, nativeMove = null, docs = {}, level = 'L3', actionModes } = {}) {
   const home = await mkdtemp(join(tmpdir(), 'dab-independence-home-'))
   const projectPath = await mkdtemp(join(tmpdir(), 'dab-independence-project-'))
   execFileSync('git', ['init', projectPath], { stdio: 'ignore' })
@@ -182,7 +184,7 @@ async function boot({ tasks = null, nativeMove = null, docs = {}, level = 'L3' }
   const restoreFetch = installFetch({ tasks })
   const made = makeCtx({ projectPath, nativeMove })
   const dispose = apply(made.ctx, {
-    mandate: mandateFor(level),
+    mandate: mandateFor(level, actionModes),
     baseUrl: 'http://127.0.0.1:1',
     githubTokenDiscovery: 'off',
   })
@@ -366,7 +368,7 @@ test('L4 triage moves ONE unblocked backlog card to todo through the native owne
   }
 })
 
-test('below L4 the backlog is never triaged autonomously: the operator answers a bound approval', async () => {
+test('below L4, a legacy boolean grant keeps a hard level minimum: no approval is requested', async () => {
   const nativeMove = { calls: [], value: { task: { id: 'b1', status: 'todo', version: 3 } } }
   const cards = [{ id: 'b1', title: 'Routine maintenance', status: 'backlog', workspaceId: 'w1', dependsOn: [], version: 2 }]
   const host = await boot({ tasks: cards, nativeMove, level: 'L3' })
@@ -379,6 +381,62 @@ test('below L4 the backlog is never triaged autonomously: the operator answers a
     const state = await host.view()
     assert.equal(state.superagent.decisions.pending.length, 0)
     assert.deepEqual(state.superagent.promotions, [])
+  } finally {
+    await host.cleanup()
+  }
+})
+
+test('below L4, promote_task asks: one bound approval executes exactly one native move, then is spent', async () => {
+  const nativeMove = { calls: [], value: { task: { id: 'b1', status: 'todo', version: 3 } } }
+  const cards = [{ id: 'b1', title: 'Routine maintenance', status: 'backlog', workspaceId: 'w1', dependsOn: [], version: 2 }]
+  const reason = 'Documented routine maintenance'
+  const host = await boot({ tasks: cards, nativeMove, level: 'L3', actionModes: { promote_task: 'ask' } })
+  try {
+    // L3 + explicit `ask`: the gate requests an approval instead of refusing.
+    const cycle = await host.cycle([
+      { id: 'p-1', action: 'promote_task', projectId: 'w1', taskId: 'b1', rationale: 'routine', risk: 'low', expectedEffect: 'todo', requiresApproval: true, payload: { reason } },
+    ])
+    assert.equal(cycle.status, 200, JSON.stringify(cycle.body))
+    assert.equal(cycle.body.value.refused[0].reason, 'approval_required', JSON.stringify(cycle.body.value.refused))
+    assert.equal(cycle.body.value.executed.length, 0, 'requesting an approval is not an execution')
+    assert.equal(nativeMove.calls.length, 0, 'nothing moves before the operator answers')
+
+    const state = await host.view()
+    assert.equal(state.superagent.decisions.pending.length, 1, JSON.stringify(state.superagent.decisions))
+    const decision = state.superagent.decisions.pending[0]
+    assert.equal(decision.action, 'promote_task')
+    assert.equal(decision.projectId, 'w1')
+    assert.deepEqual(decision.taskIds, ['b1'])
+    // The intent is exact and bound to the canonical card version + payload.
+    assert.equal(decision.intent.action, 'promote_task')
+    assert.equal(decision.intent.projectId, 'w1')
+    assert.equal(decision.intent.taskId, 'b1')
+    assert.equal(decision.intent.taskVersion, 2)
+    assert.equal(decision.intent.payloadHash, intentPayloadHash({ reason }))
+    assert.equal(decision.intent.mandateRevision, state.mandate.revision)
+    assert.equal(decision.operation.payload.reason, reason)
+    assert.equal(decision.options.find(option => option.id === 'approve').effect, 'approve')
+
+    const answered = await host.callJson('POST', `/superagent/decisions/${encodeURIComponent(decision.id)}/answer`, { optionId: 'approve' })
+    assert.equal(answered.status, 200, JSON.stringify(answered.body))
+    assert.equal(answered.body.execution.ok, true, JSON.stringify(answered.body.execution))
+    assert.equal(answered.body.execution.taskId, 'b1')
+    assert.equal(answered.body.execution.status, 'todo')
+    assert.deepEqual(nativeMove.calls, [{ id: 'b1', status: 'todo', ifVersion: 2 }], 'exactly one canonical native move')
+    assert.equal(nativeMove.calls.length, 1)
+    assert.ok(nativeMove.calls.every(call => call.status !== 'done'), 'done is never a promotion target')
+
+    // The approval is spent and persisted: a second answer cannot move again.
+    const after = await host.view()
+    assert.equal(after.superagent.decisions.pending.length, 0)
+    const spent = after.superagent.decisions.recent.find(entry => entry.id === decision.id)
+    assert.ok(spent, JSON.stringify(after.superagent.decisions))
+    assert.equal(typeof spent.usedAt, 'number')
+    const again = await host.callJson('POST', `/superagent/decisions/${encodeURIComponent(decision.id)}/answer`, { optionId: 'approve' })
+    assert.equal(again.status, 200, JSON.stringify(again.body))
+    assert.equal(again.body.execution.ok, false, JSON.stringify(again.body.execution))
+    assert.equal(again.body.execution.reason, 'approval_not_valid')
+    assert.equal(nativeMove.calls.length, 1, 'a spent approval never replays the move')
   } finally {
     await host.cleanup()
   }

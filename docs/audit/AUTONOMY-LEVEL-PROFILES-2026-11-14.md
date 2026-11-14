@@ -8,7 +8,7 @@ Cette demande remplace le comportement précédent « le niveau ne change jamais
 
 ## Cause vérifiée
 
-La configuration persistée contenait `mandate.level=L4`, `policy.mode=autonomous`, les 13 booléens d’action à `false` et `actionModes={}`. Ce n’était donc pas une question de redémarrage : la sélection du niveau conservait intégralement ces refus.
+La configuration persistée contenait `mandate.level=L4`, `policy.mode=autonomous`, les 15 booléens d’action (`launch_work` et `promote_task` s’ajoutent aux 13 d’origine) à `false` et `actionModes={}`. Ce n’était donc pas une question de redémarrage : la sélection du niveau conservait intégralement ces refus.
 
 ## Profil appliqué lors d’une sélection explicite
 

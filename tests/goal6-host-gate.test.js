@@ -687,6 +687,14 @@ test('self-test inventories the RUNNING contracts and can dispose one confined p
     const missing = checks.find(entry => entry.id === 'permissionPresets.resolve')
     assert.equal(missing.ok, false)
     assert.equal(missing.reason, 'runtime_unavailable')
+    // The native executors' tools are inventoried read-only: this fake host
+    // wires no `tools` service, so each one is honestly unavailable.
+    for (const name of ['taskboard_create', 'taskboard_move', 'taskboard_delete']) {
+      const check = checks.find(entry => entry.id === `native.tool.${name}`)
+      assert.ok(check, `missing inventory entry native.tool.${name}`)
+      assert.equal(check.ok, false, name)
+      assert.equal(check.reason, 'native_tool_unavailable', name)
+    }
     assert.equal(shallow.body.value.deep, null, 'a shallow run never creates a session')
 
     const unconfirmed = await callJson(routes, 'POST', '/selftest', { deep: true })
@@ -737,7 +745,7 @@ test('capabilities name human-only actions instead of pretending an adapter is m
     assert.equal(caps.schedule.reason, 'native_tool_unavailable')
     // Every advertised action is either executable or explicitly human-only:
     // no action may still read "not supported yet".
-    for (const action of ['delegate', 'launch', 'create_task', 'update_task', 'comment', 'open_pr',
+    for (const action of ['delegate', 'launch', 'launch_work', 'create_task', 'update_task', 'promote_task', 'comment', 'open_pr',
       'merge', 'push_branch', 'delete_task', 'schedule', 'protected_branch_write', 'secrets', 'policy_change']) {
       const cap = caps[action]
       assert.notEqual(cap.reason, 'no_adapter_for_action', action)
