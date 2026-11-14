@@ -35,3 +35,12 @@ test('delete and policy payloads cannot carry lifecycle, global rights or worker
     assert.equal(sanitizeActionPayload('policy_change', { [key]: 'hostile' }).reason, 'payload_field_forbidden', key)
   }
 })
+
+test('merge payloads identify a PR, default the method, and bind full immutable SHAs', () => {
+  assert.deepEqual(sanitizeActionPayload('merge', { number: 42 }), { ok: true, payload: { number: 42, method: 'squash' } })
+  assert.equal(sanitizeActionPayload('merge', { number: 42, headSha: 'A'.repeat(40) }).payload.headSha, 'a'.repeat(40))
+  for (const payload of [{}, { number: -1 }, { number: 1.2 }, { number: '42' }, { number: 42, headSha: 'main' },
+    { number: 42, method: 'admin' }, { number: 42, baseSha: 'abc' }, { number: 42, token: 'secret' }, { number: 42, force: true }]) {
+    assert.equal(sanitizeActionPayload('merge', payload).ok, false, JSON.stringify(payload))
+  }
+})

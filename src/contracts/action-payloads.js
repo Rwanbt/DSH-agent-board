@@ -1,15 +1,21 @@
 /** Canonical bytes shared by automatic execution and exact approval replay. */
 import { BOARD_PAYLOAD_ACTIONS, sanitizeBoardPayload } from './board-writes.js'
 
+const ACTION_PAYLOAD_FIELDS = Object.freeze({
+  launch: [], delegate: [],
+  open_pr: ['title', 'body', 'head', 'base', 'repository'],
+  delete_task: ['reason'], policy_change: ['priority', 'maxTasksPerHour'],
+  merge: ['number', 'headSha', 'method', 'repository', 'base', 'baseSha'],
+})
+
 export function sanitizeActionPayload(action, raw) {
   if (BOARD_PAYLOAD_ACTIONS.includes(action)) return sanitizeBoardPayload(action, raw)
-  if (!['launch', 'delegate', 'open_pr', 'delete_task', 'policy_change'].includes(action)) return { ok: false, reason: 'no_adapter_for_action' }
+  if (!Object.hasOwn(ACTION_PAYLOAD_FIELDS, action)) return { ok: false, reason: 'no_adapter_for_action' }
   if (raw !== null && raw !== undefined && (typeof raw !== 'object' || Array.isArray(raw))) {
     return { ok: false, reason: 'payload_invalid' }
   }
   const source = raw ?? {}
-  const allowed = action === 'open_pr' ? ['title', 'body', 'head', 'base', 'repository']
-    : action === 'delete_task' ? ['reason'] : action === 'policy_change' ? ['priority', 'maxTasksPerHour'] : []
+  const allowed = ACTION_PAYLOAD_FIELDS[action]
   const fields = Object.keys(source).filter(key => !allowed.includes(key))
   if (fields.length) return { ok: false, reason: 'payload_field_forbidden', fields }
   const payload = {}
@@ -23,9 +29,23 @@ export function sanitizeActionPayload(action, raw) {
   }
   for (const key of allowed) {
     if (source[key] === undefined) continue
+    if (action === 'merge' && key === 'number') {
+      if (!Number.isInteger(source[key]) || source[key] <= 0 || source[key] > 1_000_000_000) return { ok: false, reason: 'payload_invalid' }
+      payload[key] = source[key]
+      continue
+    }
     if (typeof source[key] !== 'string') return { ok: false, reason: 'payload_invalid' }
-    if (['head', 'base', 'repository'].includes(key) && source[key].trim().length > 120) return { ok: false, reason: 'payload_invalid' }
-    payload[key] = source[key].trim().slice(0, key === 'body' ? 2000 : key === 'reason' ? 500 : key === 'title' ? 200 : 120)
+    const max = key === 'body' ? 2000 : key === 'reason' ? 500 : key === 'title' ? 200 : key === 'repository' && action === 'merge' ? 512 : 120
+    if (['head', 'base', 'repository', 'headSha', 'baseSha'].includes(key) && source[key].trim().length > max) return { ok: false, reason: 'payload_invalid' }
+    payload[key] = source[key].trim().slice(0, max)
+  }
+  if (action === 'merge') {
+    if (!payload.number || (payload.headSha !== undefined && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(payload.headSha))) return { ok: false, reason: 'payload_invalid' }
+    if (payload.baseSha !== undefined && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(payload.baseSha)) return { ok: false, reason: 'payload_invalid' }
+    if (payload.headSha) payload.headSha = payload.headSha.toLowerCase()
+    if (payload.baseSha) payload.baseSha = payload.baseSha.toLowerCase()
+    payload.method ??= 'squash'
+    if (!['merge', 'squash', 'rebase'].includes(payload.method)) return { ok: false, reason: 'payload_invalid' }
   }
   if (action === 'delete_task' && !payload.reason) return { ok: false, reason: 'payload_invalid' }
   if (action === 'open_pr') {

@@ -138,6 +138,7 @@ function makeCtx() {
     get(name) {
       if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'fake-provider', model: 'fake-model' }) }
       if (name === 'llm') return llm
+      if (name === 'forge') return control.nativeForge
       if (name === 'tools' && control.nativeDeletion) return { execute() {}, get: name => name === 'taskboard_delete' ? { name } : undefined }
       if (name === 'sessions') return { get: () => undefined }
       return undefined
@@ -265,7 +266,7 @@ test('Super Agent: real session, validated assessment, gate enforced, no effect 
     const reasons = Object.fromEntries(value.refused.map(entry => [entry.id, entry.reason]))
     assert.equal(reasons.p2, 'project_disabled')
     assert.equal(reasons.p3, 'project_not_selected')
-    assert.equal(reasons.p4, 'no_adapter_for_action', 'unsupported merge has no executable adapter even at higher levels')
+    assert.equal(reasons.p4, 'payload_invalid', 'a merge without an exact PR target is never executable')
     assert.equal(value.executed.filter(entry => entry.ok === true).length, 1)
     assert.equal(value.decisions, 1)
 
@@ -998,4 +999,53 @@ test('policy_change applies only approved project preferences, never global or w
     await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
     assert.equal((await view()).mandate.revision, after.mandate.revision)
   })
+})
+
+function nativeMergeFixture(host) {
+  const repository = { forge: 'github', host: 'github.com', owner: 'owner', name: 'project' }
+  const control = { calls: [], snapshot: null }
+  host.control.nativeForge = {
+    repositoryFromRemote: () => repository,
+    fetchChecks: async ref => control.snapshot ?? ({ ref, state: 'open', draft: false, mergeReady: true,
+      mergeability: 'mergeable', headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), baseBranch: 'main',
+      mergeMethods: ['squash'], checksRollup: 'success', checksTruncated: false, threadsTruncated: false,
+      reviewersTruncated: false, unresolvedThreads: 0, reviewDecision: 'approved' }),
+    merge: async (ref, request) => { control.calls.push({ ref, request }); return undefined },
+  }
+  return control
+}
+
+test('merge captures a real native forge snapshot and always needs exact human approval, even in auto mode', async () => {
+  await withAssessmentHost(async ({ host, cycle, view, transport }) => {
+    const forge = nativeMergeFixture(host)
+    await callJson(host.routes, 'POST', '/mandate', { level: 'L4', actionModes: { merge: 'auto' } })
+    const before = structuredClone(transport.tasks)
+    const result = await cycle([commentProposal({ id: 'merge-native', action: 'merge', taskId: null, payload: { number: 42 } })])
+    assert.equal(result.body.value.refused[0].reason, 'approval_required', JSON.stringify(result.body))
+    assert.equal(forge.calls.length, 0)
+    const decision = (await view()).superagent.decisions.pending.find(entry => entry.intent?.action === 'merge')
+    assert.ok(decision)
+    assert.deepEqual(decision.operation.payload, { number: 42, method: 'squash', repository: 'github:github.com/owner/project',
+      headSha: 'a'.repeat(40), base: 'main', baseSha: 'b'.repeat(40) })
+    const answer = await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(answer.body.execution.ok, true, JSON.stringify(answer.body))
+    assert.deepEqual(forge.calls[0].request, { method: 'squash', headSha: 'a'.repeat(40) })
+    assert.deepEqual(transport.tasks, before, 'merging never marks a task done')
+    await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(forge.calls.length, 1)
+  }, { forge: true })
+})
+
+test('merge refuses a changed native head after consent without executing another target', async () => {
+  await withAssessmentHost(async ({ host, cycle, view }) => {
+    const forge = nativeMergeFixture(host)
+    await callJson(host.routes, 'POST', '/mandate/level', { level: 'L4' })
+    await cycle([commentProposal({ id: 'stale-merge', action: 'merge', taskId: null, payload: { number: 42 } })])
+    const decision = (await view()).superagent.decisions.pending.find(entry => entry.intent?.action === 'merge')
+    const ref = { number: 42, repository: { forge: 'github', host: 'github.com', owner: 'owner', name: 'project' } }
+    forge.snapshot = { ...await host.control.nativeForge.fetchChecks(ref), headSha: 'c'.repeat(40) }
+    const answer = await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(answer.body.execution.reason, 'forge_stale_change_request')
+    assert.equal(forge.calls.length, 0)
+  }, { forge: true })
 })
