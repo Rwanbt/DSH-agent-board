@@ -56,6 +56,7 @@ import { fairOrder } from '../plan/scheduler.js'
 import { createSecuredAgent, effectiveWorkerPermission, secureAssessmentAgent, secureWorkerAgent } from './security.js'
 import { sanitizeActionPayload } from '../contracts/action-payloads.js'
 import { executeNativeTaskDelete, nativeToolsReady } from './native-tools.js'
+import { executeNativeMerge, nativeMergeReady, prepareNativeMerge } from './native-forge.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -1518,6 +1519,10 @@ export function apply(ctx, config = {}) {
         idempotencyKey: `${operation.projectId}:pr:${intent.payloadHash}`,
         beforeWrite: () => assertOperationGate('open_pr', operation.projectId, { approved: true, revision: intent.mandateRevision }),
       }) }
+      else if (operation.action === 'merge') result = await executeNativeMerge(ctx, {
+        workspace: resolveWorkspace(operation.projectId), payload,
+        beforeExecute: () => assertOperationGate('merge', operation.projectId, { approved: true, revision: intent.mandateRevision }),
+      })
       else if (operation.action === 'delete_task') result = await executeNativeTaskDelete(ctx, {
         workspace: resolveWorkspace(operation.projectId), taskId: operation.taskId, taskVersion: operation.taskVersion, reason: payload.reason,
         beforeExecute: () => assertOperationGate('delete_task', operation.projectId, { approved: true, revision: intent.mandateRevision }),
@@ -1547,14 +1552,14 @@ export function apply(ctx, config = {}) {
   ])
   // Implemented means a real execution path exists, not that the configured
   // backend, project scope and external integration are ready right now.
-  const IMPLEMENTED_ACTIONS = Object.freeze(new Set(['launch', 'delegate', 'open_pr', 'create_task', 'update_task', 'comment', 'delete_task', 'policy_change']))
+  const IMPLEMENTED_ACTIONS = Object.freeze(new Set(['launch', 'delegate', 'open_pr', 'merge', 'create_task', 'update_task', 'comment', 'delete_task', 'policy_change']))
   const TASK_TARGET_ACTIONS = Object.freeze(new Set(['launch', 'delegate', 'update_task', 'comment', 'delete_task']))
   // Actions that are NOT waiting for an adapter: they are human decisions by
   // design. A merge, a protected-branch push, a secret read, a policy change or
   // a deletion must not become reachable because a checkbox exists. Saying
   // "not implemented yet" for those would be both false and misleading.
   const HUMAN_ONLY_ACTIONS = Object.freeze(new Set([
-    'merge', 'push_branch', 'protected_branch_write', 'secrets', 'schedule',
+    'push_branch', 'protected_branch_write', 'secrets', 'schedule',
   ]))
   // Board-content actions executed through the Task Board public API. The
   // execution config, model and preset stay operator-owned; `done` is
@@ -1577,6 +1582,7 @@ export function apply(ctx, config = {}) {
   }
 
   function operationReadiness(action) {
+    if (action === 'merge' && !nativeMergeReady(ctx)) return { ok: false, reason: 'native_forge_unavailable' }
     if (action === 'delete_task' && !nativeToolsReady(ctx)) return { ok: false, reason: 'native_tool_unavailable' }
     if (TASKBOARD_WRITE_ACTIONS.has(action) && !taskboardWritesReady()) return { ok: false, reason: 'taskboard_writes_unavailable' }
     if (action === 'launch' || action === 'delegate') return backendReadiness()
@@ -1642,7 +1648,7 @@ export function apply(ctx, config = {}) {
         ...capabilityOf(action),
         implemented: IMPLEMENTED_ACTIONS.has(action),
         executor: IMPLEMENTED_ACTIONS.has(action)
-          ? ({ launch: 'worker', delegate: 'worker', open_pr: 'github', delete_task: 'native-taskboard', policy_change: 'project-policy' }[action] ?? 'taskboard') : null,
+          ? ({ launch: 'worker', delegate: 'worker', open_pr: 'github', merge: 'native-forge', delete_task: 'native-taskboard', policy_change: 'project-policy' }[action] ?? 'taskboard') : null,
       }
     }
     // Read/analyse are always possible: diagnostics must survive OFF and Stop.
@@ -3583,7 +3589,20 @@ export function apply(ctx, config = {}) {
           continue
         }
       }
-      const base = operationGate(proposal.action, proposal.projectId)
+      let base = operationGate(proposal.action, proposal.projectId)
+      if (proposal.action === 'merge' && (base.allowed || base.reason === 'approval_required')) {
+        const revision = state.mandate.revision
+        const prepared = await prepareNativeMerge(ctx, {
+          workspace: resolveWorkspace(proposal.projectId), payload: boardPayload,
+          beforeExecute: () => assertOperationGate('merge', proposal.projectId, { approved: true, revision }),
+        })
+        if (!prepared.ok) {
+          refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, reason: prepared.reason })
+          continue
+        }
+        boardPayload = prepared.payload
+        base = operationGate(proposal.action, proposal.projectId)
+      }
       const decision = base
       if (base.reason === 'approval_required') {
         const requested = requestOperationApproval({ ...proposal, payload: boardPayload ?? proposal.payload }, targetTask)

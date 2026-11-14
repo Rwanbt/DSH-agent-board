@@ -55,4 +55,13 @@ Le premier lot ne prétend PAS rendre exécutables les 9 actions précédemment 
 - Preuves : **664/664 tests**, bundle 24 modules reconstruit, syntaxe/smoke/diff-check verts. 6 tests de la passerelle native couvrent actor/preset, absence de l’outil, retargeting hostile, révocation, dépendance différée et échec de nettoyage ; les tests hôte couvrent approbation exacte à usage unique et isolation de la politique de projet. Aucun effet live de suppression n’a été effectué.
 - Revue UX effectuée directement faute de sous-agent/navigateur pilotable : raison d’indisponibilité explicite, validation des dépendances distinguée d’une suppression réussie, portée du réglage de politique nommée. Vérification visuelle live non effectuée.
 
-Restent à raccorder : `schedule`, `push_branch`, `merge`, `protected_branch_write`, `secrets`. Les cases ne seront pas simplement déclarées fonctionnelles sans leurs effets réels et leurs contrôles.
+### Lot 4 — fusion native de PR raccordée
+
+- `merge` est exécuté par le service forge natif de DSH (`ctx.forge.merge`), jamais par un jeton GitHub stocké à part. Aucune fusion « admin » ni contournement de protection de branche.
+- La cible réelle est lue AVANT l’accord humain : dépôt résolu depuis le `remote origin` du projet, numéro de PR, `headSha`, branche de base et `baseSha`, méthode de fusion. Ces valeurs entrent dans le payload haché de l’intention, donc un changement de head, de base ou de dépôt après l’accord donne `forge_stale_change_request` / `forge_project_mismatch` et rien n’est fusionné.
+- Une fusion n’est jamais consentie par le seul niveau : même avec `merge=auto` à L4, une approbation humaine exacte reste requise. La demande affiche le dépôt et la PR.
+- Les préconditions sont vérifiées contre l’instantané natif : PR ouverte et non brouillon, `mergeReady`, mergeability `mergeable`, checks non en échec et non tronqués, revues non tronquées, zéro fil de discussion non résolu et pas de « changes requested ». Un état incomplet refuse par `forge_merge_not_ready` / `forge_snapshot_incomplete`.
+- Un échec de fusion inconnu reste explicite (`forge_merge_unknown`) ; le message amont n’est jamais relayé. `merge` ne déplace aucune carte Task Board vers `done`.
+- Preuves : 6 tests de la passerelle native forge (cible/approbation, head/base/dépôt modifiés, états non fusionnables, révocation après lecture, absence du service) et 2 tests hôte (consentement exact obligatoire en `auto`, head modifié refusé). Suite ciblée 62/62 verte, syntaxe OK. Aucune fusion live n’est revendiquée : service et instantané contrôlés par les tests.
+
+Restent à raccorder : `schedule`, `push_branch`, `protected_branch_write`, `secrets`. Les cases ne seront pas simplement déclarées fonctionnelles sans leurs effets réels et leurs contrôles.
