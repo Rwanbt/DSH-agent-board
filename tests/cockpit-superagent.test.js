@@ -1089,3 +1089,16 @@ test('the self-test panel asks the host on demand and renders every contract che
   staleTree = drawStale()
   assert.match(textOf(staleTree), /restart DSH, then reload/i)
 })
+
+test('settings explain level profiles and let an existing L4 reapply permissions explicitly', () => {
+  const levels = []
+  const props = { superagent: makeInactiveSuperagent(), mandate: makeMandate({ level: 'L4' }),
+    host: makeHost(), onSetLevel: level => levels.push(level) }
+  const tree = render(cockpit.DabSuperagentSettings(props))
+  assert.match(textOf(tree), /initializes permissions/)
+  assert.deepEqual(levels, [], 'rendering persisted L4 does not change permissions')
+  byClass(tree, 'dab-sa-reapply-level')[0].props.onClick()
+  assert.deepEqual(levels, ['L4'])
+  const busy = render(cockpit.DabSuperagentSettings({ ...props, busy: true }))
+  assert.equal(byClass(busy, 'dab-sa-reapply-level')[0].props.disabled, true)
+})

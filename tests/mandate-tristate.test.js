@@ -82,7 +82,11 @@ test('patches merge per key; explicit booleans replace prior mode; modes win sam
   m = applyMandatePatch(m, { actionModes: { comment: 'typo' } }).mandate
   assert.equal(m.actions.comment, false)
   assert.equal(m.actionModes.comment, 'deny')
-  const unchanged = applyMandatePatch(m, { level: 'L2' }).mandate
+  const unchanged = applyMandatePatch(m, { paused: true }).mandate
   assert.deepEqual(unchanged.actionModes, m.actionModes)
   assert.deepEqual(unchanged.actions, m.actions)
+  const supervised = applyMandatePatch(m, { level: 'L2' }).mandate
+  assert.equal(supervised.actionModes.comment, 'ask', 'level selection resets the defaults')
+  assert.equal(supervised.actionModes.launch, 'ask')
+  assert.equal(supervised.actionModes.merge, 'deny')
 })
