@@ -235,7 +235,7 @@ async function boot({ tasks = null, nativeMove = null, docs = {}, level = 'L3' }
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     await rm(projectPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
-  return { made, projectPath, cycle, view, cleanup }
+  return { made, projectPath, cycle, view, callJson, cleanup }
 }
 
 test('NO Task Board: the project documents become work, launch_work opens a real session once', async () => {
@@ -246,6 +246,16 @@ test('NO Task Board: the project documents become work, launch_work opens a real
     const readyId = workItemIdOf({ projectId: 'w1', source: 'adr', title: 'Write the state file through a temp file and a rename' })
     const todoId = workItemIdOf({ projectId: 'w1', source: 'todo', title: 'Add the restart test' })
     const proposedId = workItemIdOf({ projectId: 'w1', source: 'adr', title: 'Extract the scheduler loop into a worker' })
+
+    // The dry run describes the same sources before anything is launched.
+    const dry = await host.callJson('GET', '/dry-run')
+    assert.equal(dry.status, 200, JSON.stringify(dry.body))
+    assert.equal(dry.body.value.work.total, 3, JSON.stringify(dry.body.value.work))
+    assert.equal(dry.body.value.work.ready, 2, JSON.stringify(dry.body.value.work))
+    assert.ok(dry.body.value.work.items.some(item => item.source === 'adr' && item.ready === true))
+    assert.equal(dry.body.value.writes, 0, 'a simulation never writes')
+    assert.equal(host.made.created.filter(options => String(options.sessionId).startsWith('session-agentboard-') && !String(options.sessionId).includes('-operation-')).length, 0,
+      'the dry run opens no session')
 
     const cycle = await host.cycle([
       { id: 'w-1', action: 'launch_work', projectId: 'w1', taskId: null, rationale: 'ADR follow-up', risk: 'low', expectedEffect: 'session', requiresApproval: false, payload: { workItemId: readyId } },
@@ -281,9 +291,10 @@ test('NO Task Board: the project documents become work, launch_work opens a real
     assert.equal(again.body.value.refused[0].reason, 'work_item_completed')
     assert.equal(host.made.created.filter(options => String(options.sessionId).startsWith('session-agentboard-') && !String(options.sessionId).includes('-operation-')).length, 2)
 
-    // The dry run describes the same sources without writing anything.
-    const dry = await host.made.routes.get('/dsh-agent-board/api/v2')
-    assert.ok(dry)
+    // The dry run now reports the honest outcome: everything reached is handled.
+    const afterDry = await host.callJson('GET', '/dry-run')
+    assert.equal(afterDry.body.value.work.ready, 0, JSON.stringify(afterDry.body.value.work))
+    assert.equal(afterDry.body.value.work.items.find(item => item.id === proposedId).reason, 'needs_human_decision:adr_not_accepted:proposed')
   } finally {
     await host.cleanup()
   }
