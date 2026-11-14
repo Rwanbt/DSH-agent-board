@@ -268,7 +268,8 @@ test('host gates forge writes behind the explicit opt-in and the mandate, and is
     assert.equal(state.capabilities.create_task.state, 'unavailable', JSON.stringify(state.capabilities.create_task))
     assert.equal(state.capabilities.create_task.reason, 'taskboard_writes_unavailable')
     assert.equal(state.capabilities.open_pr.state, 'unavailable')
-    assert.equal(state.capabilities.open_pr.reason, 'no_adapter_for_action')
+    assert.equal(state.capabilities.open_pr.reason, 'level_too_low')
+    assert.equal(state.capabilities.open_pr.implemented, true)
 
     const created = await callJson(made.routes, 'POST', '/forge/issue', { projectId: 'w1', title: 'Issue réelle (test)', body: 'corps', idempotencyKey: 'host-1' })
     assert.equal(created.status, 201, JSON.stringify(created.body))

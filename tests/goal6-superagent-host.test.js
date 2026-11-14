@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
+import { execFileSync } from 'node:child_process'
 
 import { apply } from '../src/host/index.js'
 import { applyAgentSetup, secureAgentContext } from './fixtures/secure-agent-context.js'
@@ -115,6 +116,7 @@ function makeCtx() {
           return followup(message)
         }
         handles.set(options.sessionId, agent)
+        if (options.sessionId.startsWith('session-agentboard-')) await control.beforeWorkerCreated?.()
         return { agent, dispose: async () => { security.state.disposed = true; handles.delete(options.sessionId) } }
       },
       get(id) {
@@ -176,6 +178,7 @@ function installFetch({ isolated = false } = {}) {
     const target = String(url)
     const method = init?.method ?? 'GET'
     calls.push({ url: target, method, headers: init?.headers, body: init?.body })
+    if (target.startsWith('https://api.github.com/') && control.github) return control.github(target, init)
     if (target.includes('/dsh-taskboard/state')) {
       return reply({ ok: true, value: { revision: 9, tasks: structuredClone(tasks) } })
     }
@@ -193,14 +196,23 @@ function installFetch({ isolated = false } = {}) {
   const restore = () => { globalThis.fetch = previous }
   restore.calls = calls
   restore.tasks = tasks
+  restore.control = control
   return restore
 }
 
-async function boot({ home }) {
+async function boot({ home, config = {}, workspacePath }) {
   const made = makeCtx()
+  if (workspacePath) {
+    const original = made.ctx.workspaceRegistry.get
+    made.ctx.workspaceRegistry.get = id => {
+      const workspace = original(id)
+      return workspace ? { ...workspace, path: workspacePath } : workspace
+    }
+  }
   const dispose = apply(made.ctx, {
     mandate: MANDATE,
     baseUrl: 'http://127.0.0.1:1',
+    ...config,
   })
   await callJson(made.routes, 'GET', '/state')
   await waitFor(async () => (await callJson(made.routes, 'GET', '/state')).body?.value?.host?.models?.discovered === true)
@@ -625,14 +637,25 @@ test('Super Agent: a semantic directive conflict becomes ONE arbitration decisio
   }
 })
 
-async function withAssessmentHost(run) {
+async function withAssessmentHost(run, { forge = false } = {}) {
   const home = await mkdtemp(join(tmpdir(), 'dab-assessment-security-'))
   const previousHome = process.env.DSH_HOME
   const previousToken = process.env.DSH_TASKBOARD_PUBLIC_TOKEN
   process.env.DSH_HOME = home
   process.env.DSH_TASKBOARD_PUBLIC_TOKEN = 'test-assessment-token'
   const transport = installFetch({ isolated: true })
-  const host = await boot({ home })
+  const workspacePath = forge ? join(home, 'project') : undefined
+  if (forge) {
+    execFileSync('git', ['init', workspacePath], { stdio: 'ignore' })
+    execFileSync('git', ['-C', workspacePath, 'remote', 'add', 'origin', 'https://github.com/owner/project.git'], { stdio: 'ignore' })
+    transport.control.github = (_url, init) => ({ ok: true, status: 200,
+      json: async () => init?.method === 'POST'
+        ? { number: 42, title: 'Test PR', html_url: 'https://github.com/owner/project/pull/42', head: { ref: 'feat/test' }, base: { ref: 'main' } } : [],
+    })
+  }
+  const host = await boot({ home, workspacePath,
+    config: forge ? { githubRepository: 'owner/project', allowGithubWrites: true } : {},
+  })
   try {
     await callJson(host.routes, 'POST', '/mode', { mode: 'autonomous' })
     await callJson(host.routes, 'POST', '/superagent/model', { provider: 'fake-provider', model: 'fake-model' })
@@ -772,4 +795,128 @@ test('A06: missing confinement APIs make the assessment unavailable before any m
     assert.match(state.superagent.runtime.reason, /security_service_unavailable:tools/)
     assert.deepEqual(state.assignments, [])
   })
+})
+
+test('delegate launches one confined canonical worker and refuses foreign tasks and duplicates', async () => {
+  await withAssessmentHost(async ({ host, cycle, view }) => {
+    await callJson(host.routes, 'POST', '/mandate/level', { level: 'L4' })
+    const result = await cycle([
+      commentProposal({ id: 'delegate-foreign', action: 'delegate', taskId: 't3', payload: null }),
+      commentProposal({ id: 'delegate-valid', action: 'delegate', payload: null }),
+      commentProposal({ id: 'delegate-duplicate', action: 'delegate', payload: null }),
+    ])
+    assert.equal(result.status, 200, JSON.stringify(result.body))
+    assert.equal(result.body.value.refused[0].reason, 'task_project_mismatch')
+    const effects = result.body.value.executed
+    assert.equal(effects[0].ok, true, JSON.stringify(effects))
+    assert.equal(effects[0].action, 'delegate')
+    assert.equal(effects[1].ok, false)
+    assert.equal(effects[1].reason, 'duplicate_assignment')
+    assert.equal(host.created.filter(entry => entry.sessionId.startsWith('session-agentboard-')).length, 1)
+    assert.equal((await view()).assignments[0].authorizationAction, 'delegate')
+  })
+})
+
+test('delegate requires launch permission too; supervised delegation uses a bound single-use decision', async () => {
+  await withAssessmentHost(async ({ host, cycle, view }) => {
+    await callJson(host.routes, 'POST', '/mandate', { level: 'L4', actionModes: { launch: 'deny' } })
+    const denied = await cycle([commentProposal({ action: 'delegate', payload: null })])
+    assert.equal(denied.body.value.refused[0].reason, 'action_disabled')
+    assert.equal((await view()).assignments.length, 0)
+    await callJson(host.routes, 'POST', '/mandate/level', { level: 'L2' })
+    const proposed = await cycle([commentProposal({ action: 'delegate', payload: null })])
+    assert.equal(proposed.body.value.refused[0].reason, 'approval_required')
+    // Repeated pending proposals are coalesced as SUCCESSFUL requests, not an
+    // undefined refusal reason; the dedupe return has the same shape as create.
+    const repeated = await cycle([commentProposal({ action: 'delegate', payload: null })])
+    assert.equal(repeated.body.value.refused[0].reason, 'approval_required')
+    const decisions = (await view()).superagent.decisions.pending.filter(entry => entry.intent?.action === 'delegate')
+    assert.equal(decisions.length, 1)
+    const approved = await callJson(host.routes, 'POST', `/superagent/decisions/${decisions[0].id}/answer`, { optionId: 'approve' })
+    assert.equal(approved.body.execution.ok, true, JSON.stringify(approved.body))
+    assert.equal(host.created.filter(entry => entry.sessionId.startsWith('session-agentboard-')).length, 1)
+    await callJson(host.routes, 'POST', `/superagent/decisions/${decisions[0].id}/answer`, { optionId: 'approve' })
+    assert.equal(host.created.filter(entry => entry.sessionId.startsWith('session-agentboard-')).length, 1)
+  })
+})
+
+const prProposal = (overrides = {}) => commentProposal({ id: 'open-test-pr', action: 'open_pr', taskId: null,
+  payload: { title: 'Test PR', body: 'Verified change', head: 'feat/test', base: 'main' }, ...overrides })
+
+test('open_pr reaches the configured forge automatically with project binding and deduplication', async () => {
+  await withAssessmentHost(async ({ host, cycle, view, transport }) => {
+    await callJson(host.routes, 'POST', '/mandate/level', { level: 'L4' })
+    const capabilities = (await view()).capabilities
+    assert.equal(capabilities.open_pr.implemented, true)
+    assert.equal(capabilities.open_pr.state, 'available')
+    const first = await cycle([prProposal()])
+    assert.equal(first.body.value.executed[0].ok, true, JSON.stringify(first.body))
+    assert.equal(first.body.value.executed[0].value.pull.id, '42')
+    await cycle([prProposal()])
+    const writes = transport.calls.filter(entry => entry.method === 'POST' && entry.url.startsWith('https://api.github.com/'))
+    assert.equal(writes.length, 1)
+    assert.equal(writes[0].url, 'https://api.github.com/repos/owner/project/pulls')
+    assert.equal(JSON.parse(writes[0].body).head, 'feat/test')
+    // A grant to this project cannot write into the global adapter's repository
+    // when the actual local origin no longer proves that ownership.
+    const workspace = host.ctx.workspaceRegistry.get('w1')
+    execFileSync('git', ['-C', workspace.path, 'remote', 'set-url', 'origin', 'https://github.com/other/project.git'], { stdio: 'ignore' })
+    const mismatch = await cycle([prProposal({ id: 'foreign-pr' })])
+    assert.equal(mismatch.body.value.refused[0].reason, 'forge_project_mismatch')
+    assert.equal(transport.calls.filter(entry => entry.method === 'POST' && entry.url.startsWith('https://api.github.com/')).length, 1)
+  }, { forge: true })
+})
+
+test('open_pr approval executes exact saved bytes once and refuses a changed repository binding', async () => {
+  await withAssessmentHost(async ({ host, cycle, view, transport }) => {
+    await callJson(host.routes, 'POST', '/mandate/level', { level: 'L2' })
+    const pending = await cycle([prProposal()])
+    assert.equal(pending.body.value.refused[0].reason, 'approval_required')
+    const decision = (await view()).superagent.decisions.pending.find(entry => entry.intent?.action === 'open_pr')
+    assert.ok(decision)
+    assert.match(decision.context, /owner\/project/)
+    const workspace = host.ctx.workspaceRegistry.get('w1')
+    execFileSync('git', ['-C', workspace.path, 'remote', 'set-url', 'origin', 'https://github.com/other/project.git'], { stdio: 'ignore' })
+    const refused = await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(refused.body.execution.reason, 'forge_project_mismatch')
+    assert.equal(transport.calls.filter(entry => entry.method === 'POST' && entry.url.startsWith('https://api.github.com/')).length, 0)
+    execFileSync('git', ['-C', workspace.path, 'remote', 'set-url', 'origin', 'https://github.com/owner/project.git'], { stdio: 'ignore' })
+    const approved = await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(approved.body.execution.ok, true, JSON.stringify(approved.body))
+    const writes = () => transport.calls.filter(entry => entry.method === 'POST' && entry.url.startsWith('https://api.github.com/'))
+    assert.equal(writes().length, 1)
+    assert.equal(JSON.parse(writes()[0].body).title, decision.operation.payload.title)
+    await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(writes().length, 1)
+  }, { forge: true })
+})
+
+test('revoking delegation during worker creation sends no work and disposes the unused session', async () => {
+  await withAssessmentHost(async ({ host, cycle }) => {
+    await callJson(host.routes, 'POST', '/mandate/level', { level: 'L4' })
+    host.control.beforeWorkerCreated = async () => {
+      await callJson(host.routes, 'POST', '/mandate', { actionModes: { delegate: 'deny' } })
+    }
+    const result = await cycle([commentProposal({ action: 'delegate', payload: null })])
+    assert.equal(result.body.value.executed[0].ok, false, JSON.stringify(result.body))
+    const worker = host.created.find(entry => entry.sessionId.startsWith('session-agentboard-'))
+    assert.ok(worker)
+    assert.equal(host.messages.filter(entry => entry.sessionId === worker.sessionId).length, 0)
+    assert.equal(host.ctx.agents.get(worker.sessionId), undefined)
+  })
+})
+
+test('Stop while GitHub lookup is awaiting prevents the PR POST', async () => {
+  await withAssessmentHost(async ({ host, cycle, transport }) => {
+    await callJson(host.routes, 'POST', '/mandate/level', { level: 'L4' })
+    transport.control.github = async (_url, init) => {
+      assert.notEqual(init?.method, 'POST', 'no effect is permitted after Stop')
+      await callJson(host.routes, 'POST', '/stop', {})
+      return { ok: true, status: 200, json: async () => [] }
+    }
+    const result = await cycle([prProposal()])
+    assert.equal(result.body.value.executed[0].ok, false)
+    assert.equal(result.body.value.executed[0].reason, 'stopped_by_operator')
+    assert.equal(transport.calls.filter(entry => entry.method === 'POST' && entry.url.startsWith('https://api.github.com/')).length, 0)
+  }, { forge: true })
 })

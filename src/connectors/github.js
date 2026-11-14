@@ -242,7 +242,7 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
     return { comment, created: true, idempotent: false }
   }
 
-  async function openPullOnce({ title, body = '', head, base }, idempotencyKey) {
+  async function openPullOnce({ title, body = '', head, base }, idempotencyKey, beforeWrite) {
     const marker = markerOf(idempotencyKey)
     const cached = idempotency.pulls.get(head)
     if (cached !== undefined) return { pull: cached, created: false, idempotent: true }
@@ -252,6 +252,9 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
       idempotency.pulls.set(head, pull)
       return { pull, created: false, idempotent: true }
     }
+    // Lookup awaited external I/O: Stop/revocation must still win immediately
+    // before the first effect. The host supplies a synchronous deterministic gate.
+    beforeWrite?.()
     const { body: created } = await request(`${API}/repos/${repository}/pulls`, {
       method: 'POST',
       body: { title: String(title ?? '').slice(0, 240), head, base, body: `${String(body).slice(0, 60_000)}\n\n${marker}`.trim() },
@@ -328,7 +331,7 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
      * Open a pull request. Never merges. A retry for the same head branch
      * returns the already-open pull request instead of creating a second one.
      */
-    async openPullRequest(payload = {}, { idempotencyKey } = {}) {
+    async openPullRequest(payload = {}, { idempotencyKey, beforeWrite } = {}) {
       requireWrites('openPullRequest')
       if (typeof idempotencyKey !== 'string' || idempotencyKey === '') throw new AdapterError('github: idempotencyKey is required', { code: 'invalid_input', adapterId: 'github' })
       const head = payload?.head
@@ -338,7 +341,7 @@ export function createGithubAdapter({ repository, token = process.env.GITHUB_TOK
       markerOf(idempotencyKey)
       // One open PR per head branch: the in-flight key is the branch, so two
       // concurrent callers cannot both pass the open-PR lookup.
-      return once(`pull:${head}`, () => openPullOnce(payload, idempotencyKey))
+      return once(`pull:${head}`, () => openPullOnce(payload, idempotencyKey, beforeWrite))
     },
     // Contract-named aliases: `defineAdapter` validates a declared capability
     // against a method of the same name. They delegate to the explicit methods.

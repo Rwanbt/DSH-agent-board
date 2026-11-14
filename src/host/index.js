@@ -54,7 +54,7 @@ import { ASSESSMENT_SCHEMA_VERSION, buildAssessmentPrompt, buildRepairPrompt, pa
 import { buildPortfolio } from '../plan/portfolio.js'
 import { fairOrder } from '../plan/scheduler.js'
 import { createSecuredAgent, effectiveWorkerPermission, secureAssessmentAgent, secureWorkerAgent } from './security.js'
-import { sanitizeBoardPayload } from '../contracts/board-writes.js'
+import { sanitizeActionPayload } from '../contracts/action-payloads.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -1364,7 +1364,7 @@ export function apply(ctx, config = {}) {
   }
 
   /** The ONE call every mutating path makes. */
-  function effectiveFor(action, { projectId = null, integration = 'board', approved = false } = {}) {
+  function effectiveFor(action, { projectId = null, integration = 'board', approved = false, running = countRunning(state.assignments) } = {}) {
     return effectivePolicyOf({
       mandate: state.mandate,
       action,
@@ -1372,14 +1372,21 @@ export function apply(ctx, config = {}) {
       integration,
       mode: state.mode,
       stopped: state.stoppedAt !== null,
-      running: countRunning(state.assignments),
+      running,
       maxConcurrent: state.policy.maxConcurrent,
       approved,
     })
   }
 
-  function assertOperationGate(action, projectId, { approved = false, revision = state.mandate.revision } = {}) {
-    const gate = effectiveFor(action, { projectId, approved })
+  function operationGate(action, projectId, { approved = false, running } = {}) {
+    const gate = effectiveFor(action, { projectId, approved, running })
+    // Delegating a canonical task creates a worker: both grants must hold.
+    return action === 'delegate' && gate.allowed
+      ? effectiveFor('launch', { projectId, approved, running }) : gate
+  }
+
+  function assertOperationGate(action, projectId, { approved = false, revision = state.mandate.revision, running } = {}) {
+    const gate = operationGate(action, projectId, { approved, running })
     const reason = superagentHardStop() ?? (!gate.allowed ? gate.reason : null)
       ?? (revision !== state.mandate.revision ? 'mandate_changed' : null)
     if (reason) throw Object.assign(new Error(reason), { code: reason })
@@ -1390,8 +1397,14 @@ export function apply(ctx, config = {}) {
     const agent = ensureSuperAgent()
     // The operation is what gets replayed after the human answer: store the
     // canonical payload, never the raw model object.
-    const sanitized = proposal.action === 'launch' ? { ok: true, payload: {} } : sanitizeBoardPayload(proposal.action, proposal.payload)
+    const sanitized = sanitizeActionPayload(proposal.action, proposal.payload)
     if (!sanitized.ok) return { ok: false, reason: sanitized.reason, fields: sanitized.fields ?? [] }
+    if (proposal.action === 'open_pr') {
+      if (sanitized.payload.repository && sanitized.payload.repository !== githubRepository) return { ok: false, reason: 'forge_project_mismatch' }
+      // The repository is part of the exact approved hash, not mutable host
+      // configuration consulted only at replay time (including after restart).
+      sanitized.payload.repository = githubRepository
+    }
     const expiresAt = Date.now() + 60 * 60 * 1000
     const operation = {
       action: proposal.action, projectId: proposal.projectId,
@@ -1410,12 +1423,12 @@ export function apply(ctx, config = {}) {
     const existing = agent.decisions.find(entry => entry.intent && entry.status === 'pending'
       && entry.expiresAt > Date.now()
       && approvalIntentFingerprint({ ...entry.intent, expiry: 1 }) === stableKey)
-    if (existing) return existing
+    if (existing) return { ok: true, decision: existing }
     const result = proposeDecision(agent.decisions, {
       kind: 'approval', projectId: operation.projectId, action: operation.action,
       taskIds: operation.taskId ? [operation.taskId] : [], intent, operation, expiresAt,
       title: `Autoriser une fois : ${operation.action}`,
-      context: `${proposal.rationale ?? ''}\nProjet : ${operation.projectId}\nTâche : ${operation.taskId ?? 'nouvelle tâche'}\nContenu : ${JSON.stringify(operation.payload)}`,
+      context: `${proposal.rationale ?? ''}\nProjet : ${operation.projectId}${operation.action === 'open_pr' ? `\nDépôt GitHub : ${githubRepository}` : ''}\nTâche : ${operation.taskId ?? 'nouvelle tâche'}\nContenu : ${JSON.stringify(operation.payload)}`,
       recommendation: proposal.expectedEffect ?? '', provenance: 'policy',
       dedupeKey: `operation:${approvalIntentFingerprint(stable)}`,
       options: [{ id: 'approve', label: 'Autoriser une fois', effect: 'approve' }, { id: 'reject', label: 'Refuser', effect: 'reject' }],
@@ -1442,16 +1455,22 @@ export function apply(ctx, config = {}) {
       if (!task || task.workspaceId !== operation.projectId) return { ok: false, reason: 'task_project_mismatch' }
       if (task.version !== operation.taskVersion) return { ok: false, reason: 'version_conflict' }
     }
-    const gate = effectiveFor(operation.action, { projectId: operation.projectId, approved: true })
+    const gate = operationGate(operation.action, operation.projectId, { approved: true })
     if (!gate.allowed) return { ok: false, reason: gate.reason }
-    if (operation.action !== 'launch' && !taskboardWritesReady()) return { ok: false, reason: 'taskboard_writes_unavailable' }
+    const ready = operationReadiness(operation.action)
+    if (!ready.ok) return ready
+    if (operation.action === 'open_pr') {
+      if (operation.payload?.repository !== githubRepository) return { ok: false, reason: 'forge_project_mismatch' }
+      const binding = await verifyForgeProject(operation.projectId)
+      if (!binding.ok) return binding
+    }
     if (superagentHardStop() !== null) return { ok: false, reason: superagentHardStop() }
     // Re-apply the owner-field allowlist to the STORED bytes: an operation is a
     // model-authored payload replayed later, and an owner field (`permission`,
     // `model`, `execution`, `isolation`) must never ride an approved write.
     // Refusing — not dropping — keeps the executed object identical to the one
     // the operator approved, and does NOT burn the approval.
-    const sanitized = operation.action === 'launch' ? { ok: true, payload: {} } : sanitizeBoardPayload(operation.action, operation.payload)
+    const sanitized = sanitizeActionPayload(operation.action, operation.payload)
     if (!sanitized.ok) return { ok: false, reason: sanitized.reason, fields: sanitized.fields ?? [] }
     const payload = sanitized.payload
     if (operation.action === 'create_task' && (typeof payload.title !== 'string' || payload.title.trim() === '')) {
@@ -1468,13 +1487,17 @@ export function apply(ctx, config = {}) {
     if (typeof stored.usedAt === 'number') return { ok: false, reason: 'approval_consumed' }
     stored.usedAt = Date.now()
     await store.write(state)
-    const finalGate = effectiveFor(operation.action, { projectId: operation.projectId, approved: true })
+    const finalGate = operationGate(operation.action, operation.projectId, { approved: true })
     if (!finalGate.allowed || intent.mandateRevision !== state.mandate.revision || superagentHardStop() !== null) {
       return { ok: false, reason: superagentHardStop() ?? (!finalGate.allowed ? finalGate.reason : 'mandate_changed') }
     }
     let result
     try {
-      if (operation.action === 'launch') result = await launchTask({ task, source: 'approval' })
+      if (operation.action === 'launch' || operation.action === 'delegate') result = await launchTask({ task, source: 'approval', authorizationAction: operation.action })
+      else if (operation.action === 'open_pr') result = { ok: true, value: await connectors.get('github').openPullRequest(payload, {
+        idempotencyKey: `${operation.projectId}:pr:${intent.payloadHash}`,
+        beforeWrite: () => assertOperationGate('open_pr', operation.projectId, { approved: true, revision: intent.mandateRevision }),
+      }) }
       else if (operation.action === 'create_task') result = { ok: true, value: await adapter.create({ ...payload, workspaceId: operation.projectId }) }
       else if (operation.action === 'update_task') result = { ok: true, value: await adapter.update(operation.taskId, { ...payload, ifVersion: operation.taskVersion }, {
         beforeWrite: () => assertOperationGate(operation.action, operation.projectId, { approved: true, revision: intent.mandateRevision }),
@@ -1494,11 +1517,9 @@ export function apply(ctx, config = {}) {
     'delegate', 'launch', 'create_task', 'update_task', 'comment', 'open_pr', 'merge',
     'push_branch', 'delete_task', 'schedule', 'protected_branch_write', 'secrets', 'policy_change',
   ])
-  // Only `launch` has an executor in this build. Declaring the others "available"
-  // because the mandate allows them was a fiction: the deterministic gate would
-  // authorize them and then nothing would happen. They are published as
-  // unavailable with an explicit reason until a real adapter exists.
-  const IMPLEMENTED_ACTIONS = Object.freeze(new Set(['launch', 'create_task', 'update_task', 'comment']))
+  // Implemented means a real execution path exists, not that the configured
+  // backend, project scope and external integration are ready right now.
+  const IMPLEMENTED_ACTIONS = Object.freeze(new Set(['launch', 'delegate', 'open_pr', 'create_task', 'update_task', 'comment']))
   // Actions that are NOT waiting for an adapter: they are human decisions by
   // design. A merge, a protected-branch push, a secret read, a policy change or
   // a deletion must not become reachable because a checkbox exists. Saying
@@ -1526,6 +1547,34 @@ export function apply(ctx, config = {}) {
     return { ok: true, reason: null }
   }
 
+  function operationReadiness(action) {
+    if (TASKBOARD_WRITE_ACTIONS.has(action) && !taskboardWritesReady()) return { ok: false, reason: 'taskboard_writes_unavailable' }
+    if (action === 'launch' || action === 'delegate') return backendReadiness()
+    if (action === 'open_pr') {
+      const forge = connectors.get('github')?.describe?.()
+      if (forge?.status !== 'available') return { ok: false, reason: 'github_not_configured' }
+      if (forge.capabilities?.open_pr !== true) return { ok: false, reason: 'github_writes_disabled' }
+    }
+    return { ok: true }
+  }
+
+  /** Bind a forge operation to the selected workspace's REAL repository. A
+   * global GitHub adapter must never turn project A's grant into a write in B.
+   * Read-only git argv, bounded; no credentials, URLs or stderr in the result.
+   */
+  async function verifyForgeProject(projectId) {
+    const workspace = resolveWorkspace(projectId)
+    if (!workspace?.path) return { ok: false, reason: 'unknown_project' }
+    try {
+      const { stdout } = await execFileAsync('git', ['-C', workspace.path, 'remote', 'get-url', 'origin'], { timeout: 3000, maxBuffer: 8192, windowsHide: true })
+      const remote = stdout.trim()
+      const match = remote.match(/^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([^\s/]+\/[^\s/]+?)\/?$/i)
+      const repository = match?.[1]?.replace(/\.git$/i, '')
+      return repository && repository.toLowerCase() === String(githubRepository ?? '').toLowerCase()
+        ? { ok: true } : { ok: false, reason: 'forge_project_mismatch' }
+    } catch { return { ok: false, reason: 'forge_project_unverifiable' } }
+  }
+
   /**
    * Truthful capability matrix (defect F2): `available` only when a real adapter
    * exists AND the gate would allow the action right now; `gated` when only a
@@ -1540,23 +1589,17 @@ export function apply(ctx, config = {}) {
         ? { state: 'unavailable', reason: 'human_only_action', source: 'design' }
         : { state: 'unavailable', reason: 'no_adapter_for_action', source: 'host' }
     }
-    if (TASKBOARD_WRITE_ACTIONS.has(action) && !taskboardWritesReady()) {
-      return { state: 'unavailable', reason: 'taskboard_writes_unavailable', source: 'integration' }
-    }
-    if (action === 'launch') {
-      const backend = backendReadiness()
-      if (!backend.ok) return { state: 'unavailable', reason: backend.reason, source: 'backend' }
-    }
-    const integration = 'board'
+    const ready = operationReadiness(action)
+    if (!ready.ok) return { state: 'unavailable', reason: ready.reason, source: 'integration' }
     const mandate = state.mandate
     const scopeProjects = mandate?.scopeMode === 'all'
       ? workspaceList().map(workspace => String(workspace.id))
       : (Array.isArray(mandate?.selectedWorkspaces) ? mandate.selectedWorkspaces : [])
     if (scopeProjects.length === 0) {
-      const decision = effectiveFor(action, { integration })
+      const decision = operationGate(action, undefined)
       return { state: decision.allowed ? 'available' : (decision.requiresApproval || decision.reason === 'requires_configuration' ? 'gated' : 'unavailable'), reason: decision.reason, source: 'mandate' }
     }
-    const decisions = scopeProjects.map(projectId => effectiveFor(action, { projectId, integration }))
+    const decisions = scopeProjects.map(projectId => operationGate(action, projectId))
     if (decisions.some(decision => decision.allowed)) return { state: 'available', reason: 'allowed', source: 'mandate' }
     const gated = decisions.find(decision => decision.requiresApproval || decision.reason === 'requires_configuration' || decision.reason === 'project_disabled')
     return { state: gated !== undefined ? 'gated' : 'unavailable', reason: (gated ?? decisions[0]).reason, source: 'mandate' }
@@ -1568,7 +1611,8 @@ export function apply(ctx, config = {}) {
       out[action] = {
         ...capabilityOf(action),
         implemented: IMPLEMENTED_ACTIONS.has(action),
-        executor: IMPLEMENTED_ACTIONS.has(action) ? (action === 'launch' ? 'worker' : 'taskboard') : null,
+        executor: IMPLEMENTED_ACTIONS.has(action)
+          ? (action === 'launch' || action === 'delegate' ? 'worker' : action === 'open_pr' ? 'github' : 'taskboard') : null,
       }
     }
     // Read/analyse are always possible: diagnostics must survive OFF and Stop.
@@ -1856,7 +1900,7 @@ export function apply(ctx, config = {}) {
     ].join('\n')
   }
 
-  async function createSession({ task, assignment, message, sessionId: fixedSessionId = null, cwd = null }) {
+  async function createSession({ task, assignment, message, sessionId: fixedSessionId = null, cwd = null, beforeWork = null }) {
     const workspace = resolveWorkspace(task.workspaceId)
     if (workspace === undefined) {
       throw new Error(`unknown workspace ${JSON.stringify(task.workspaceId)}: the board only launches inside a registered DSH workspace`)
@@ -1895,6 +1939,13 @@ export function apply(ctx, config = {}) {
       content: [{ type: 'text', text }],
       source: { kind: sourceKind },
     })
+    try {
+      beforeWork?.()
+    } catch (error) {
+      try { handle.agent.cancel?.({ kind: 'user' }) } catch { /* dispose below */ }
+      try { await handle.dispose?.() } catch { /* original refusal remains */ }
+      throw error
+    }
     handle.agent.inject(mkMessage(`Agent Board framing — ${task.id} — ${truncate(task.title, 120)}`, 'dsh-agent-board'))
     handle.agent.followup(mkMessage(message, 'user'))
     return { sessionId, handle }
@@ -1944,7 +1995,11 @@ export function apply(ctx, config = {}) {
     return auth
   }
 
-  async function launchTask({ task, proposalId = null, source = 'tick' }) {
+  async function launchTask({ task, proposalId = null, source = 'tick', authorizationAction = 'launch' }) {
+    if (authorizationAction === 'delegate') {
+      const delegated = operationGate('delegate', String(task?.workspaceId ?? ''), { approved: source === 'approval' })
+      if (!delegated.allowed) return { ok: false, reason: delegated.reason }
+    }
     const preflight = preflightLaunch(task, { source })
     const auth = preflight.ok ? authorizeLaunch(task, { source }) : preflight
     if (!auth.ok) {
@@ -2013,6 +2068,7 @@ export function apply(ctx, config = {}) {
       workspaceId: task.workspaceId,
       attempt,
       idempotencyKey: key,
+      authorizationAction,
       model: routeForTask(task),
       backend,
       executionId: null,
@@ -2036,6 +2092,13 @@ export function apply(ctx, config = {}) {
       requestedBy: delegation.requestedBy,
     }
     state.assignments.push(assignment)
+    const authorizationRevision = state.mandate.revision
+    // The reservation already occupies its slot. Revalidate after creation /
+    // attachment without counting our own slot twice; revocation sends no work.
+    const beforeWork = authorizationAction === 'delegate' ? () => assertOperationGate('delegate', String(task.workspaceId), {
+      approved: source === 'approval', revision: authorizationRevision,
+      running: Math.max(0, countRunning(state.assignments) - (ACTIVE_STATUSES.includes(assignment.status) ? 1 : 0)),
+    }) : null
     // Count the launch against the operator's budget in the SAME step that makes
     // the assignment durable: a refused launch never consumes a slot. A launch
     // also issues one provider request, and both ceilings are real because the
@@ -2109,9 +2172,10 @@ export function apply(ctx, config = {}) {
           message: buildLaunchBody(task, assignment),
           epochAtLaunch,
           expectedVersion: Number.isInteger(Number(task.version)) ? Number(task.version) : null,
+          beforeWork,
         })
       }
-      const { handle } = await createSession({ task, assignment, message: buildLaunchBody(task, assignment), sessionId })
+      const { handle } = await createSession({ task, assignment, message: buildLaunchBody(task, assignment), sessionId, beforeWork })
       // Stop during launch: no session may survive an operator stop that landed
       // while `ctx.agents.create` was in flight.
       if (state.stopEpoch !== epochAtLaunch || isStopped() || state.mode === MODES.OFF) {
@@ -2164,7 +2228,7 @@ export function apply(ctx, config = {}) {
    * Every exit path releases the lease when no session was attached: a lease
    * without a release would hold a claim for ever.
    */
-  async function runContractAttempt({ task, assignment, sessionId, message, epochAtLaunch, expectedVersion = null, source = 'launch' }) {
+  async function runContractAttempt({ task, assignment, sessionId, message, epochAtLaunch, expectedVersion = null, source = 'launch', beforeWork = null }) {
     const route = assignment.model ?? routeForTask(task)
     const priorExecutionId = (() => {
       const prior = state.assignments
@@ -2239,7 +2303,7 @@ export function apply(ctx, config = {}) {
       return { ok: assignment.status === LEASE_STATUS.DONE, assignmentId: assignment.id, sessionId, settled: assignment.status }
     }
     try {
-      const created = await createSession({ task, assignment, message, sessionId, cwd: workdir })
+      const created = await createSession({ task, assignment, message, sessionId, cwd: workdir, beforeWork })
       handle = created.handle
       // A Stop, a watchdog or a completed turn may have DECIDED this attempt while
       // `ctx.agents.create` was in flight. That decision wins: never resurrect a
@@ -3443,7 +3507,7 @@ export function apply(ctx, config = {}) {
       }
       // A model-supplied project id is never proof of a task's ownership.
       const targetTask = typeof proposal.taskId === 'string' ? tasks.find(task => task.id === proposal.taskId) : null
-      if (proposal.action === 'launch' || proposal.action === 'update_task' || proposal.action === 'comment') {
+      if (proposal.action === 'launch' || proposal.action === 'delegate' || proposal.action === 'update_task' || proposal.action === 'comment') {
         if (!targetTask || String(targetTask.workspaceId ?? '') !== proposal.projectId) {
           refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, taskId: proposal.taskId ?? null, reason: targetTask ? 'task_project_mismatch' : 'task_not_found' })
           continue
@@ -3459,8 +3523,8 @@ export function apply(ctx, config = {}) {
       // (`permission`, `model`, `execution`, `isolation`, `status`) are refused,
       // never silently dropped: the executed object must stay the displayed one.
       let boardPayload = null
-      if (TASKBOARD_WRITE_ACTIONS.has(proposal.action)) {
-        const sanitized = sanitizeBoardPayload(proposal.action, proposal.payload)
+      if (IMPLEMENTED_ACTIONS.has(proposal.action)) {
+        const sanitized = sanitizeActionPayload(proposal.action, proposal.payload)
         if (!sanitized.ok) {
           refused.push({
             id: proposal.id, action: proposal.action, projectId: proposal.projectId,
@@ -3469,8 +3533,27 @@ export function apply(ctx, config = {}) {
           continue
         }
         boardPayload = sanitized.payload
+        if (proposal.action === 'open_pr') {
+          if (boardPayload.repository && boardPayload.repository !== githubRepository) {
+            refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, reason: 'forge_project_mismatch' })
+            continue
+          }
+          boardPayload.repository = githubRepository
+        }
       }
-      const base = effectiveFor(proposal.action, { projectId: proposal.projectId })
+      const ready = operationReadiness(proposal.action)
+      if (!ready.ok) {
+        refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, reason: ready.reason })
+        continue
+      }
+      if (proposal.action === 'open_pr') {
+        const binding = await verifyForgeProject(proposal.projectId)
+        if (!binding.ok) {
+          refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, reason: binding.reason })
+          continue
+        }
+      }
+      const base = operationGate(proposal.action, proposal.projectId)
       const decision = base
       if (base.reason === 'approval_required') {
         const requested = requestOperationApproval({ ...proposal, payload: boardPayload ?? proposal.payload }, targetTask)
@@ -3487,14 +3570,28 @@ export function apply(ctx, config = {}) {
         continue
       }
       authorized.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, taskId: proposal.taskId ?? null })
-      if (proposal.action === 'launch' && typeof proposal.taskId === 'string') {
+      if ((proposal.action === 'launch' || proposal.action === 'delegate') && typeof proposal.taskId === 'string') {
         const task = tasks.find(entry => entry.id === proposal.taskId)
         if (task === undefined) {
           executed.push({ proposalId: proposal.id, ok: false, reason: 'task_not_found' })
           continue
         }
-        const launched = await launchTask({ task, source: 'superagent' })
-        executed.push({ proposalId: proposal.id, taskId: task.id, ...launched })
+        const launched = await launchTask({ task, source: 'superagent', authorizationAction: proposal.action })
+        executed.push({ proposalId: proposal.id, taskId: task.id, action: proposal.action, ...launched })
+      } else if (proposal.action === 'open_pr') {
+        try {
+          const binding = await verifyForgeProject(proposal.projectId)
+          if (!binding.ok) throw Object.assign(new Error(binding.reason), { code: binding.reason })
+          assertOperationGate('open_pr', proposal.projectId)
+          const revision = state.mandate.revision
+          const value = await connectors.get('github').openPullRequest(boardPayload, {
+            idempotencyKey: `${proposal.projectId}:pr:${proposal.id}`,
+            beforeWrite: () => assertOperationGate('open_pr', proposal.projectId, { revision }),
+          })
+          executed.push({ proposalId: proposal.id, action: 'open_pr', ok: true, value })
+        } catch (error) {
+          executed.push({ proposalId: proposal.id, action: 'open_pr', ok: false, reason: error?.code ?? 'adapter_error' })
+        }
       } else if (TASKBOARD_WRITE_ACTIONS.has(proposal.action)) {
         // Real board-content writes (audit A03): create / update / comment go
         // through the Task Board public API, never a second ledger writer.
