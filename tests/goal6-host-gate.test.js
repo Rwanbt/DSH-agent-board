@@ -710,7 +710,7 @@ test('the deep self-test stays an operator diagnostic, even after Stop', async (
 test('capabilities name human-only actions instead of pretending an adapter is missing', async () => {
   await withHost({ mandate: TEST_MANDATE }, async ({ routes }) => {
     const caps = (await callJson(routes, 'GET', '/state')).body.value.capabilities
-    for (const action of ['push_branch', 'protected_branch_write', 'secrets', 'schedule']) {
+    for (const action of ['push_branch', 'protected_branch_write', 'secrets']) {
       assert.equal(caps[action].state, 'unavailable', action)
       assert.equal(caps[action].reason, 'human_only_action', action)
       assert.equal(caps[action].source, 'design', action)
@@ -725,6 +725,8 @@ test('capabilities name human-only actions instead of pretending an adapter is m
     assert.equal(caps.delete_task.reason, 'native_tool_unavailable')
     assert.equal(caps.policy_change.implemented, true)
     assert.equal(caps.policy_change.executor, 'project-policy')
+    assert.equal(caps.schedule.implemented, true)
+    assert.equal(caps.schedule.reason, 'native_tool_unavailable')
   })
 })
 
@@ -738,7 +740,10 @@ test('selecting and reapplying a level applies defaults; per-action edits remain
     assert.equal(current.actionModes.launch, 'auto')
     assert.equal(current.actionModes.delegate, 'auto')
     assert.equal(current.actionModes.merge, 'ask')
-    assert.equal(current.actionModes.secrets, 'ask')
+    assert.equal(current.actionModes.schedule, 'auto')
+    // Human-only actions are never advertised by a level profile.
+    assert.equal(current.actionModes.secrets, 'deny')
+    assert.equal(current.actionModes.push_branch, 'deny')
     assert.deepEqual(current.projects, before.projects)
     assert.deepEqual(current.selectedWorkspaces, before.selectedWorkspaces)
     const custom = await callJson(routes, 'POST', '/mandate', { actionModes: { comment: 'deny' } })

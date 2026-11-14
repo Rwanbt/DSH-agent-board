@@ -92,6 +92,15 @@ export const CRITICAL_ACTIONS = Object.freeze([
   'policy_change',
 ])
 
+/**
+ * Actions this build deliberately never executes from the brain, whatever the
+ * level or grant: a branch push, a protected-branch write and a secret read are
+ * operator decisions. The level profile must therefore say `deny` (with the
+ * reason `human_only_action`) instead of advertising an automation it cannot
+ * perform. A future executor moves the action out of this set WITH its tests.
+ */
+export const HUMAN_ONLY_ACTIONS = Object.freeze(['push_branch', 'protected_branch_write', 'secrets'])
+
 /** Per-integration ceilings (an integration never widens the mandate). */
 export const INTEGRATION_CEILING = Object.freeze({
   board: Object.freeze({}),
@@ -248,8 +257,9 @@ export function actionModeOf(mandate, action) {
 export function actionModesForLevel(level) {
   const rank = LEVEL_RANK[level] ?? 0
   return Object.fromEntries(ACTIONS.filter(action => !READ_ONLY_ACTIONS.includes(action)).map(action => {
+    const humanOnly = HUMAN_ONLY_ACTIONS.includes(action)
     const critical = CRITICAL_ACTIONS.includes(action)
-    const mode = rank < 2 || (critical && rank < 4) ? 'deny'
+    const mode = humanOnly || rank < 2 || (critical && rank < 4) ? 'deny'
       : critical || rank < 3 || rank < LEVEL_RANK[ACTION_MIN_LEVEL[action]] ? 'ask' : 'auto'
     return [action, mode]
   }))

@@ -107,6 +107,18 @@ function makeCtx() {
           },
         }
         const fixture = secureAgentContext({ sessionId: options.sessionId })
+        if (control.nativeCreate && options.sessionId.startsWith('session-agentboard-operation-')) {
+          fixture.tools.executable = name => name === 'taskboard_create' ? { name } : undefined
+          fixture.tools.execute = async input => {
+            const call = input.calls[0]
+            const args = JSON.parse(call.arguments)
+            const exec = { agent: input.agent, callId: call.id, name: call.name, arguments: args }
+            const denied = fixture.state.guards.map(guard => guard(exec)).find(Boolean)
+            if (denied) return { results: [{ callId: call.id, result: { isError: true, error: { info: { code: 'GUARD_DENIED' } } } }] }
+            control.nativeCreate.calls.push(args)
+            return { results: [{ callId: call.id, result: { isError: false, value: control.nativeCreate.value } }] }
+          }
+        }
         if (control.nativeDeletion && options.sessionId.startsWith('session-agentboard-operation-')) {
           fixture.tools.executable = name => name === 'taskboard_delete' ? { name } : undefined
           fixture.tools.execute = async input => {
@@ -139,7 +151,9 @@ function makeCtx() {
       if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'fake-provider', model: 'fake-model' }) }
       if (name === 'llm') return llm
       if (name === 'forge') return control.nativeForge
-      if (name === 'tools' && control.nativeDeletion) return { execute() {}, get: name => name === 'taskboard_delete' ? { name } : undefined }
+      if (name === 'tools' && (control.nativeDeletion || control.nativeCreate)) {
+        return { execute() {}, get: name => (control.nativeDeletion && name === 'taskboard_delete') || (control.nativeCreate && name === 'taskboard_create') ? { name } : undefined }
+      }
       if (name === 'sessions') return { get: () => undefined }
       return undefined
     },
@@ -1048,4 +1062,36 @@ test('merge refuses a changed native head after consent without executing anothe
     assert.equal(answer.body.execution.reason, 'forge_stale_change_request')
     assert.equal(forge.calls.length, 0)
   }, { forge: true })
+})
+
+test('schedule creates one scheduled card through the owner tool, automatically at L4 and exactly once on approval', async () => {
+  await withAssessmentHost(async ({ host, cycle, view }) => {
+    host.control.nativeCreate = { calls: [], value: { task: { id: 't-scheduled', status: 'todo', version: 1 } } }
+    const proposal = (id, payload) => commentProposal({ id, action: 'schedule', taskId: null, payload })
+    const payload = { title: 'Nightly review', cron: '0 3 * * *', prompt: 'Check the backlog' }
+
+    // L4 profile automates the non-critical schedule: no decision, one card.
+    await callJson(host.routes, 'POST', '/mandate/level', { level: 'L4' })
+    const automatic = await cycle([proposal('schedule-auto', payload)])
+    const executed = automatic.body.value.executed[0]
+    assert.equal(executed.ok, true, JSON.stringify(automatic.body))
+    assert.deepEqual(host.control.nativeCreate.calls, [{
+      title: 'Nightly review', workspaceId: 'w1', urgency: 'normal', prompt: 'Check the backlog',
+      execution: { mode: 'scheduled', cron: '0 3 * * *' },
+    }])
+    assert.equal(host.messages.filter(entry => entry.sessionId.startsWith('session-agentboard-operation-')).length, 0)
+
+    // An explicit ask creates one bound request; the answer executes the same bytes once.
+    await callJson(host.routes, 'POST', '/mandate', { actionModes: { schedule: 'ask' } })
+    const asked = await cycle([proposal('schedule-ask', payload)])
+    assert.equal(asked.body.value.refused[0].reason, 'approval_required')
+    assert.equal(host.control.nativeCreate.calls.length, 1)
+    const decision = (await view()).superagent.decisions.pending.find(entry => entry.intent?.action === 'schedule')
+    assert.deepEqual(decision.operation.payload, { title: 'Nightly review', urgency: 'normal', cron: '0 3 * * *', prompt: 'Check the backlog' })
+    const answer = await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(answer.body.execution.ok, true, JSON.stringify(answer.body))
+    assert.equal(host.control.nativeCreate.calls.length, 2)
+    await callJson(host.routes, 'POST', `/superagent/decisions/${decision.id}/answer`, { optionId: 'approve' })
+    assert.equal(host.control.nativeCreate.calls.length, 2)
+  })
 })

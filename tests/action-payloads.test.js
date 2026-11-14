@@ -44,3 +44,20 @@ test('merge payloads identify a PR, default the method, and bind full immutable 
     assert.equal(sanitizeActionPayload('merge', payload).ok, false, JSON.stringify(payload))
   }
 })
+
+test('schedule payloads require one future trigger, a title and canonical fields', () => {
+  const fresh = new Date(Date.now() + 3_600_000).toISOString()
+  assert.deepEqual(sanitizeActionPayload('schedule', { title: 'Nightly', cron: '0 3 * * *' }).payload,
+    { title: 'Nightly', urgency: 'normal', cron: '0 3 * * *' })
+  assert.deepEqual(sanitizeActionPayload('schedule', { title: 'Once', runAt: fresh }).payload,
+    { title: 'Once', urgency: 'normal', runAt: fresh })
+  assert.equal(sanitizeActionPayload('schedule', { title: 'Epoch', runAt: Date.now() + 3_600_000 }).ok, true)
+  assert.equal(sanitizeActionPayload('schedule', { title: 'U', cron: '0 3 * * *', urgency: 'now' }).payload.urgency, 'normal')
+  for (const payload of [{}, { title: 'No trigger' }, { title: 'Both', cron: '0 3 * * *', runAt: fresh },
+    { title: 'Past', runAt: '2020-01-01T00:00:00.000Z' }, { title: 'Bad cron', cron: '0 3 * *' },
+    { title: 'Bad cron', cron: '0 3 * * MON' },
+    { title: 'Owner', cron: '0 3 * * *', permission: 'danger-full-access' },
+    { title: 'Owner', cron: '0 3 * * *', execution: { mode: 'claim' } }]) {
+    assert.equal(sanitizeActionPayload('schedule', payload).ok, false, JSON.stringify(payload))
+  }
+})
