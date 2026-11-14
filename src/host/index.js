@@ -4321,8 +4321,8 @@ export function apply(ctx, config = {}) {
               if (!['L0', 'L1', 'L2', 'L3', 'L4'].includes(body.level)) return sendJson(res, 400, { ok: false, error: 'invalid_level' })
               const result = applyMandatePatch(state.mandate, { level: body.level }, { now: Date.now(), by: 'operator' })
               if (!result.ok) return sendJson(res, 409, { ok: false, error: result.reason })
-              // Raising the ceiling never grants an action by itself: the action
-              // flags and the project switches stay exactly as they were.
+              // Operator selection applies the level's default action profile.
+              // Per-action edits after this remain custom; project scope is unchanged.
               const mandate = commitMandate(result.mandate, { source: 'rest_api', level: body.level })
               return sendJson(res, 200, { ok: true, value: mandateView() })
             }

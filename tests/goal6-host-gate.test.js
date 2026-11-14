@@ -720,3 +720,30 @@ test('capabilities name human-only actions instead of pretending an adapter is m
     assert.equal(caps.merge.implemented, false)
   })
 })
+
+test('selecting and reapplying a level applies defaults; per-action edits remain customizable', async () => {
+  await withHost({ mandate: TEST_MANDATE }, async ({ routes }) => {
+    const before = (await callJson(routes, 'GET', '/state')).body.value.mandate
+    const selected = await callJson(routes, 'POST', '/mandate/level', { level: 'L4' })
+    assert.equal(selected.status, 200)
+    let current = (await callJson(routes, 'GET', '/state')).body.value.mandate
+    assert.equal(current.actionModes.comment, 'auto')
+    assert.equal(current.actionModes.launch, 'auto')
+    assert.equal(current.actionModes.delegate, 'auto')
+    assert.equal(current.actionModes.merge, 'ask')
+    assert.equal(current.actionModes.secrets, 'ask')
+    assert.deepEqual(current.projects, before.projects)
+    assert.deepEqual(current.selectedWorkspaces, before.selectedWorkspaces)
+    const custom = await callJson(routes, 'POST', '/mandate', { actionModes: { comment: 'deny' } })
+    assert.equal(custom.status, 200)
+    current = (await callJson(routes, 'GET', '/state')).body.value.mandate
+    assert.equal(current.actionModes.comment, 'deny')
+    assert.equal(current.actionModes.launch, 'auto')
+    await callJson(routes, 'POST', '/mandate/level', { level: 'L4' })
+    current = (await callJson(routes, 'GET', '/state')).body.value.mandate
+    assert.equal(current.actionModes.comment, 'auto')
+    await callJson(routes, 'POST', '/mandate/level', { level: 'L1' })
+    current = (await callJson(routes, 'GET', '/state')).body.value.mandate
+    assert.ok(Object.values(current.actionModes).every(mode => mode === 'deny'))
+  })
+})

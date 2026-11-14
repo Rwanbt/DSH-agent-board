@@ -786,9 +786,14 @@ function DabSuperagentSettings({
         h('span', { className: 'dab-sa-field-label' }, dabT('superSettingsGlobalLevel')),
         h(DabSelect, {
           className: 'dab-sa-global-level', value: level, label: dabT('superSettingsGlobalLevel'),
-          options: dabLevelOptions(), onChange: value => onSetLevel?.(value),
+          options: dabLevelOptions(), disabled: busy === true, onChange: value => onSetLevel?.(value),
         })),
-      h('div', { className: 'dab-muted dab-sa-level-hint' }, dabLevelHint(level))),
+      h('div', { className: 'dab-muted dab-sa-level-hint' }, dabLevelHint(level)),
+      h('div', { className: 'dab-muted' }, dabT('superLevelProfileHint')),
+      typeof onSetLevel === 'function' ? h('button', {
+        type: 'button', className: 'dab-btn dab-sa-reapply-level', disabled: busy === true,
+        onClick: () => onSetLevel(level),
+      }, dabT('superLevelReapply')) : null),
     dabSaSection(h, 'budget', dabT('superSettingsBudget'),
       budget === null
         ? dabSaReason(h, 'budget_not_published')

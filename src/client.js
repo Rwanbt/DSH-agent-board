@@ -4872,7 +4872,9 @@ const DAB_STRINGS = {
     levelHint_L1: 'Analyse et propose des plans, sans les appliquer.',
     levelHint_L2: 'Prépare le travail et attend votre approbation avant d’agir.',
     levelHint_L3: 'Planifie et lance les tâches autorisées ; vous consulte pour les exceptions.',
-    levelHint_L4: 'Gère seul les projets choisis ; ne vous consulte que pour les décisions hors mandat.',
+    levelHint_L4: 'Autorise automatiquement les actions non critiques ; demande votre accord pour chaque action critique.',
+    superLevelProfileHint: 'Choisir ou réappliquer un niveau initialise les permissions ci-dessous selon ce niveau. Vous pouvez ensuite personnaliser chaque action. Le périmètre et les permissions des workers ne changent pas.',
+    superLevelReapply: 'Réappliquer les permissions de ce niveau',
     superProjectsDriven: 'Projets pilotés',
     superModelProvider: 'Fournisseur',
     superModelCurrent: 'Modèle actuel',
@@ -5365,7 +5367,9 @@ const DAB_STRINGS = {
     levelHint_L1: 'Analyses and proposes plans without applying them.',
     levelHint_L2: 'Prepares work and waits for your approval before acting.',
     levelHint_L3: 'Plans and launches allowed tasks; asks you about exceptions.',
-    levelHint_L4: 'Runs the chosen projects on its own; asks only for out-of-mandate decisions.',
+    levelHint_L4: 'Automatically allows noncritical actions; asks for your approval for every critical action.',
+    superLevelProfileHint: 'Selecting or reapplying a level initializes permissions below for that level. You can customize each action afterwards. Scope and worker permissions do not change.',
+    superLevelReapply: 'Reapply permissions for this level',
     superProjectsDriven: 'Driven projects',
     superModelProvider: 'Provider',
     superModelCurrent: 'Current model',
@@ -9737,9 +9741,14 @@ function DabSuperagentSettings({
         h('span', { className: 'dab-sa-field-label' }, dabT('superSettingsGlobalLevel')),
         h(DabSelect, {
           className: 'dab-sa-global-level', value: level, label: dabT('superSettingsGlobalLevel'),
-          options: dabLevelOptions(), onChange: value => onSetLevel?.(value),
+          options: dabLevelOptions(), disabled: busy === true, onChange: value => onSetLevel?.(value),
         })),
-      h('div', { className: 'dab-muted dab-sa-level-hint' }, dabLevelHint(level))),
+      h('div', { className: 'dab-muted dab-sa-level-hint' }, dabLevelHint(level)),
+      h('div', { className: 'dab-muted' }, dabT('superLevelProfileHint')),
+      typeof onSetLevel === 'function' ? h('button', {
+        type: 'button', className: 'dab-btn dab-sa-reapply-level', disabled: busy === true,
+        onClick: () => onSetLevel(level),
+      }, dabT('superLevelReapply')) : null),
     dabSaSection(h, 'budget', dabT('superSettingsBudget'),
       budget === null
         ? dabSaReason(h, 'budget_not_published')

@@ -240,6 +240,21 @@ export function actionModeOf(mandate, action) {
   return explicit ?? (mandate?.actions?.[action] === true ? 'auto' : 'deny')
 }
 
+/** Operator-selected defaults, NOT a migration or a persistence fallback.
+ * L0/L1 observe; L2 asks for noncritical work; L3 automates within its threshold
+ * and asks above it; L4 automates noncritical work and asks for critical work.
+ * Selecting a level reapplies this profile; subsequent per-action patches win.
+ */
+export function actionModesForLevel(level) {
+  const rank = LEVEL_RANK[level] ?? 0
+  return Object.fromEntries(ACTIONS.filter(action => !READ_ONLY_ACTIONS.includes(action)).map(action => {
+    const critical = CRITICAL_ACTIONS.includes(action)
+    const mode = rank < 2 || (critical && rank < 4) ? 'deny'
+      : critical || rank < 3 || rank < LEVEL_RANK[ACTION_MIN_LEVEL[action]] ? 'ask' : 'auto'
+    return [action, mode]
+  }))
+}
+
 function normalizeActions(value, fallback = DISABLED_ACTIONS) {
   const source = isPlainObject(value) ? value : {}
   const previous = isPlainObject(fallback) ? fallback : DISABLED_ACTIONS
@@ -572,16 +587,21 @@ export function applyMandatePatch(current, patch = {}, { now = Date.now(), by = 
   if (source.scopeMode === 'selected' && uniqueKeys(source.selectedWorkspaces).length === 0) {
     return { ok: false, reason: 'selected_scope_requires_workspaces' }
   }
+  if (Object.hasOwn(source, 'level') && !AUTONOMY_LEVELS.includes(source.level)) {
+    return { ok: false, reason: 'invalid_level' }
+  }
+  // Explicit selection (including reapplying the same level) resets its profile.
+  // Normalization/restart never does. Same-patch customization is applied last.
+  const defaults = Object.hasOwn(source, 'level')
+    ? normalizeMandate({ level: source.level, actionModes: actionModesForLevel(source.level) }, previous)
+    : previous
   const next = normalizeMandate({
     ...source,
-    // A level change is accepted here but must be audited by the caller: the
-    // dedicated POST /mandate/level path writes the entry, and a patch that only
-    // repeats the current level changes nothing.
     level: source.level === undefined ? previous.level : source.level,
     revision: previous.revision + 1,
     updatedAt: Math.trunc(now),
     updatedBy: text(by, MAX_NAME) || 'operator',
     requiresConfiguration: source.requiresConfiguration === undefined ? previous.requiresConfiguration : source.requiresConfiguration,
-  }, previous)
+  }, defaults)
   return { ok: true, mandate: next }
 }
