@@ -144,11 +144,11 @@ POST settle                            -> HTTP 200 {"leaseId":"lease-4","executi
 
 The Agent Board panel in the isolated instance (same client bundle as the product) was captured by Playwright:
 
-- [`goal3-ux-1366x768-dark-card-preview.png`](screenshots/goal3-ux-1366x768-dark-card-preview.png)
-- [`goal3-ux-1366x768-dark.png`](screenshots/goal3-ux-1366x768-dark.png)
-- [`goal3-ux-1366x768-light.png`](screenshots/goal3-ux-1366x768-light.png)
-- [`goal3-ux-390x844-dark.png`](screenshots/goal3-ux-390x844-dark.png)
-- [`goal3-ux-390x844-light.png`](screenshots/goal3-ux-390x844-light.png)
+- [`goal3-ux-1366x768-dark-card-preview.png`](docs/EVIDENCE-SCREENSHOTS.md)
+- [`goal3-ux-1366x768-dark.png`](docs/EVIDENCE-SCREENSHOTS.md)
+- [`goal3-ux-1366x768-light.png`](docs/EVIDENCE-SCREENSHOTS.md)
+- [`goal3-ux-390x844-dark.png`](docs/EVIDENCE-SCREENSHOTS.md)
+- [`goal3-ux-390x844-light.png`](docs/EVIDENCE-SCREENSHOTS.md)
 
 
 ## What this PASS does NOT prove

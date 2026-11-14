@@ -36,7 +36,7 @@ tooltip. A declared role always wins; a model/provider is never an input; only a
 agent with no declared role and no usable text keeps the generic identity.
 Verified on the isolated host: all three E2E cards now render the Worker mascot
 with "Worker · déduit" (default, no keyword), and the gallery still proves the 15
-declared roles. Evidence: `docs/e2e/screenshots/goal5-inferred-roles.png`.
+declared roles. Evidence: `docs/EVIDENCE-SCREENSHOTS.md`.
 
 ## 2. Architecture
 
@@ -141,7 +141,7 @@ OpenAI-compatible provider + simulated Task Board, Playwright Chromium.
 | Undeclared agents get a deduced mascot, marked « déduit » | OK, all E2E cards (Worker default) |
 | Status-colour independence | OK (dot separate; Worker stays green when not running) |
 
-Evidence: `docs/e2e/screenshots/goal4-1366-light-projects.png`,
+Evidence: `docs/EVIDENCE-SCREENSHOTS.md`,
 `goal4-1366-light-hierarchy.png`, `goal4-1366-dark-hierarchy.png`,
 `goal4-390-light-hierarchy.png`, `goal4-mascots-gallery.png`,
 `goal5-inferred-roles.png`, `goal6-status-dot-bottom-left.png`,

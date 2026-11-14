@@ -48,7 +48,7 @@ result is inferred from a mock unless it says so.
 > toggle off), keyboard (Enter opens the drawer, Escape closes, focus returns to
 > the grid), bottom sheet at 66 % of the panel with a scrollable body,
 > 7 measured viewports without horizontal overflow, and **0 console/page
-> errors**. Evidence: `docs/e2e/screenshots/cockpit-*.png`,
+> errors**. Evidence: `docs/EVIDENCE-SCREENSHOTS.md`,
 > `docs/GOAL5-DELIVERY.md`.
 >
 > **Known flake (not hidden):** `review-backend-restart-lease.test.js` and
@@ -68,7 +68,7 @@ result is inferred from a mock unless it says so.
 > the hierarchy view, the supervision/delegation limits, and the read-only Task
 > Board coordination model. The isolated real-DSH-host E2E still passes (15/15,
 > fake provider + simulated Task Board). Visual evidence:
-> `docs/e2e/screenshots/goal4-*.png`; delivery and limits:
+> `docs/EVIDENCE-SCREENSHOTS.md`; delivery and limits:
 > `docs/GOAL4-DELIVERY.md`, `docs/MASCOTS-SUPER-ORCHESTRATOR.md`,
 > `docs/REVIEW-GOAL4.md`, `docs/LIMITATIONS.md` (rows 19–27).
 > **Not tested:** a real Task Board write/coordination API (none exists), a
@@ -155,8 +155,8 @@ record. The agent reported this instead of forcing it. See
 | Ack persisted host-side | ✅ | `acks` contains the session id; card becomes `finished, consulted` |
 | Double click = open session | ✅ | page title becomes “Agent Board — E2E …”, board hidden |
 | Explicit “Open session” button | ✅ | rendered in the expanded card (mobile/keyboard path) |
-| Light / dark tokens | ✅ | `docs/screenshots/agent-board-light.png`, `agent-board-dark.png` |
-| Mobile viewport (390×844) | ✅ | `docs/screenshots/agent-board-mobile.png` |
+| Light / dark tokens | ✅ | `docs/EVIDENCE-SCREENSHOTS.md`, `agent-board-dark.png` |
+| Mobile viewport (390×844) | ✅ | `docs/EVIDENCE-SCREENSHOTS.md` |
 | Orchestrator control reflects host state | ✅ | `aria-pressed` = Autonomous after POST /mode |
 | Stop button disabled when nothing runs | ✅ | disabled attribute in the snapshot |
 

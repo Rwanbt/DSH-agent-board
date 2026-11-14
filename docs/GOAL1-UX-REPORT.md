@@ -15,7 +15,7 @@ Branche `feat/agent-board-visual-tree`, base `ec955fbc00871db7541388b1953fc8b167
 - `src/client/ui/` : `toolbar`, `tree` (ProjectGroup/AgentTree/Compact), `card`, `preview`, `history`, `styles`, `strings`.
 - `src/client/app.js` : AgentBoard (état, store, routage).
 
-## Captures réelles (profil desktop, 09/11/2026) — `docs/screenshots/goal1/`
+## Captures réelles (profil desktop, 09/11/2026) — `docs/EVIDENCE-SCREENSHOTS.md`
 
 ## Limites
 - Réponse finale : le host ne reçoit pas les `session/event` des sous-agents ; pour eux l'extrait vient de `turnOutline.response` natif (début tronqué ~120 car. de la réponse).

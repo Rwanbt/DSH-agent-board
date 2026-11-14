@@ -254,7 +254,7 @@ read is retried on the next window, never silently hidden.
   bounded deterministic output, no write, forged capability cannot unlock a write.
 - Real UI on an isolated DSH host (fake provider + simulated Task Board):
   panel, band, hierarchy, light/dark, 1366×768 and 390×844, zero console errors.
-  Evidence: `docs/e2e/screenshots/goal4-*.png` (including the 32-drawing gallery).
+  Evidence: `docs/EVIDENCE-SCREENSHOTS.md` (including the 32-drawing gallery).
 
 ## 10. Backward compatibility
 

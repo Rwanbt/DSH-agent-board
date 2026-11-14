@@ -280,7 +280,7 @@ Chaque lot : tests unitaires existants verts, captures avant/après comparables,
 
 ## Annexes
 
-- Preuves : `docs/ux-audit/evidence/` (captures réelles du 09/11/2026, profil `desktop`).
+- Preuves : `docs/EVIDENCE-SCREENSHOTS.md` (captures réelles du 09/11/2026, profil `desktop`).
 - Wireframes (propositions, non des captures) : `docs/ux-audit/wireframes/A-arbre-minimaliste.svg`, `B-carte-projets.svg`, `C-hybride-adaptative.svg`.
 
 **Fin de l'audit. Aucune modification de code n'est engagée ; en attente de validation de la direction.**

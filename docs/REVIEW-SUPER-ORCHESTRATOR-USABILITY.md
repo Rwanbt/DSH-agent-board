@@ -105,7 +105,7 @@ délégation GOAL 4 ; le journal ne contient aucun `delegation_*`.
 | Agent super-orchestrateur | **n'existe pas** | `workspace.agent = null` sauf rôle déclaré `super_orchestrator` |
 
 La bande est réelle et rend des faits réels. Capture de référence du dépôt
-(`docs/e2e/screenshots/cockpit-1366-superbar-open.png`) : « Super Orchestrator · Inactif
+(`docs/EVIDENCE-SCREENSHOTS.md`) : « Super Orchestrator · Inactif
 (observation) · 5 projets · 3 orchestrateurs · Mode : Observation », délégation
 « 0 en cours · profondeur 1 · 2 simultanées · 6/h », une recommandation
 « proposition — non appliquée », 0 blocage, et la matrice de capacités avec ses
@@ -333,7 +333,7 @@ Limites de cette revue :
 
 - **La GUI live n'a pas pu être interrogée** : elle répond 401 et le jeton de lancement
   n'a pas pu être récupéré. Le rendu de la bande est vérifié sur la capture E2E du
-  dépôt (`docs/e2e/screenshots/cockpit-1366-superbar-open.png`), sur la **capture de
+  dépôt (`docs/EVIDENCE-SCREENSHOTS.md`), sur la **capture de
   l'opérateur** (état « Inconnu / supervision non publiée ») et par lecture du code.
 - La capture de l'opérateur est **celle d'un hôte GOAL 3** : elle ne montre pas la
   charge utile courante, mais son chemin de repli ; c'est ce qui a mené à F0.

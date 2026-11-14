@@ -310,15 +310,15 @@ navigateur 0 erreur, `POST /superagent/directives → 200` :
 
 | Capture | Contenu |
 |---|---|
-| `docs/e2e/screenshots/goal6-1366-cockpit.png` | bandeau : couche de supervision et session IA distinctes, contrôles Démarrer/Pause/Arrêter/Reprendre |
-| `docs/e2e/screenshots/goal6-1366-overview.png` | vue d'ensemble, objectif factuel, matrice de capacités avec raisons, décisions |
-| `docs/e2e/screenshots/goal6-1366-projects.png` | portée 2/3 projets, A L4, B L3, C hors portée (`project_not_selected`), bouton Simuler |
-| `docs/e2e/screenshots/goal6-1366-directives.png` | état vide + formulaire |
-| `docs/e2e/screenshots/goal6-1366-directive-saved.png` | directive persistée + session Super Agent réelle créée |
-| `docs/e2e/screenshots/goal6-1366-settings.png` | modèle/fallbacks, autonomie L3, budgets, permissions avec refus effectif |
-| `docs/e2e/screenshots/goal6-1366-dark.png` | thème sombre |
-| `docs/e2e/screenshots/goal6-390-band.png` | mobile 390 px, Stop atteignable |
-| `docs/e2e/screenshots/goal6-390-settings.png` | mobile, inspecteur bottom sheet |
+| `docs/EVIDENCE-SCREENSHOTS.md` | bandeau : couche de supervision et session IA distinctes, contrôles Démarrer/Pause/Arrêter/Reprendre |
+| `docs/EVIDENCE-SCREENSHOTS.md` | vue d'ensemble, objectif factuel, matrice de capacités avec raisons, décisions |
+| `docs/EVIDENCE-SCREENSHOTS.md` | portée 2/3 projets, A L4, B L3, C hors portée (`project_not_selected`), bouton Simuler |
+| `docs/EVIDENCE-SCREENSHOTS.md` | état vide + formulaire |
+| `docs/EVIDENCE-SCREENSHOTS.md` | directive persistée + session Super Agent réelle créée |
+| `docs/EVIDENCE-SCREENSHOTS.md` | modèle/fallbacks, autonomie L3, budgets, permissions avec refus effectif |
+| `docs/EVIDENCE-SCREENSHOTS.md` | thème sombre |
+| `docs/EVIDENCE-SCREENSHOTS.md` | mobile 390 px, Stop atteignable |
+| `docs/EVIDENCE-SCREENSHOTS.md` | mobile, inspecteur bottom sheet |
 
 Détail et limites : `docs/e2e/GOAL6-UI-EVIDENCE.md`.
 

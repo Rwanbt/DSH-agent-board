@@ -140,21 +140,21 @@ which is why the other captures show 0 in "À traiter".
 
 | Screenshot | What it shows |
 | --- | --- |
-| [`cockpit-1920-light.png`](e2e/screenshots/cockpit-1920-light.png) | 1920 px, light, 5 projects, 3 real orchestrators, 6 columns |
-| [`cockpit-1366-light.png`](e2e/screenshots/cockpit-1366-light.png) | 1366 px, light, 4 columns |
-| [`cockpit-1920-dark.png`](e2e/screenshots/cockpit-1920-dark.png) | 1920 px, dark |
-| [`cockpit-1366-dark.png`](e2e/screenshots/cockpit-1366-dark.png) | 1366 px, dark, attention card + red accent |
-| [`cockpit-390-light.png`](e2e/screenshots/cockpit-390-light.png) | 390 px, two-column mosaic, one-line header, 57 px band |
-| [`cockpit-360-light.png`](e2e/screenshots/cockpit-360-light.png) | 360 px |
-| [`cockpit-320-light.png`](e2e/screenshots/cockpit-320-light.png) | 320 px, single-column fallback |
-| [`cockpit-1366-inspector.png`](e2e/screenshots/cockpit-1366-inspector.png) | desktop drawer over the grid, pinned card behind |
-| [`cockpit-390-sheet.png`](e2e/screenshots/cockpit-390-sheet.png) | mobile bottom sheet (66 % of the panel, scrollable) |
-| [`cockpit-1366-projects.png`](e2e/screenshots/cockpit-1366-projects.png) | projects tree view preserved |
-| [`cockpit-1366-hierarchy.png`](e2e/screenshots/cockpit-1366-hierarchy.png) | workspace → project → orchestrator → agents |
-| [`cockpit-1366-superbar-open.png`](e2e/screenshots/cockpit-1366-superbar-open.png) | expanded supervision details (7 capabilities) |
-| [`cockpit-1366-history.png`](e2e/screenshots/cockpit-1366-history.png) | history drawer (search, pagination) |
-| [`cockpit-1366-filters.png`](e2e/screenshots/cockpit-1366-filters.png) | filters popover (project, role, status, Task Board state) |
-| [`cockpit-1920-attention.png`](e2e/screenshots/cockpit-1920-attention.png) | attention section with a real failed session |
+| [`cockpit-1920-light.png`](docs/EVIDENCE-SCREENSHOTS.md) | 1920 px, light, 5 projects, 3 real orchestrators, 6 columns |
+| [`cockpit-1366-light.png`](docs/EVIDENCE-SCREENSHOTS.md) | 1366 px, light, 4 columns |
+| [`cockpit-1920-dark.png`](docs/EVIDENCE-SCREENSHOTS.md) | 1920 px, dark |
+| [`cockpit-1366-dark.png`](docs/EVIDENCE-SCREENSHOTS.md) | 1366 px, dark, attention card + red accent |
+| [`cockpit-390-light.png`](docs/EVIDENCE-SCREENSHOTS.md) | 390 px, two-column mosaic, one-line header, 57 px band |
+| [`cockpit-360-light.png`](docs/EVIDENCE-SCREENSHOTS.md) | 360 px |
+| [`cockpit-320-light.png`](docs/EVIDENCE-SCREENSHOTS.md) | 320 px, single-column fallback |
+| [`cockpit-1366-inspector.png`](docs/EVIDENCE-SCREENSHOTS.md) | desktop drawer over the grid, pinned card behind |
+| [`cockpit-390-sheet.png`](docs/EVIDENCE-SCREENSHOTS.md) | mobile bottom sheet (66 % of the panel, scrollable) |
+| [`cockpit-1366-projects.png`](docs/EVIDENCE-SCREENSHOTS.md) | projects tree view preserved |
+| [`cockpit-1366-hierarchy.png`](docs/EVIDENCE-SCREENSHOTS.md) | workspace → project → orchestrator → agents |
+| [`cockpit-1366-superbar-open.png`](docs/EVIDENCE-SCREENSHOTS.md) | expanded supervision details (7 capabilities) |
+| [`cockpit-1366-history.png`](docs/EVIDENCE-SCREENSHOTS.md) | history drawer (search, pagination) |
+| [`cockpit-1366-filters.png`](docs/EVIDENCE-SCREENSHOTS.md) | filters popover (project, role, status, Task Board state) |
+| [`cockpit-1920-attention.png`](docs/EVIDENCE-SCREENSHOTS.md) | attention section with a real failed session |
 
 ## 5. Functional verification on the integrated host
 
@@ -267,7 +267,7 @@ integrated host:
    column in a wide window). The stop button inside that menu now shows its word
    (« Arrêt »), the header one stays icon-only.
 
-Evidence: `docs/e2e/screenshots/cockpit-390-light.png`,
+Evidence: `docs/EVIDENCE-SCREENSHOTS.md`,
 `cockpit-360-light.png`, `cockpit-320-light.png`, `cockpit-768-light.png`,
 `cockpit-390-menu.png` (re-captured on the integrated host), plus the render
 tests « narrow toolbar: the filters trigger sits on the chip row, right of

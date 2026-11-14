@@ -7,7 +7,7 @@
   le client, les sessions DSH et l'API sont réels.
 - Console navigateur : **0 erreur, 0 avertissement**. Requête observée :
   `POST /dsh-agent-board/api/v2/superagent/directives → 200 OK`.
-- Captures : `docs/e2e/screenshots/goal6-*.png`.
+- Captures : `docs/EVIDENCE-SCREENSHOTS.md`.
 
 | Capture | Ce qu'elle prouve |
 |---|---|

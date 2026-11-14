@@ -61,6 +61,18 @@ checklists and forge issues become real dispatched work, with L4 backlog triage)
 > [`docs/GOAL5-DELIVERY.md`](docs/GOAL5-DELIVERY.md); the engineering contract is
 > [`docs/UX-COCKPIT-CONTRACT.md`](docs/UX-COCKPIT-CONTRACT.md).
 
+## Aperçu (données fictives)
+
+Ces deux captures sont rendues par **le vrai client du plugin**, alimenté par un
+jeu de données entièrement inventé (trois projets factices, aucune donnée
+personnelle) : `node scripts/capture-demo-screenshots.mjs`. Les anciennes captures
+réelles ont été retirées du dépôt **et de son historique** — voir
+[docs/EVIDENCE-SCREENSHOTS.md](docs/EVIDENCE-SCREENSHOTS.md).
+
+![Cockpit sombre, 1440×900, projets fictifs](docs/screenshots/demo-dark-desktop.png)
+
+![Cockpit sombre, 390×844, projets fictifs](docs/screenshots/demo-dark-mobile.png)
+
 ## Branches
 
 | Branch | Role |
@@ -419,28 +431,28 @@ handler runs.
 Real captures of the plugin served by an isolated DSH host (simulated provider
 and simulated Task Board, five workspaces, 21 real sessions):
 
-- [1920 px, light](docs/e2e/screenshots/cockpit-1920-light.png) ·
-  [1920 px, dark](docs/e2e/screenshots/cockpit-1920-dark.png)
-- [1366 px, light](docs/e2e/screenshots/cockpit-1366-light.png) ·
-  [1366 px, dark](docs/e2e/screenshots/cockpit-1366-dark.png)
-- [390 px, light](docs/e2e/screenshots/cockpit-390-light.png) ·
-  [360 px](docs/e2e/screenshots/cockpit-360-light.png) ·
-  [320 px](docs/e2e/screenshots/cockpit-320-light.png)
-- [desktop inspector drawer](docs/e2e/screenshots/cockpit-1366-inspector.png) ·
-  [mobile bottom sheet](docs/e2e/screenshots/cockpit-390-sheet.png)
-- [projects tree](docs/e2e/screenshots/cockpit-1366-projects.png) ·
-  [hierarchy](docs/e2e/screenshots/cockpit-1366-hierarchy.png) ·
-  [supervision details](docs/e2e/screenshots/cockpit-1366-superbar-open.png)
+- [1920 px, light](docs/EVIDENCE-SCREENSHOTS.md) ·
+  [1920 px, dark](docs/EVIDENCE-SCREENSHOTS.md)
+- [1366 px, light](docs/EVIDENCE-SCREENSHOTS.md) ·
+  [1366 px, dark](docs/EVIDENCE-SCREENSHOTS.md)
+- [390 px, light](docs/EVIDENCE-SCREENSHOTS.md) ·
+  [360 px](docs/EVIDENCE-SCREENSHOTS.md) ·
+  [320 px](docs/EVIDENCE-SCREENSHOTS.md)
+- [desktop inspector drawer](docs/EVIDENCE-SCREENSHOTS.md) ·
+  [mobile bottom sheet](docs/EVIDENCE-SCREENSHOTS.md)
+- [projects tree](docs/EVIDENCE-SCREENSHOTS.md) ·
+  [hierarchy](docs/EVIDENCE-SCREENSHOTS.md) ·
+  [supervision details](docs/EVIDENCE-SCREENSHOTS.md)
 
 GOAL 6 (mandate, Super Agent band, scope, settings, mobile, dark):
 
-- [projects + scope](docs/e2e/screenshots/goal6-1366-projects.png) ·
-  [settings + effective permissions](docs/e2e/screenshots/goal6-1366-settings.png) ·
-  [super agent band](docs/e2e/screenshots/goal6-1366-cockpit.png) ·
-  [directives](docs/e2e/screenshots/goal6-1366-directives.png)
-- [dark](docs/e2e/screenshots/goal6-1366-dark.png) ·
-  [390 px](docs/e2e/screenshots/goal6-390-band.png) ·
-  [390 px settings](docs/e2e/screenshots/goal6-390-settings.png)
+- [projects + scope](docs/EVIDENCE-SCREENSHOTS.md) ·
+  [settings + effective permissions](docs/EVIDENCE-SCREENSHOTS.md) ·
+  [super agent band](docs/EVIDENCE-SCREENSHOTS.md) ·
+  [directives](docs/EVIDENCE-SCREENSHOTS.md)
+- [dark](docs/EVIDENCE-SCREENSHOTS.md) ·
+  [390 px](docs/EVIDENCE-SCREENSHOTS.md) ·
+  [390 px settings](docs/EVIDENCE-SCREENSHOTS.md)
 
 All nine captures and their captured facts: [GOAL6-UI-EVIDENCE.md](docs/e2e/GOAL6-UI-EVIDENCE.md).
 
