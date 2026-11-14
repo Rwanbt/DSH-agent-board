@@ -44,6 +44,7 @@ import { resolveRoutePolicy } from '../routing/policy.js'
 import { consume as consumeBudget, describeBudget } from '../routing/budget.js'
 import { buildCheckpoint, handoffPrompt } from '../recovery/checkpoint.js'
 import { createConnectors } from '../connectors/registry.js'
+import { createGithubAdapter } from '../connectors/github.js'
 import { createTaskBoardContractClient } from '../connectors/taskboard-contract.js'
 import { capabilitiesOf as publicTaskBoardCapabilities, createPublicTaskBoardClient } from '../connectors/taskboard-public.js'
 import { createIdentity, markCycle, normalizeIdentity, publicIdentityOf, requestRecycle } from '../superagent/identity.js'
@@ -235,6 +236,15 @@ export function apply(ctx, config = {}) {
   const workspaceId = typeof config.workspaceId === 'string' ? config.workspaceId : undefined
   const baseUrl = typeof config.baseUrl === 'string' && config.baseUrl !== '' ? config.baseUrl : undefined
   const githubRepository = typeof config.githubRepository === 'string' ? config.githubRepository : undefined
+  // GitHub credential discovery, owned by the operator:
+  //   off  -> only an explicit `githubToken` config value is used;
+  //   env  -> GITHUB_TOKEN only;
+  //   auto -> GITHUB_TOKEN, else the locally authenticated `gh` CLI.
+  // The token is only ever sent to api.github.com; it is never published.
+  const githubTokenDiscovery = config.githubTokenDiscovery === 'off' ? 'off'
+    : config.githubTokenDiscovery === 'env' ? 'env' : 'auto'
+  const explicitGithubToken = typeof config.githubToken === 'string' ? config.githubToken.trim() : null
+  const githubToken = { value: '', source: 'none' }
 
   let state = createDefaultState()
 
@@ -242,6 +252,30 @@ export function apply(ctx, config = {}) {
    * Explicit env token first; otherwise the zero-config file Task Board
    * creates in the same DSH home (`taskboard/public-api.token`). Never published.
    */
+  async function refreshGithubToken() {
+    if (explicitGithubToken !== null) {
+      githubToken.value = explicitGithubToken
+      githubToken.source = explicitGithubToken === '' ? 'none' : 'config'
+      return
+    }
+    const fromEnv = typeof process.env.GITHUB_TOKEN === 'string' ? process.env.GITHUB_TOKEN.trim() : ''
+    if (fromEnv !== '') {
+      githubToken.value = fromEnv
+      githubToken.source = 'env'
+      return
+    }
+    if (githubTokenDiscovery !== 'auto' || githubToken.value !== '') return
+    try {
+      const { stdout } = await execFileAsync('gh', ['auth', 'token'], { timeout: 4000, maxBuffer: 8192, windowsHide: true })
+      const value = stdout.trim()
+      if (value.length >= 20) {
+        githubToken.value = value
+        githubToken.source = 'gh'
+        touch()
+      }
+    } catch { /* gh absent or unauthenticated: no token */ }
+  }
+
   function publicTaskBoardToken() {
     const explicit = typeof process.env.DSH_TASKBOARD_PUBLIC_TOKEN === 'string' ? process.env.DSH_TASKBOARD_PUBLIC_TOKEN.trim() : ''
     if (explicit !== '') return explicit
@@ -941,6 +975,9 @@ export function apply(ctx, config = {}) {
     allowGithubWrites: config.allowGithubWrites === true,
     ctx,
   })
+  // Discover the forge credential asynchronously (env, then the local `gh`
+  // login). Until it resolves, `open_pr` honestly reports github_token_missing.
+  void refreshGithubToken()
 
   // ------------------------------------------------------ execution contract
   // The Task Board owns the canonical execution record. This client speaks the
@@ -1413,17 +1450,20 @@ export function apply(ctx, config = {}) {
   }
 
   /** Persist a concrete, immutable operation; a model question is not a grant. */
-  function requestOperationApproval(proposal, task = null) {
+  async function requestOperationApproval(proposal, task = null) {
     const agent = ensureSuperAgent()
     // The operation is what gets replayed after the human answer: store the
     // canonical payload, never the raw model object.
     const sanitized = sanitizeActionPayload(proposal.action, proposal.payload)
     if (!sanitized.ok) return { ok: false, reason: sanitized.reason, fields: sanitized.fields ?? [] }
     if (proposal.action === 'open_pr') {
-      if (sanitized.payload.repository && sanitized.payload.repository !== githubRepository) return { ok: false, reason: 'forge_project_mismatch' }
-      // The repository is part of the exact approved hash, not mutable host
-      // configuration consulted only at replay time (including after restart).
-      sanitized.payload.repository = githubRepository
+      // The repository is resolved from the PROJECT's own remote before the
+      // human sees the request, and stored in the hashed payload: a later
+      // remote/config change cannot redirect an approved write.
+      const resolved = await resolveProjectRepository(proposal.projectId)
+      if (!resolved.ok) return resolved
+      if (sanitized.payload.repository && sanitized.payload.repository !== resolved.repository) return { ok: false, reason: 'forge_project_mismatch' }
+      sanitized.payload.repository = resolved.repository
     }
     const expiresAt = Date.now() + 60 * 60 * 1000
     const operation = {
@@ -1448,7 +1488,7 @@ export function apply(ctx, config = {}) {
       kind: 'approval', projectId: operation.projectId, action: operation.action,
       taskIds: operation.taskId ? [operation.taskId] : [], intent, operation, expiresAt,
       title: `Autoriser une fois : ${operation.action}`,
-      context: `${proposal.rationale ?? ''}\nProjet : ${operation.projectId}${operation.action === 'open_pr' ? `\nDépôt GitHub : ${githubRepository}` : ''}\nTâche : ${operation.taskId ?? 'nouvelle tâche'}\nContenu : ${JSON.stringify(operation.payload)}`,
+      context: `${proposal.rationale ?? ''}\nProjet : ${operation.projectId}${operation.action === 'open_pr' && operation.payload?.repository ? `\nDépôt GitHub : ${operation.payload.repository}` : ''}\nTâche : ${operation.taskId ?? 'nouvelle tâche'}\nContenu : ${JSON.stringify(operation.payload)}`,
       recommendation: proposal.expectedEffect ?? '', provenance: 'policy',
       dedupeKey: `operation:${approvalIntentFingerprint(stable)}`,
       options: [{ id: 'approve', label: 'Autoriser une fois', effect: 'approve' }, { id: 'reject', label: 'Refuser', effect: 'reject' }],
@@ -1481,9 +1521,10 @@ export function apply(ctx, config = {}) {
     const ready = operationReadiness(operation.action)
     if (!ready.ok) return ready
     if (operation.action === 'open_pr') {
-      if (operation.payload?.repository !== githubRepository) return { ok: false, reason: 'forge_project_mismatch' }
-      const binding = await verifyForgeProject(operation.projectId)
-      if (!binding.ok) return binding
+      const resolved = await resolveProjectRepository(operation.projectId)
+      if (!resolved.ok) return resolved
+      if (operation.payload?.repository !== resolved.repository) return { ok: false, reason: 'forge_project_mismatch' }
+      if (githubToken.value === '') return { ok: false, reason: 'github_token_missing' }
     }
     if (superagentHardStop() !== null) return { ok: false, reason: superagentHardStop() }
     // Re-apply the owner-field allowlist to the STORED bytes: an operation is a
@@ -1515,10 +1556,16 @@ export function apply(ctx, config = {}) {
     let result
     try {
       if (operation.action === 'launch' || operation.action === 'delegate') result = await launchTask({ task, source: 'approval', authorizationAction: operation.action })
-      else if (operation.action === 'open_pr') result = { ok: true, value: await connectors.get('github').openPullRequest(payload, {
-        idempotencyKey: `${operation.projectId}:pr:${intent.payloadHash}`,
-        beforeWrite: () => assertOperationGate('open_pr', operation.projectId, { approved: true, revision: intent.mandateRevision }),
-      }) }
+      else if (operation.action === 'open_pr') {
+        const resolved = await resolveProjectRepository(operation.projectId)
+        if (!resolved.ok) result = resolved
+        else {
+          result = { ok: true, value: await githubAdapterFor(resolved.repository).openPullRequest(payload, {
+            idempotencyKey: `${operation.projectId}:pr:${intent.payloadHash}`,
+            beforeWrite: () => assertOperationGate('open_pr', operation.projectId, { approved: true, revision: intent.mandateRevision }),
+          }) }
+        }
+      }
       else if (operation.action === 'merge') result = await executeNativeMerge(ctx, {
         workspace: resolveWorkspace(operation.projectId), payload,
         beforeExecute: () => assertOperationGate('merge', operation.projectId, { approved: true, revision: intent.mandateRevision }),
@@ -1602,28 +1649,47 @@ export function apply(ctx, config = {}) {
     if (TASKBOARD_WRITE_ACTIONS.has(action) && !taskboardWritesReady()) return { ok: false, reason: 'taskboard_writes_unavailable' }
     if (action === 'launch' || action === 'delegate') return backendReadiness()
     if (action === 'open_pr') {
-      const forge = connectors.get('github')?.describe?.()
-      if (forge?.status !== 'available') return { ok: false, reason: 'github_not_configured' }
-      if (forge.capabilities?.open_pr !== true) return { ok: false, reason: 'github_writes_disabled' }
+      // A PR write only needs a usable GitHub credential: the repository is the
+      // project's own remote, checked per project at execution time.
+      if (githubToken.value === '') return { ok: false, reason: 'github_token_missing' }
     }
     return { ok: true }
   }
 
-  /** Bind a forge operation to the selected workspace's REAL repository. A
-   * global GitHub adapter must never turn project A's grant into a write in B.
-   * Read-only git argv, bounded; no credentials, URLs or stderr in the result.
+  /** Bind a forge operation to the selected workspace's REAL repository. The
+   * GitHub repository is the project's own `origin` remote, unless the operator
+   * pinned one in the plugin config (then both must agree). Read-only git argv,
+   * bounded; no credentials, URLs or stderr in the result.
    */
-  async function verifyForgeProject(projectId) {
+  async function resolveProjectRepository(projectId) {
     const workspace = resolveWorkspace(projectId)
     if (!workspace?.path) return { ok: false, reason: 'unknown_project' }
     try {
       const { stdout } = await execFileAsync('git', ['-C', workspace.path, 'remote', 'get-url', 'origin'], { timeout: 3000, maxBuffer: 8192, windowsHide: true })
-      const remote = stdout.trim()
-      const match = remote.match(/^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([^\s/]+\/[^\s/]+?)\/?$/i)
+      const match = stdout.trim().match(/^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([^\s/]+\/[^\s/]+?)\/?$/i)
       const repository = match?.[1]?.replace(/\.git$/i, '')
-      return repository && repository.toLowerCase() === String(githubRepository ?? '').toLowerCase()
-        ? { ok: true } : { ok: false, reason: 'forge_project_mismatch' }
+      if (!repository) return { ok: false, reason: 'forge_project_unverifiable' }
+      if (githubRepository && repository.toLowerCase() !== githubRepository.toLowerCase()) {
+        return { ok: false, reason: 'forge_project_mismatch' }
+      }
+      return { ok: true, repository }
     } catch { return { ok: false, reason: 'forge_project_unverifiable' } }
+  }
+
+  /** Per-repository forge adapter cache: its in-process idempotency markers make
+   * back-to-back retries exact while the forge's own lists are eventually
+   * consistent. Bounded; a new token generation gets a fresh adapter.
+   */
+  const githubAdapters = new Map()
+  function githubAdapterFor(repository) {
+    const key = `${repository}\u0000${githubToken.value}`
+    let adapter = githubAdapters.get(key)
+    if (adapter === undefined) {
+      adapter = createGithubAdapter({ repository, token: githubToken.value, allowWrites: true })
+      githubAdapters.set(key, adapter)
+      if (githubAdapters.size > 20) githubAdapters.delete(githubAdapters.keys().next().value)
+    }
+    return adapter
   }
 
   /**
@@ -3585,24 +3651,22 @@ export function apply(ctx, config = {}) {
         }
         boardPayload = sanitized.payload
         if (proposal.action === 'open_pr') {
-          if (boardPayload.repository && boardPayload.repository !== githubRepository) {
+          const resolved = await resolveProjectRepository(proposal.projectId)
+          if (!resolved.ok) {
+            refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, reason: resolved.reason })
+            continue
+          }
+          if (boardPayload.repository && boardPayload.repository !== resolved.repository) {
             refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, reason: 'forge_project_mismatch' })
             continue
           }
-          boardPayload.repository = githubRepository
+          boardPayload.repository = resolved.repository
         }
       }
       const ready = operationReadiness(proposal.action)
       if (!ready.ok) {
         refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, reason: ready.reason })
         continue
-      }
-      if (proposal.action === 'open_pr') {
-        const binding = await verifyForgeProject(proposal.projectId)
-        if (!binding.ok) {
-          refused.push({ id: proposal.id, action: proposal.action, projectId: proposal.projectId, reason: binding.reason })
-          continue
-        }
       }
       let base = operationGate(proposal.action, proposal.projectId)
       if (proposal.action === 'merge' && (base.allowed || base.reason === 'approval_required')) {
@@ -3620,7 +3684,7 @@ export function apply(ctx, config = {}) {
       }
       const decision = base
       if (base.reason === 'approval_required') {
-        const requested = requestOperationApproval({ ...proposal, payload: boardPayload ?? proposal.payload }, targetTask)
+        const requested = await requestOperationApproval({ ...proposal, payload: boardPayload ?? proposal.payload }, targetTask)
         if (requested.ok !== true) {
           refused.push({
             id: proposal.id, action: proposal.action, projectId: proposal.projectId,
@@ -3644,11 +3708,12 @@ export function apply(ctx, config = {}) {
         executed.push({ proposalId: proposal.id, taskId: task.id, action: proposal.action, ...launched })
       } else if (proposal.action === 'open_pr') {
         try {
-          const binding = await verifyForgeProject(proposal.projectId)
-          if (!binding.ok) throw Object.assign(new Error(binding.reason), { code: binding.reason })
+          const resolved = await resolveProjectRepository(proposal.projectId)
+          if (!resolved.ok) throw Object.assign(new Error(resolved.reason), { code: resolved.reason })
+          if (githubToken.value === '') throw Object.assign(new Error('github_token_missing'), { code: 'github_token_missing' })
           assertOperationGate('open_pr', proposal.projectId)
           const revision = state.mandate.revision
-          const value = await connectors.get('github').openPullRequest(boardPayload, {
+          const value = await githubAdapterFor(resolved.repository).openPullRequest(boardPayload, {
             idempotencyKey: `${proposal.projectId}:pr:${proposal.id}`,
             beforeWrite: () => assertOperationGate('open_pr', proposal.projectId, { revision }),
           })
@@ -5011,11 +5076,12 @@ export function apply(ctx, config = {}) {
 export const configSchema = {
   workspaceId: { type: 'string', description: 'Optional default workspace id for manual dispatches.' },
   baseUrl: { type: 'string', description: 'Origin of the Task Board HTTP API (defaults to the DSH web origin).' },
-  githubRepository: { type: 'string', description: 'Optional owner/name for the read-only GitHub adapter.' },
-  allowGithubWrites: { type: 'boolean', description: 'Explicit opt-in for GitHub writes (create issue, comment, open PR). Default false; writes also require the operator mandate action and are audited.' },
+  githubRepository: { type: 'string', description: 'Optional owner/name pin. When omitted, each project uses its own Git origin remote; when set, a project whose remote disagrees is refused.' },
+  githubToken: { type: 'string', description: 'Optional GitHub token. Overrides discovery (an empty string disables discovery). Never published.' },
+  githubTokenDiscovery: { type: 'string', description: 'Credential discovery: auto (GITHUB_TOKEN, then the local `gh auth token`), env (GITHUB_TOKEN only), off (explicit githubToken only). Default auto.' },
+  allowGithubWrites: { type: 'boolean', description: 'Explicit opt-in for the MANUAL GitHub write routes (create issue, comment, open PR). The Super Agent open_pr action is governed by the operator mandate and an exact approval instead. Default false.' },
   mandate: { type: 'object', description: 'Optional FIRST-RUN operator mandate (scopeMode, level, actions, projects). Ignored when a durable mandate is already configured; audited as mandate_seeded_from_config.' },
 }
 
 /** Exposed for tests and for future services: the status vocabulary is contract. */
 export const AGENT_BOARD_STATUSES = STATUS
-

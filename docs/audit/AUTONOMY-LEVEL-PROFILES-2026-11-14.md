@@ -72,3 +72,13 @@ Le premier lot ne prétend PAS rendre exécutables les 9 actions précédemment 
 - Preuves : suite complète **675/675** verte après reconstruction du bundle, `node --check`, smoke host et `git diff --check` propres. Tests ajoutés : payloads `schedule` (déclencheur unique, cron, date passée, champs propriétaires), création native exacte, exécution automatique L4 et approbation exacte à usage unique côté hôte, et cohérence des profils (actions humaines en `deny`).
 
 Restent `push_branch`, `protected_branch_write`, `secrets` : elles sont désormais explicitement réservées à l’opérateur, et le niveau ne les promet plus. Aucune n’est revendiquée comme validée live.
+
+### Lot 6 — GitHub : jeton découvert et dépôt par projet
+
+Symptôme rapporté : « Ouvrir une PR — Interdit — GitHub non configuré » alors que GitHub est utilisé sur la machine (gh/git authentifiés).
+
+- **Le dépôt n’est plus une configuration globale obligatoire.** Chaque projet utilise son propre `remote origin` Git, résolu au moment de l’action ; `githubRepository` devient une épingle optionnelle (si elle est définie, un remote différent est refusé par `forge_project_mismatch`). Le dépôt résolu entre dans le payload haché de l’accord : un changement de remote après l’accord ne redirige pas l’écriture.
+- **Le jeton est découvert, pas exigé en variable d’environnement.** Ordre : `githubToken` explicite (config) → `GITHUB_TOKEN` → `gh auth token` (CLI locale déjà authentifiée). Politique réglable par `githubTokenDiscovery` : `auto` (défaut), `env` (variable seulement), `off` (config explicite seulement). Le jeton n’est jamais publié, journalisé ni renvoyé ; il n’est envoyé qu’à `api.github.com`.
+- La capacité `open_pr` ne dépend donc plus du dépôt configuré : elle est disponible dès qu’un jeton utilisable existe, et le refus, s’il persiste, devient actionnable : `github_token_missing` — « jeton GitHub introuvable : connectez gh (gh auth login) ou définissez GITHUB_TOKEN ».
+- Un adaptateur forge est mis en cache par dépôt (borné) pour conserver l’idempotence en mémoire entre deux tentatives rapprochées, l’API de liste GitHub étant éventuellement cohérente.
+- Preuves : suite complète **676/676** verte après reconstruction du bundle ; nouveau test : `open_pr` fonctionne avec le seul remote du projet, sans `githubRepository` configuré ; les attentes de capacité sans jeton passent à `github_token_missing`. Syntaxe, smoke host et `git diff --check` propres. Aucune création réelle de PR n’est revendiquée.
