@@ -4,9 +4,11 @@ A card-and-branch cockpit for **DeepSeek Harness**: one card per session and
 sub-agent, grouped by project, with real native statuses and model/provider, a
 supervisor that launches Task Board work in OFF / SUPERVISED / AUTONOMOUS modes,
 a **Super Agent** that plans across projects from an explicit operator mandate,
-a failover path that switches model/provider and hands the task off, and a
+a failover path that switches model/provider and hands the task off, a
 **unified execution backend** that keeps the Task Board as the canonical
-execution record while the board keeps the model failover.
+execution record while the board keeps the model failover, and an autonomy path
+that **does not need the Task Board at all** (accepted ADRs, roadmap/TODO
+checklists and forge issues become real dispatched work, with L4 backlog triage).
 
 > **Status: PARTIAL (honest).** The supervision cockpit, the orchestration gates,
 > the routing/budget/fencing layer and the unified execution contract are
@@ -33,6 +35,16 @@ execution record while the board keeps the model failover.
 > repository; no merge/protected-push/delete exists. Full evidence, limits and
 > rollback: [`docs/GOAL6-DELIVERY.md`](docs/GOAL6-DELIVERY.md).
 >
+> **GOAL 7 (autonomy without the Task Board):** the Super Agent no longer needs
+> `dsh-taskboard` to advance a project. Accepted ADR follow-ups, roadmap/TODO
+> checklists and open GitHub issues become **work items** dispatched with
+> `launch_work` into real worker sessions, journaled by fingerprint (no loop, no
+> duplicate). At maximum autonomy (L4) it can also **triage the backlog**:
+> `promote_task` moves ONE unblocked, unassigned card out of `backlog` through
+> the owner's native `taskboard_move`, never to `done`. Below L4 the operator
+> answers a single-use approval. Evidence and limits:
+> [`docs/audit/AUTONOMY-LEVEL-PROFILES-2026-11-14.md`](docs/audit/AUTONOMY-LEVEL-PROFILES-2026-11-14.md).
+>
 > **GOAL 4 (mascots + supervision):** the 15 approved mascots, the reusable
 > `AgentAvatar`, the role-aware cards, the workspace → project → orchestrator
 > hierarchy and the Super Orchestrator supervision layer are implemented and
@@ -53,13 +65,14 @@ execution record while the board keeps the model failover.
 
 | Branch | Role |
 |---|---|
-| `main` | MVP baseline (`ec955fb`): panel, orchestration, simulated failover. |
-| `dev` | Integration branch: GOAL 1 UX + GOAL 2 runtime audit/corrections + GOAL 3 supervision/orchestration, the branch to build and try. |
+| `main` | Stable line: starts at the MVP baseline (`ec955fb`) and now carries the merged integration state — `main` and `dev` point at the same tree. |
+| `dev` | Integration branch: GOAL 1 UX + GOAL 2 runtime audit/corrections + GOAL 3 supervision/orchestration + the goal-6/7 mandate and autonomy work (real executors for every non-human action, project-declared work without the Task Board, L4 backlog triage), the branch to build and try. |
 | `fix/agent-board-runtime-e2e` | Feature history of the GOAL 2 corrections and review rounds (merged into `dev`). |
 | `goal3/supervision-orchestration` | GOAL 3 work: unified execution contract, layered routing/budget/fencing, supervision fidelity, adapters, benchmarks, reviews (to be merged into `dev`). |
 | `feat/agent-board-mascots-super-orchestrator` | GOAL 4: the 15 Mascot SVGs byte-identical, role registry/aliases, `AgentAvatar`, role-aware cards + hierarchy + filters, the Super Orchestrator supervision layer and the Task Board coordination read model. |
 | `feat/agent-board-responsive-cockpit` | GOAL 5: the responsive cockpit (global multi-project view by default, compact header/filters, Super Orchestrator band, runtime indicators, adaptive grid, inspector drawer / bottom sheet, two-column mobile mosaic). |
 | `feat/agent-board-superagent` | GOAL 6: explicit mandate (scope/levels/actions), single policy gate, Super Agent runtime (identity, directives, memory, DecisionInbox), portfolio planning, Task Board public-v1 client, opt-in GitHub writes, cockpit tabs. |
+| `feat/superagent-ux-polish` | GOAL 6/7 continuation: level profiles applied on selection, real executors (native delete/schedule/merge/policy, GitHub PR with credential discovery and per-project repository), project-declared work items without the Task Board, L4 backlog triage (merged into `dev` and `main`). |
 
 The board **never merges, never pushes a protected branch and never deletes** on
 a forge. It can open an issue/comment/PR **only** when the operator both enables
@@ -141,6 +154,14 @@ stays the sole owner of tickets and executions.
   lock, a lease watchdog, and fencing that refuses a stale writer. A restart
   reconciles (never relaunches silently) and releases the Task Board lease of an
   interrupted attempt.
+- **Autonomy without a Task Board** — accepted ADR follow-ups, roadmap/TODO
+  checklists and open forge issues are detected as **work items** and dispatched
+  into real worker sessions, one fingerprint per item (completed never replayed,
+  failures retried with a delay and a cap). A `Proposed` ADR, a `[decision]` line
+  or an assigned/decision-labelled issue is refused as `needs_human_decision` and
+  shown in the panel instead of being guessed. At L4 the Super Agent can also
+  promote one unblocked backlog card to `todo` per cycle, through the owner's own
+  native tool, and never to `done`.
 - **Security posture** — card text is delimited **data** (prompt-injection
   guard), a card can never widen its permission, every route goes through the
   connection trust gate, checkpoints are bounded and secret-redacted, no client
@@ -258,9 +279,29 @@ tool (`backlog → todo`, with `ifVersion`), journaled with its reason, commente
 on the card, limited to 3 promotions per cycle and blocked for 6 h per card.
 `done` remains unreachable: triage promotes work, it never accepts it.
 
+### Minimum setup to see the Super Agent act (no Task Board)
+
+1. Start the Super Agent and pick its model (cockpit → *Super Agent*), then set
+   the mandate: `scopeMode: 'selected'`, the project workspace ids you want,
+   `level: 'L3'` (routine autonomy) or `'L4'` (adds backlog triage + critical
+   approvals), and `projects.<id>.enabled: true`.
+2. Give the project something to declare: an **accepted** ADR with an unchecked
+   `- [ ]` follow-up, or a `- [ ]` line in `TODO.md`/`ROADMAP.md`. A `Proposed`
+   ADR is deliberately NOT dispatched: accepting it is your decision.
+3. `GET /dsh-agent-board/api/v2/dry-run` must list it under `work.ready` with
+   `writes: 0`. The *Vue d'ensemble* tab shows the same items ("Travail détecté").
+4. Leave the mode on AUTONOMOUS: the next cycle dispatches one item per worker up
+   to `maxConcurrent`, and the panel shows a normal session card.
+
+`launch_work` requires `launch_work` **and** `launch`; a read-only project
+(`allowedPermissions` without `workspace-write`) still dispatches, but the
+worker is told to produce a change plan and never to claim the work is done.
+
 Honest limits: the real Task Board public API is disabled without a token, so
 public-v1 **writes** are not validated live; GitHub writes are validated on a
-disposable repository only. See `docs/GOAL6-DELIVERY.md` §10.
+disposable repository only (see `docs/GOAL6-DELIVERY.md` §10). The new work
+sources are proved by host tests, **not** by a live GUI run (the host modules
+load at DSH startup and the local API requires a token).
 
 ## Configuration
 
@@ -292,9 +333,14 @@ POST /dsh-agent-board/api/v2/policy
   and explicitly gives up model failover; `"contract"` uses the proposed execution
   contract (`docs/TASKBOARD-CONTRACT.md`) to keep BOTH. The Task Board ledger is
   read-only from the board's perspective; `done` stays human-only.
-- GitHub: set `githubRepository: 'owner/name'` to enable reads. Writes require
-  `allowGithubWrites: true` **and** the mandate action; when enabled they use
-  `GITHUB_TOKEN` from the environment (never the UI, never logged).
+- GitHub: no global repository is required anymore. Each project uses its own
+  `remote origin` (a `githubRepository` config value becomes an optional pin: a
+  different remote is then refused with `forge_project_mismatch`). Reads work as
+  soon as a credential is usable: `githubToken` (config) → `GITHUB_TOKEN` →
+  `gh auth token` (local CLI), governed by `githubTokenDiscovery`
+  (`auto`/`env`/`off`). Writes require `allowGithubWrites: true` **and** the
+  mandate action; the token is only ever sent to `api.github.com`, never logged,
+  never published and never shown in the UI.
 
 ## Safety invariants
 
