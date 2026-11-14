@@ -358,7 +358,10 @@ function dabMakePage(store, ctx) {
       try {
         const result = await operation()
         const error = String(result?.payload?.error ?? result?.error ?? result?.status ?? 'failed')
-        setNotice(result?.ok === true ? '' : `${label}: ${typeof dabReasonText === 'function' ? dabReasonText(error) : error}`)
+        const pendingOwnerApproval = result?.payload?.execution?.pendingApproval
+        setNotice(result?.ok === true
+          ? (pendingOwnerApproval ? dabReasonText('dependency_approval_pending') : '')
+          : `${label}: ${typeof dabReasonText === 'function' ? dabReasonText(error) : error}`)
       } finally {
         setBusy(false)
       }

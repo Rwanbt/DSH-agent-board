@@ -710,7 +710,7 @@ test('the deep self-test stays an operator diagnostic, even after Stop', async (
 test('capabilities name human-only actions instead of pretending an adapter is missing', async () => {
   await withHost({ mandate: TEST_MANDATE }, async ({ routes }) => {
     const caps = (await callJson(routes, 'GET', '/state')).body.value.capabilities
-    for (const action of ['merge', 'push_branch', 'protected_branch_write', 'secrets', 'policy_change', 'delete_task', 'schedule']) {
+    for (const action of ['merge', 'push_branch', 'protected_branch_write', 'secrets', 'schedule']) {
       assert.equal(caps[action].state, 'unavailable', action)
       assert.equal(caps[action].reason, 'human_only_action', action)
       assert.equal(caps[action].source, 'design', action)
@@ -720,6 +720,10 @@ test('capabilities name human-only actions instead of pretending an adapter is m
     assert.equal(caps.delegate.implemented, true)
     assert.equal(caps.launch.implemented, true)
     assert.equal(caps.merge.implemented, false)
+    assert.equal(caps.delete_task.implemented, true)
+    assert.equal(caps.delete_task.reason, 'native_tool_unavailable')
+    assert.equal(caps.policy_change.implemented, true)
+    assert.equal(caps.policy_change.executor, 'project-policy')
   })
 })
 
