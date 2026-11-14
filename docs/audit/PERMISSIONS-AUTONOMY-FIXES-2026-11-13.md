@@ -49,12 +49,12 @@ Ce document décrit ce qui a été corrigé, et surtout ce qui **reste** non pro
 
 ### 1. Champs propriétaires refusés sur toute écriture du cerveau
 
-Un payload de modèle est déjà normalisé à l’ingestion, mais l’opération **stockée** est rejouée plus tard par un autre chemin. `src/contracts/board-writes.js` définit l’unique liste blanche (`title`, `description`, `urgency`, `prompt`, `blocked`, `waitingForHuman`, `waitingReason`, `body`) et la même barrière s’applique aux deux chemins :
+Un payload de modèle est déjà normalisé à l’ingestion, mais l’opération **stockée** est rejouée plus tard par un autre chemin. `src/contracts/board-writes.js` définit l’unique liste blanche (`title`, `description`, `urgency`, `blocked`, `waitingForHuman`, `waitingReason`, `body`) et la même barrière s’applique aux deux chemins :
 
 - chemin automatique : un champ hors liste fait **refuser** la proposition (`payload_field_forbidden`, champs nommés) au lieu d’être silencieusement jeté ;
 - chemin approuvé : les octets stockés sont re-validés avant l’effet, et un refus **ne consomme pas** l’accord humain.
 
-Ainsi `permission`, `model`, `execution`, `isolation`, `status`, `ifVersion`, etc. ne peuvent pas voyager dans un `create_task`/`update_task`/`comment` : autoriser `update_task` n’autorise ni `danger-full-access`, ni un autre modèle, ni `done`.
+Ainsi `permission`, `model`, `execution`, `isolation`, `status`, `prompt`, `ifVersion`, etc. ne peuvent pas voyager dans un `create_task`/`update_task`/`comment` : autoriser `update_task` n’autorise ni `danger-full-access`, ni un autre modèle, ni `done`, ni le prompt d’exécution.
 
 ### 2. Capacités : « pas encore » vs « jamais par le cerveau »
 
@@ -97,6 +97,14 @@ Le rouge `board-not-idempotent:projects/ravum-flow/BOARD.md` venait d’une proj
 ### 3. État du host au moment du contrôle
 
 PID 1264 (GUI) démarré le 13/11/2026 à 16:37:39 ; `src/host/index.js` modifié à 20:00:19 : le host en cours d’exécution n’a pas chargé la Suite 2. Le plugin du profil est un lien symbolique `C:\Users\barat\.dsh\profiles\desktop\node_modules\dsh-agent-board` → `D:\App\DSH-agent-board`, donc un redémarrage charge bien le nouveau code hôte, et le bundle client servi après rechargement est celui du dépôt (SHA-256 identiques). La recette live reste à exécuter par l’opérateur (redémarrage + 4 étapes ci-dessus).
+
+## Décision du 15/11/2026 — le prompt d’exécution est un champ propriétaire
+
+Option B retenue : le `prompt` d’exécution est un champ propriétaire, au même titre que `model`, `execution`, `permission`, `isolation` et `status`. Il est retiré des écritures du cerveau sur les **deux couches** : normalisation à l’ingestion (`src/superagent/brain.js`) et liste blanche de l’hôte (`src/contracts/board-writes.js`, `src/contracts/action-payloads.js`) pour `update_task` et `schedule`.
+
+Le cerveau écrit le **contenu** de la carte par `title`/`description` ; le `prompt` d’exécution d’une carte planifiée est saisi par l’opérateur dans l’interface. Une proposition du modèle qui contient `prompt` voit ce champ **retiré à l’ingestion** ; toute charge utile qui contient encore `prompt` — notamment une intention d’approbation stockée avant ce correctif — est **refusée au rejeu** (`payload_field_forbidden`, champ nommé), **sans consommer l’accord**.
+
+Preuves : `tests/board-writes.test.js` (champ propriétaire + normalisation), `tests/action-payloads.test.js` (schedule refusé), `tests/goal6-superagent-host.test.js` (prompt absent de l’appel natif ; ancienne intention stockée refusée au rejeu sans effet ni consommation).
 
 ## Fichiers principaux
 
