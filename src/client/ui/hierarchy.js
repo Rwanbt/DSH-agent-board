@@ -558,6 +558,10 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
     runtime,
     nextWakeAt: Number.isFinite(Number(sa?.nextWakeAt)) ? Number(sa.nextWakeAt) : null,
     lastCycle: sa?.lastCycle !== null && typeof sa?.lastCycle === 'object' ? sa.lastCycle : null,
+    // Work the host detected OUTSIDE the Task Board (accepted ADR follow-ups,
+    // roadmap/TODO checklists, forge issues). Absent on an older host: null.
+    work: sa?.work !== null && typeof sa?.work === 'object' && !Array.isArray(sa.work) ? sa.work : null,
+    promotions: Array.isArray(sa?.promotions) ? sa.promotions.filter(entry => entry !== null && typeof entry === 'object') : [],
     memory: sa?.memory !== null && typeof sa?.memory === 'object' ? sa.memory : null,
     paused: context?.paused === true || mandate?.paused === true || identityStatus === 'paused',
   }
@@ -638,7 +642,9 @@ const DAB_ACTION_ROWS = Object.freeze([
   ['comment', 'actionComment'],
   ['create_task', 'actionCreateTask'],
   ['update_task', 'actionUpdateTask'],
+  ['promote_task', 'actionPromoteTask'],
   ['launch', 'actionLaunch'],
+  ['launch_work', 'actionLaunchWork'],
   ['delegate', 'actionDelegate'],
   ['schedule', 'actionSchedule'],
   ['push_branch', 'actionPushBranch'],
@@ -653,7 +659,7 @@ const DAB_CRITICAL_ACTIONS = Object.freeze(['merge', 'protected_branch_write', '
 const DAB_ACTION_MIN_LEVEL = Object.freeze({
   // `launch` is possible from L2, but only after a valid human approval; the
   // helper below therefore returns `approval_required` below L3.
-  comment: 'L3', create_task: 'L3', update_task: 'L3', launch: 'L2', delegate: 'L4',
+  comment: 'L3', create_task: 'L3', update_task: 'L3', launch: 'L2', launch_work: 'L2', promote_task: 'L4', delegate: 'L4',
   schedule: 'L3', push_branch: 'L3', open_pr: 'L4', merge: 'L4', protected_branch_write: 'L4',
   delete_task: 'L4', secrets: 'L4', policy_change: 'L4',
 })

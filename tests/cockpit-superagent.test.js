@@ -678,14 +678,14 @@ test('settings show model discovery, refusal reasons per action, connector and l
   // Stop refuses every action, with the real reason, on every row.
   const permission = byClass(tree, 'dab-sa-permission').find(node => node.props['data-action'] === 'merge')
   assert.equal(permission.props['data-granted'], 'false')
-  // The Stop refusal applies to all 13 actions: stated ONCE above the list,
+  // The Stop refusal applies to all 15 actions: stated ONCE above the list,
   // with the raw code as a tooltip, not repeated on every row.
   const global = byClass(tree, 'dab-sa-permissions-global')
   assert.equal(global.length, 1)
   assert.match(textOf(global[0]), /stopped by you: use Resume/)
   assert.equal(global[0].props.title, 'stopped_by_operator')
   assert.equal(byClass(permission, 'dab-sa-permission-reason').length, 0)
-  assert.equal(byClass(tree, 'dab-sa-permission').length, 13)
+  assert.equal(byClass(tree, 'dab-sa-permission').length, 15)
   assert.equal(byClass(tree, 'dab-sa-stop').length, 1)
   assert.equal(byClass(tree, 'dab-sa-resume').length, 1)
   assert.match(text, /Configured and reachable/)

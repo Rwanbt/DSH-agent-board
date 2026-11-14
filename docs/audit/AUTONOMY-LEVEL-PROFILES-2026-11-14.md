@@ -82,3 +82,24 @@ Symptôme rapporté : « Ouvrir une PR — Interdit — GitHub non configuré »
 - La capacité `open_pr` ne dépend donc plus du dépôt configuré : elle est disponible dès qu’un jeton utilisable existe, et le refus, s’il persiste, devient actionnable : `github_token_missing` — « jeton GitHub introuvable : connectez gh (gh auth login) ou définissez GITHUB_TOKEN ».
 - Un adaptateur forge est mis en cache par dépôt (borné) pour conserver l’idempotence en mémoire entre deux tentatives rapprochées, l’API de liste GitHub étant éventuellement cohérente.
 - Preuves : suite complète **676/676** verte après reconstruction du bundle ; nouveau test : `open_pr` fonctionne avec le seul remote du projet, sans `githubRepository` configuré ; les attentes de capacité sans jeton passent à `github_token_missing`. Syntaxe, smoke host et `git diff --check` propres. Aucune création réelle de PR n’est revendiquée.
+
+### Lot 7 — autonomie maximale sans Task Board + tri du backlog
+
+Deux blocages critiques restaient après le lot 6.
+
+**A. Le Super Agent ne faisait rien sans Task Board.** Le cycle lisait exclusivement les cartes (`connectors.get('dsh-taskboard').list()`), donc un opérateur sans ce plugin voyait un agent `idle` avec `noop` et aucune action possible, alors que le projet déclarait déjà son intention dans ses documents.
+
+- Nouvelle source de travail **propre au plugin**, déterministe et bornée : ADR acceptés (`docs/adr`, `docs/decisions`, `adr`, `decisions`), listes `TODO`/`BACKLOG`/`ROADMAP` (`TODO.md`, `BACKLOG.md`, `ROADMAP.md`, `docs/…`), et issues ouvertes du `remote origin` GitHub quand un jeton est disponible. Lecture bornée (40 fichiers, 200 ko), cache 60 s (documents) / 5 min (issues), toute erreur de lecture = source vide, jamais une panne de cycle.
+- Un item devient une **vraie session de travail** via la nouvelle action `launch_work { workItemId }` : id re-résolu par l’hôte (jamais celui du modèle), readiness revérifiée, droit `launch_work` **et** `launch`, budget/concurrence communs, session créée dans le répertoire du projet avec les directives de l’opérateur et la source exacte de l’item. La tâche synthétique force le backend `board` (le Task Board ne peut pas exécuter une carte inexistante) et n’est jamais `done`.
+- L’assignation journalise `workSource { source, ref, fingerprint, origin }` : un item terminé n’est **jamais** redispatché, un item en échec est retenté après 1 h avec un plafond de 3 tentatives, et un changement réel du document (nouvelle empreinte) redevient dispatchable.
+- Garde-fou de décision humaine, déterministe : ADR **Proposed/Draft** (ou statut inconnu), ligne marquée `[decision]`/`@human`/`besoin de décision`, issue assignée ou étiquetée `blocked`/`needs-decision`/`question` → `needsHumanDecision` et refus `needs_human_decision:<raison>`. Le prompt du worker lui interdit explicitement de deviner une décision.
+- Le panneau expose `superagent.work` (items détectés prêts / en attente de décision) et le dry-run liste la même chose sans écrire.
+
+**B. Une carte `backlog` ne pouvait jamais sortir du backlog**, y compris quand elle était débloquée et sans décision humaine.
+
+- Nouvelle action `promote_task { reason }`, **minimum L4** (en dessous : approbation humaine à usage unique) et **jamais critique** : elle déplace **une** carte `backlog → todo` via l’outil natif de l’opérateur `taskboard_move` (`ifVersion`), avec les mêmes règles de propriété/dépendance que son outil. `done` reste inatteignable.
+- Préconditions déterministes (`src/orchestrator/triage.js`), chacune avec son code : `task_blocked`, `task_waiting_for_human`, `needs_human_decision`, `claimed_by_another_session`, `already_running_in_taskboard`, `dependencies_unsatisfied:<ids>`, `task_not_backlog:<statut>`, `task_trashed`, `invalid_task`.
+- Bornes : 3 promotions par cycle, cooldown de 6 h par carte journalisé durablement (`superagent.promotions`, normalisé et borné), audit `backlog_promoted` et commentaire sur la carte quand l’API publique le permet — l’humain voit qui a déplacé quoi et pourquoi.
+- Profils : `promote_task` = `deny` sous L4, `ask` à L2/L3, `auto` à L4 ; `launch_work` = `deny` sous L2, `ask` à L2, `auto` à L3+. Les deux figurent dans la matrice de capacités (`native-taskboard`, `worker`) et dans l’onglet permissions du cockpit.
+
+**Preuves.** Suite complète **690/690** verte (14 tests ajoutés : tri du backlog, parsing ADR/checklists/issues, readiness/retry, et un hôte réel sans Task Board qui ouvre exactement deux sessions pour deux items prêts, refuse l’ADR proposé, ne le relance pas deux fois, puis promeut une carte L4 via l’outil natif et refuse bloqué/attente/dépendance/L3). Bundle client reconstruit (24 modules), `git diff --check` propre. **Aucune validation live dans la GUI** : les modules hôte ne se chargent qu’au démarrage de DSH et l’API locale exige un jeton ; le comportement est prouvé par les tests hôte, pas par une observation du panneau.

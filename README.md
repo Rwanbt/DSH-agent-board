@@ -212,15 +212,51 @@ After the upgrade the board is **inert by design**: `state.json` migrates to
   autonomy (comment, create/update, schedule, push branch), `L4` critical
   (open PR, merge-triggering actions). The **most restrictive** rule wins:
   mode, stop, action grant, level, project state, integration ceiling.
-- **Actions** — individual grants (`launch`, `delegate`, `create_task`,
-  `update_task`, `comment`, `open_pr`, `push_branch`, `delete_task`,
-  `schedule`); a level never implies an action.
+- **Actions** — individual grants (`launch`, `launch_work`, `delegate`,
+  `create_task`, `update_task`, `promote_task`, `comment`, `open_pr`,
+  `push_branch`, `delete_task`, `schedule`); a level never implies an action.
 - **Dry run** — `GET /dry-run` simulates one tick and returns, for every
-  candidate, `allowed`/`reason` and the effective capability matrix.
+  candidate, `allowed`/`reason`, the detected project work and the effective
+  capability matrix.
 - **Decisions** — the Super Agent never crosses the gate: it writes a
   DecisionInbox item, the operator answers, and an approval is **single-use**.
 - **Directives & memory** — persisted operator directives (global/project) and a
   bounded memory digest; a project can pin its own model and hourly budget.
+
+### The Task Board is optional (project-declared work)
+
+The Super Agent does not need the Task Board plugin to advance a project. A
+project already states its intent in files a human wrote, and those documents
+are a first-class work source:
+
+| Source | Read from | Becomes work when |
+|---|---|---|
+| `adr` | `docs/adr/*.md`, `docs/decisions/*.md`, `adr/`, `decisions/` | the ADR is **Accepted** and declares an unchecked follow-up (`- [ ]`) |
+| `roadmap` | `ROADMAP.md`, `docs/ROADMAP.md`, `docs/roadmap.md`, `docs/next-steps.md`, `docs/plan.md` | an unchecked checklist line |
+| `todo` | `TODO.md`, `BACKLOG.md`, `docs/TODO.md`, `docs/BACKLOG.md` | an unchecked checklist line |
+| `issue` | the project's GitHub `origin` (open issues, when a credential is available) | the issue is open, not a PR, unassigned and not labelled `blocked`/`needs-decision`/`question` |
+
+A detected item is dispatched with **`launch_work { workItemId }`** (minimum
+level L2, automatic at L3+): the host re-resolves the id, checks readiness, then
+opens one real worker session in the project directory with the project's
+directives and the item's exact source. The assignment journals the item
+fingerprint, so a completed item is never dispatched twice, a failed one is
+retried with a delay (3 attempts max), and a **Proposed** ADR or an explicitly
+marked item (`[decision]`, assigned/labelled issue) is refused with
+`needs_human_decision` and reported in the panel instead of being executed.
+When no credential exists the document sources keep working; the forge source is
+simply empty.
+
+### Backlog triage at maximum autonomy (L4)
+
+`promote_task { reason }` is the only way a card leaves `backlog` without the
+operator: at **L4 only** (below that, the operator answers a single-use bound
+approval), the card must be `backlog`, unblocked, not waiting for a human, not
+carrying `needsHumanDecision`, unclaimed, not running and have every
+prerequisite `done`. It is executed through the owner's native `taskboard_move`
+tool (`backlog → todo`, with `ifVersion`), journaled with its reason, commented
+on the card, limited to 3 promotions per cycle and blocked for 6 h per card.
+`done` remains unreachable: triage promotes work, it never accepts it.
 
 Honest limits: the real Task Board public API is disabled without a token, so
 public-v1 **writes** are not validated live; GitHub writes are validated on a

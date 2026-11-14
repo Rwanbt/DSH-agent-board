@@ -38,7 +38,13 @@ export const ACTIONS = Object.freeze([
   'comment',
   'create_task',
   'update_task',
+  // Backlog triage: moving ONE unblocked, unassigned backlog card to `todo`.
+  // Never a promotion to `done` (human-only), never a bypass of a prerequisite.
+  'promote_task',
   'launch',
+  // Dispatch of a work item the PROJECT declares itself (accepted ADR follow-up,
+  // roadmap/TODO checklist, forge issue) when no Task Board card exists.
+  'launch_work',
   'delegate',
   'schedule',
   'push_branch',
@@ -64,9 +70,14 @@ export const ACTION_MIN_LEVEL = Object.freeze({
   propose: 'L1',
   // L2 may execute a prepared change, but ONLY after a valid human approval.
   launch: 'L2',
+  // Same worker-session effect as `launch`: supervised at L2, automatic at L3+.
+  launch_work: 'L2',
   comment: 'L3',
   create_task: 'L3',
   update_task: 'L3',
+  // Leaving the backlog is only autonomous at MAXIMUM autonomy (L4); below that
+  // the operator answers a per-occurrence approval.
+  promote_task: 'L4',
   schedule: 'L3',
   push_branch: 'L3',
   delegate: 'L4',
@@ -110,6 +121,7 @@ export const INTEGRATION_CEILING = Object.freeze({
     update_task: 'L4',
     comment: 'L4',
     launch: 'L4',
+    promote_task: 'L4',
     delete_task: 'L4',
   }),
   github: Object.freeze({

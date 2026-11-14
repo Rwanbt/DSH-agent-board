@@ -277,6 +277,11 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
     ...facts.pendingDecisions.slice(0, 2).map(decision => `${dabT('superOverviewDecision')} : ${String(decision.title ?? decision.id)}`),
   ]
   const journal = dabSaBound(activity.slice(-20), 4)
+  const work = facts.work
+  const workRows = [
+    ...(Array.isArray(work?.ready) ? work.ready : []).map(item => ({ ...item, state: 'ready' })),
+    ...(Array.isArray(work?.needsDecision) ? work.needsDecision : []).map(item => ({ ...item, state: 'decision' })),
+  ]
 
   return h('div', { className: 'dab-sa-tab dab-sa-overview' },
     dabSaSectionQ(h, 'objective', dabT('superOverviewObjective'), objectives.length === 0,
@@ -305,6 +310,15 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
           h('dt', null, dabT('superOverviewApplied')), h('dd', null, String(lastCycle.applied ?? 0)),
           h('dt', null, dabT('superOverviewAt')), h('dd', null, dabSaMoment(lastCycle.at) ?? dabT('superNotAvailable')),
           h('dt', null, dabT('superOverviewDuration')), h('dd', null, `${Number(lastCycle.durationMs) || 0} ms`))),
+    dabSaSectionQ(h, 'work', dabT('superOverviewWork'), workRows.length === 0,
+      workRows.length === 0
+        ? h('div', { className: 'dab-muted' }, facts.available
+          ? (work !== null && work.at !== null ? dabT('superNoWork') : dabT('superNoCycle'))
+          : dabReasonText('superagent_not_published'))
+        : h('ul', { className: 'dab-sa-list' }, workRows.slice(0, 6).map(item => h('li', { key: String(item.id), title: String(item.ref ?? '') },
+          h('span', { className: 'dab-sa-list-title' }, String(item.title ?? item.id)),
+          h('span', { className: 'dab-tag' }, item.state === 'ready' ? dabT('superWorkReady') : dabT('superWorkNeedsDecision')),
+          h('span', { className: 'dab-muted' }, ` · ${String(item.source ?? '?')} · ${String(item.projectId ?? '')}`))))),
     dabSaSection(h, 'capabilities', dabT('superOverviewCapabilities'),
       workspace !== null && workspace !== undefined && workspace.capabilities !== undefined
         ? dabCapabilityMatrix(h, workspace.capabilities, workspace.capabilityReasons, context)

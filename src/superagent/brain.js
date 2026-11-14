@@ -45,7 +45,7 @@ export function assessmentSchemaLines(schemaVersion = ASSESSMENT_SCHEMA_VERSION)
     '  "situation": string  // one or two sentences, plain text (NOT an object)',
     `  "findings": [ { "kind": one of ${FINDING_KINDS.map(value => `"${value}"`).join(' | ')}, "projectId": a project id from the portfolio or null, "summary": string, "refs": [string] } ],`,
     `  "proposals": [ { "action": one of ${ASSESSMENT_ACTIONS.map(value => `"${value}"`).join(' | ')}, "projectId": a project id from the portfolio, "taskId": string or null, "rationale": string, "risk": "low" | "medium" | "high", "expectedEffect": string, "requiresApproval": boolean, "payload": object or null } ],`,
-    '  // payload is action-specific: create_task {"title","description"?,"urgency"?}; update_task {"title"?,"description"?,"prompt"?,"urgency"?,"blocked"?,"waitingForHuman"?,"waitingReason"?}; comment {"body"}; open_pr {"title","body"?,"head","base"}; delete_task {"reason"} requires taskId; merge {"number":positive integer,"method"?:"merge"|"squash"|"rebase","headSha"?:full commit SHA} captures the real repository/head/base before human approval; policy_change {"priority"?:integer 0..9,"maxTasksPerHour"?:integer 0..100} edits only that project, never global rights; schedule {"title","description"?,"prompt"?,"urgency"?,"cron"? (5 fields) XOR "runAt"? (future ISO/epoch)} creates one scheduled card in that project; launch/delegate use taskId and no payload.',
+    '  // payload is action-specific: create_task {"title","description"?,"urgency"?}; update_task {"title"?,"description"?,"prompt"?,"urgency"?,"blocked"?,"waitingForHuman"?,"waitingReason"?}; comment {"body"}; open_pr {"title","body"?,"head","base"}; delete_task {"reason"} requires taskId; promote_task {"reason"} requires taskId and moves ONE backlog card that is unblocked, unassigned and needs no human decision to todo; launch_work {"workItemId"} requires NO taskId and dispatches one WORK ITEM listed below (the project declares it in an accepted ADR, a roadmap/TODO checklist or an issue); merge {"number":positive integer,"method"?:"merge"|"squash"|"rebase","headSha"?:full commit SHA} captures the real repository/head/base before human approval; policy_change {"priority"?:integer 0..9,"maxTasksPerHour"?:integer 0..100} edits only that project, never global rights; schedule {"title","description"?,"prompt"?,"urgency"?,"cron"? (5 fields) XOR "runAt"? (future ISO/epoch)} creates one scheduled card in that project; launch/delegate use taskId and no payload.',
     `  "decisions": [ { "kind": one of ${DECISION_KINDS.map(value => `"${value}"`).join(' | ')}, "projectId": id or null, "title": string, "context": string, "options": [ { "label": string, "effect": "approve" | "reject" } ], "recommendation": string, "urgency": "urgent" | "normal" } ],`,
     '  "directiveEcho": [string]  // the operator directives you applied, quoted; [] if none',
     '  "noopReason": string or null  // non-empty when there is nothing useful to do',
@@ -207,6 +207,39 @@ export function buildAssessmentPrompt(input = {}) {
     externalLines.push(`- ${tasksTruncated} more task(s) are outside this bounded view (ready cards are listed first); do not assume the board is idle.`)
   }
 
+  // Project-declared work: the Task Board is optional. These items come from the
+  // project's own accepted ADRs, roadmap/TODO checklists and forge issues.
+  const workItems = Array.isArray(source.workItems) ? source.workItems.slice(0, 25) : []
+  const workItemsTotal = finiteInt(source.workItemsTotal, workItems.length) ?? workItems.length
+  if (workItems.length > 0) {
+    externalLines.push('')
+    externalLines.push('WORK ITEMS declared by the projects (dispatch with launch_work, no taskId)')
+    for (const item of workItems) {
+      if (!isRecord(item)) continue
+      const id = boundedText(item.id, 120)
+      if (id === '') continue
+      const itemProject = boundedText(item.projectId, 120) || '(none)'
+      const source_ = boundedText(item.source, 20) || 'unknown'
+      const flags = [
+        item.ready === false ? `ready=false(${boundedText(item.readinessReason, 80) || 'unknown'})` : 'ready=true',
+        item.needsHumanDecision === true ? 'needsHumanDecision=true' : null,
+        Number.isFinite(Number(item.attempts)) && Number(item.attempts) > 0 ? `attempts=${Number(item.attempts)}` : null,
+        boundedText(item.ref, 200) !== '' ? `ref=${boundedText(item.ref, 200)}` : null,
+      ].filter(value => value !== null)
+      const lines = [`- work id=${id} project=${itemProject} source=${source_}${flags.length > 0 ? ` ${flags.join(' ')}` : ''}`]
+      const title = embed(item.title)
+      if (title !== null) lines.push(`  title: ${title}`)
+      const description = embed(item.description)
+      if (description !== null) lines.push(`  description: ${description}`)
+      externalLines.push(lines.join('\n'))
+    }
+    if (workItemsTotal > workItems.length) {
+      externalLines.push(`- ${workItemsTotal - workItems.length} more work item(s) are outside this bounded view.`)
+    }
+    externalLines.push('A ready work item is dispatchable even when the board has no ready card: use action launch_work with its exact id.')
+    externalLines.push('A needsHumanDecision item is NOT dispatchable: report it in findings and, at most once, ask ONE decision that would resolve it (its ref is the evidence).')
+  }
+
   const externalSources = Array.isArray(source.external) ? source.external : (Array.isArray(source.sources) ? source.sources : [])
   // The embed cap enforces MAX_UNTRUSTED_ITEMS; taking a slightly larger slice
   // here lets `omittedExternal` report what the cap actually dropped.
@@ -266,6 +299,8 @@ export function buildAssessmentPrompt(input = {}) {
   lines.push(`Return ONE JSON object with schemaVersion=${ASSESSMENT_SCHEMA_VERSION}, no prose, no code fence.`)
   lines.push(...assessmentSchemaLines(ASSESSMENT_SCHEMA_VERSION))
   lines.push('Use noopReason (non-empty) when there is nothing to do; never propose an action outside the mandate.')
+  lines.push('When the board has no ready card but a project-declared work item is ready, dispatch it with launch_work; never report "nothing to do" in that case.')
+  lines.push('promote_task only applies to a backlog card that is unblocked, unassigned and needs no human decision: say WHY in payload.reason.')
   lines.push('If two operator directives contradict each other in meaning, add directiveConflicts: [{summary, quotes:[two exact excerpts], projectId|null}] and follow the more restrictive one meanwhile.')
 
   const system = [
@@ -381,6 +416,8 @@ const PAYLOAD_TEXT_MAX = Object.freeze({
   create_task: Object.freeze({ title: 200, description: 2000, urgency: 20 }),
   update_task: Object.freeze({ title: 200, description: 2000, prompt: 2000, urgency: 20, waitingReason: 500 }),
   comment: Object.freeze({ body: 2000 }),
+  launch_work: Object.freeze({ workItemId: 120 }),
+  promote_task: Object.freeze({ reason: 500 }),
   open_pr: Object.freeze({ title: 200, body: 2000, head: 120, base: 120 }),
   delete_task: Object.freeze({ reason: 500 }),
   merge: Object.freeze({ headSha: 64, method: 10 }),
