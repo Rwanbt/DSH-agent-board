@@ -727,6 +727,14 @@ test('capabilities name human-only actions instead of pretending an adapter is m
     assert.equal(caps.policy_change.executor, 'project-policy')
     assert.equal(caps.schedule.implemented, true)
     assert.equal(caps.schedule.reason, 'native_tool_unavailable')
+    // Every advertised action is either executable or explicitly human-only:
+    // no action may still read "not supported yet".
+    for (const action of ['delegate', 'launch', 'create_task', 'update_task', 'comment', 'open_pr',
+      'merge', 'push_branch', 'delete_task', 'schedule', 'protected_branch_write', 'secrets', 'policy_change']) {
+      const cap = caps[action]
+      assert.notEqual(cap.reason, 'no_adapter_for_action', action)
+      assert.ok(cap.implemented === true || cap.reason === 'human_only_action', action)
+    }
   })
 })
 
