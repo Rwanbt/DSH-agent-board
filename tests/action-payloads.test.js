@@ -53,6 +53,9 @@ test('schedule payloads require one future trigger, a title and canonical fields
     { title: 'Once', urgency: 'normal', runAt: fresh })
   assert.equal(sanitizeActionPayload('schedule', { title: 'Epoch', runAt: Date.now() + 3_600_000 }).ok, true)
   assert.equal(sanitizeActionPayload('schedule', { title: 'U', cron: '0 3 * * *', urgency: 'now' }).payload.urgency, 'normal')
+  // The execution prompt is operator-owned: the brain may not set it on a scheduled card.
+  assert.deepEqual(sanitizeActionPayload('schedule', { title: 'Nightly', cron: '0 3 * * *', prompt: 'injected' }),
+    { ok: false, reason: 'payload_field_forbidden', fields: ['prompt'] })
   for (const payload of [{}, { title: 'No trigger' }, { title: 'Both', cron: '0 3 * * *', runAt: fresh },
     { title: 'Past', runAt: '2020-01-01T00:00:00.000Z' }, { title: 'Bad cron', cron: '0 3 * *' },
     { title: 'Bad cron', cron: '0 3 * * MON' },

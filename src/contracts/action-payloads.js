@@ -10,7 +10,7 @@ const ACTION_PAYLOAD_FIELDS = Object.freeze({
   promote_task: ['reason'],
   open_pr: ['title', 'body', 'head', 'base', 'repository'],
   delete_task: ['reason'], policy_change: ['priority', 'maxTasksPerHour'],
-  schedule: ['title', 'description', 'prompt', 'urgency', 'cron', 'runAt'],
+  schedule: ['title', 'description', 'urgency', 'cron', 'runAt'],
   merge: ['number', 'headSha', 'method', 'repository', 'base', 'baseSha'],
 })
 

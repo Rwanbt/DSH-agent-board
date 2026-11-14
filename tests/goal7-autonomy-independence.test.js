@@ -259,6 +259,9 @@ test('NO Task Board: the project documents become work, launch_work opens a real
     assert.equal(host.made.created.filter(options => String(options.sessionId).startsWith('session-agentboard-') && !String(options.sessionId).includes('-operation-')).length, 0,
       'the dry run opens no session')
 
+    // ONE synthetic work item per project at a time (the shared working tree is
+    // forced to `isolation:'none'`): the first ready item launches, the second
+    // ready item of the SAME project is refused while the first one runs.
     const cycle = await host.cycle([
       { id: 'w-1', action: 'launch_work', projectId: 'w1', taskId: null, rationale: 'ADR follow-up', risk: 'low', expectedEffect: 'session', requiresApproval: false, payload: { workItemId: readyId } },
       { id: 'w-2', action: 'launch_work', projectId: 'w1', taskId: null, rationale: 'TODO', risk: 'low', expectedEffect: 'session', requiresApproval: false, payload: { workItemId: todoId } },
@@ -266,23 +269,56 @@ test('NO Task Board: the project documents become work, launch_work opens a real
     ])
     assert.equal(cycle.status, 200, JSON.stringify(cycle.body))
     const executed = cycle.body.value.executed
-    assert.equal(executed.length, 2, JSON.stringify(executed))
+    assert.equal(executed.length, 1, JSON.stringify(executed))
     assert.equal(executed[0].ok, true, JSON.stringify(executed[0]))
-    assert.equal(executed[1].ok, true, JSON.stringify(executed[1]))
+    assert.equal(executed[0].workItemId, readyId, JSON.stringify(executed[0]))
+    const busyRefusal = cycle.body.value.refused.find(entry => entry.id === 'w-2')
+    assert.ok(busyRefusal, JSON.stringify(cycle.body.value.refused))
+    assert.equal(busyRefusal.reason, 'project_work_in_progress')
     const proposedRefusal = cycle.body.value.refused.find(entry => entry.id === 'w-3')
     assert.ok(proposedRefusal, JSON.stringify(cycle.body.value.refused))
     assert.match(proposedRefusal.reason, /^needs_human_decision:adr_not_accepted:proposed$/)
 
-    const workers = host.made.created.filter(options => String(options.sessionId).startsWith('session-agentboard-') && !String(options.sessionId).includes('-operation-'))
-    assert.equal(workers.length, 2, 'exactly two worker sessions, one per dispatchable item')
-    const promptText = host.made.messages.map(message => message.text).join('\n')
-    assert.match(promptText, /Write the state file through a temp file and a rename/)
-    assert.match(promptText, /docs\/adr\/0007-journal\.md/)
+    const workers = () => host.made.created.filter(options => String(options.sessionId).startsWith('session-agentboard-') && !String(options.sessionId).includes('-operation-'))
+    const workerPrompts = () => host.made.messages
+      .filter(message => String(message.sessionId).startsWith('session-agentboard-') && !String(message.sessionId).includes('-operation-'))
+      .map(message => message.text).join('\n')
+    assert.equal(workers().length, 1, 'exactly one worker session: the second item waits for the project')
+    assert.match(workerPrompts(), /Write the state file through a temp file and a rename/)
+    assert.match(workerPrompts(), /docs\/adr\/0007-journal\.md/)
 
-    const after = await host.view()
+    // The project becomes free as soon as the first dispatch ends (the fake turn
+    // completes a few milliseconds after the follow-up).
+    const waitForFreeProject = async () => {
+      const startedAt = Date.now()
+      while (Date.now() - startedAt < 2000) {
+        const snapshot = await host.view()
+        const busy = (snapshot.assignments ?? []).some(assignment => ['starting', 'running', 'recovering'].includes(assignment.status)
+          && assignment.workSource !== undefined)
+        if (!busy) return snapshot
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      assert.fail('the first worker turn never ended')
+    }
+    await waitForFreeProject()
+
+    // The remaining item is now dispatchable: one at a time, two eventually.
+    const second = await host.cycle([
+      { id: 'w-5', action: 'launch_work', projectId: 'w1', taskId: null, rationale: 'TODO', risk: 'low', expectedEffect: 'session', requiresApproval: false, payload: { workItemId: todoId } },
+    ])
+    assert.equal(second.status, 200, JSON.stringify(second.body))
+    assert.equal(second.body.value.executed.length, 1, JSON.stringify(second.body.value.executed))
+    assert.equal(second.body.value.executed[0].ok, true, JSON.stringify(second.body.value.executed[0]))
+    assert.equal(second.body.value.executed[0].workItemId, todoId, JSON.stringify(second.body.value.executed[0]))
+    assert.equal(workers().length, 2, 'exactly two worker sessions, one per dispatchable item')
+    assert.match(workerPrompts(), /Add the restart test/)
+    assert.match(workerPrompts(), /TODO\.md/)
+
+    const after = await waitForFreeProject()
     const workAssignments = after.assignments.filter(assignment => assignment.workSource !== undefined)
     assert.equal(workAssignments.length, 2)
     assert.equal(workAssignments[0].workSource.source, 'adr')
+    assert.equal(workAssignments[1].workSource.source, 'todo')
     assert.match(workAssignments[0].workSource.fingerprint, /^wf-/)
 
     // Once the item is dispatched (here the fake turn completes immediately), a
@@ -291,7 +327,7 @@ test('NO Task Board: the project documents become work, launch_work opens a real
       { id: 'w-4', action: 'launch_work', projectId: 'w1', taskId: null, rationale: 'retry', risk: 'low', expectedEffect: 'session', requiresApproval: false, payload: { workItemId: readyId } },
     ])
     assert.equal(again.body.value.refused[0].reason, 'work_item_completed')
-    assert.equal(host.made.created.filter(options => String(options.sessionId).startsWith('session-agentboard-') && !String(options.sessionId).includes('-operation-')).length, 2)
+    assert.equal(workers().length, 2)
 
     // The dry run now reports the honest outcome: everything reached is handled.
     const afterDry = await host.callJson('GET', '/dry-run')

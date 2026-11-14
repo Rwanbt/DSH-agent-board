@@ -4,10 +4,12 @@
  * The model payload is already normalized at ingestion (`superagent/brain.js`),
  * but the host must not depend on that: the same go through the ONE approval
  * path stores bytes that were authored by a model and later replayed by a
- * different code path. A field such as `permission`, `model`, `execution` or
- * `isolation` is an OWNER field (operator-owned) and must never travel through
- * a brain write, even when the mandate allowed `update_task`. This module is
- * the single allowlist used by both the automatic and the approved path.
+ * different code path. A field such as `permission`, `model`, `execution`,
+ * `isolation`, `status` or the explicit execution `prompt` is an OWNER field
+ * (operator-owned) and must never travel through a brain write, even when the
+ * mandate allowed `update_task`. The brain writes card CONTENT through
+ * `title`/`description`; the operator owns the execution prompt. This module
+ * is the single allowlist used by both the automatic and the approved path.
  *
  * `done` is not reachable either: `status` is not an allowed field, and the
  * Task Board public API keeps completion a human action.
@@ -23,7 +25,7 @@ export const BOARD_PAYLOAD_FIELDS = Object.freeze({
   }),
   update_task: Object.freeze({
     text: Object.freeze({
-      title: 200, description: 2000, prompt: 2000, urgency: 20, waitingReason: 500,
+      title: 200, description: 2000, urgency: 20, waitingReason: 500,
     }),
     booleans: Object.freeze(['blocked', 'waitingForHuman']),
   }),

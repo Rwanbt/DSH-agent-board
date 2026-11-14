@@ -13,6 +13,9 @@
  * flags the items that obviously need a human decision (a proposed ADR, an issue
  * labelled `needs-decision`, an explicit `[decision]` marker).
  *
+ * Concurrency: at most ONE synthetic work item runs per project at a time, because
+ * such a dispatch forces `isolation:'none'` in the project's shared working tree.
+ *
  * Pure: no clock, no I/O, no randomness. Inputs are never mutated.
  *
  * @module dsh-agent-board/orchestrator/project-work
@@ -63,6 +66,7 @@ export const WORK_READINESS_REASONS = Object.freeze({
   needsHumanDecision: 'needs_human_decision',
   inProgress: 'work_item_in_progress',
   completed: 'work_item_completed',
+  projectBusy: 'project_work_in_progress',
   attemptsExhausted: 'work_item_attempts_exhausted',
   retryWait: 'work_item_retry_wait',
   ready: 'ready',
@@ -374,12 +378,29 @@ export function workItemReadinessOf(item, { assignments = [], now = Date.now() }
     .filter(assignment => Number.isFinite(Number(assignment.endedAt ?? assignment.startedAt)))
     .sort((left, right) => (Number(right.endedAt ?? right.startedAt) || 0) - (Number(left.endedAt ?? left.startedAt) || 0))
   const latest = ended[0] ?? null
+  const at = latest === null ? 0 : Number(latest.endedAt ?? latest.startedAt) || 0
   if (latest !== null) {
-    const at = Number(latest.endedAt ?? latest.startedAt) || 0
     const fingerprint = typeof latest.workSource?.fingerprint === 'string' ? latest.workSource.fingerprint : null
     if (latest.status === 'done' && fingerprint === item.fingerprint) {
       return { ready: false, reason: WORK_READINESS_REASONS.completed, attempts: mine.length }
     }
+  }
+  // ONE work item per project at a time: a synthetic dispatch forces
+  // `isolation:'none'` in the project's shared working tree, so two of them would
+  // race on the same files (and on `.git/index.lock`). A Task Board card owns its
+  // isolation contract, so an assignment without `workSource` never blocks here.
+  // The check sits after the completed verdict and before the retry rules: a
+  // completed item keeps `work_item_completed`, and a retry is reported again
+  // once the contending item of the project has ended.
+  const contender = (Array.isArray(assignments) ? assignments : []).find(assignment => isRecord(assignment)
+    && String(assignment.taskId ?? '') !== item.id
+    && String(assignment.workspaceId) === String(item.projectId)
+    && ACTIVE_ASSIGNMENT_STATUSES.includes(assignment.status)
+    && assignment.workSource !== null && assignment.workSource !== undefined)
+  if (contender !== undefined) {
+    return { ready: false, reason: WORK_READINESS_REASONS.projectBusy, attempts: mine.length }
+  }
+  if (latest !== null) {
     if (FAILED_ASSIGNMENT_STATUSES.includes(latest.status)) {
       if (mine.length >= WORK_ATTEMPT_LIMIT) return { ready: false, reason: WORK_READINESS_REASONS.attemptsExhausted, attempts: mine.length }
       if (now - at < WORK_RETRY_DELAY_MS) return { ready: false, reason: WORK_READINESS_REASONS.retryWait, attempts: mine.length }

@@ -1672,7 +1672,6 @@ export function apply(ctx, config = {}) {
       workspaceId: projectId,
       urgency: payload.urgency ?? 'normal',
       ...(payload.description ? { description: payload.description } : {}),
-      ...(payload.prompt ? { prompt: payload.prompt } : {}),
       execution: payload.cron
         ? { mode: 'scheduled', cron: payload.cron }
         : { mode: 'scheduled', runAt: payload.runAt },
@@ -2482,6 +2481,22 @@ export function apply(ctx, config = {}) {
     const active = state.assignments.find(assignment => String(assignment.taskId) === String(task.id) && ACTIVE_STATUSES.includes(assignment.status))
     if (active !== undefined) {
       return { ok: false, reason: 'duplicate_assignment', assignmentId: active.id }
+    }
+    // ONE synthetic work item per project at a time. A `launch_work` dispatch
+    // forces `isolation:'none'`, so two of them would write the SAME working tree
+    // concurrently: interleaved edits, a racing `.git/index.lock`, and commits
+    // that mix two work items. The readiness rule narrows the proposal list, and
+    // this atomic backstop runs at launch: two racing cycles can both observe a
+    // free project, only one creation wins. Task Board cards are NOT affected:
+    // their isolation contract belongs to the operator, so only assignments that
+    // carry a `workSource` (synthetic dispatches) take part in the contention.
+    if (task?.synthetic === true) {
+      const other = state.assignments.find(assignment => ACTIVE_STATUSES.includes(assignment.status)
+        && String(assignment.workspaceId) === String(task.workspaceId)
+        && assignment.workSource !== null && assignment.workSource !== undefined)
+      if (other !== undefined) {
+        return { ok: false, reason: 'project_work_in_progress', assignmentId: other.id }
+      }
     }
     const priorAttempts = state.assignments
       .filter(assignment => String(assignment.taskId) === String(task.id))

@@ -45,7 +45,8 @@ export function assessmentSchemaLines(schemaVersion = ASSESSMENT_SCHEMA_VERSION)
     '  "situation": string  // one or two sentences, plain text (NOT an object)',
     `  "findings": [ { "kind": one of ${FINDING_KINDS.map(value => `"${value}"`).join(' | ')}, "projectId": a project id from the portfolio or null, "summary": string, "refs": [string] } ],`,
     `  "proposals": [ { "action": one of ${ASSESSMENT_ACTIONS.map(value => `"${value}"`).join(' | ')}, "projectId": a project id from the portfolio, "taskId": string or null, "rationale": string, "risk": "low" | "medium" | "high", "expectedEffect": string, "requiresApproval": boolean, "payload": object or null } ],`,
-    '  // payload is action-specific: create_task {"title","description"?,"urgency"?}; update_task {"title"?,"description"?,"prompt"?,"urgency"?,"blocked"?,"waitingForHuman"?,"waitingReason"?}; comment {"body"}; open_pr {"title","body"?,"head","base"}; delete_task {"reason"} requires taskId; promote_task {"reason"} requires taskId and moves ONE backlog card that is unblocked, unassigned and needs no human decision to todo; launch_work {"workItemId"} requires NO taskId and dispatches one WORK ITEM listed below (the project declares it in an accepted ADR, a roadmap/TODO checklist or an issue); merge {"number":positive integer,"method"?:"merge"|"squash"|"rebase","headSha"?:full commit SHA} captures the real repository/head/base before human approval; policy_change {"priority"?:integer 0..9,"maxTasksPerHour"?:integer 0..100} edits only that project, never global rights; schedule {"title","description"?,"prompt"?,"urgency"?,"cron"? (5 fields) XOR "runAt"? (future ISO/epoch)} creates one scheduled card in that project; launch/delegate use taskId and no payload.',
+    '  // payload is action-specific: create_task {"title","description"?,"urgency"?}; update_task {"title"?,"description"?,"urgency"?,"blocked"?,"waitingForHuman"?,"waitingReason"?}; comment {"body"}; open_pr {"title","body"?,"head","base"}; delete_task {"reason"} requires taskId; promote_task {"reason"} requires taskId and moves ONE backlog card that is unblocked, unassigned and needs no human decision to todo; launch_work {"workItemId"} requires NO taskId and dispatches one WORK ITEM listed below (the project declares it in an accepted ADR, a roadmap/TODO checklist or an issue); merge {"number":positive integer,"method"?:"merge"|"squash"|"rebase","headSha"?:full commit SHA} captures the real repository/head/base before human approval; policy_change {"priority"?:integer 0..9,"maxTasksPerHour"?:integer 0..100} edits only that project, never global rights; schedule {"title","description"?,"urgency"?,"cron"? (5 fields) XOR "runAt"? (future ISO/epoch)} creates one scheduled card in that project; launch/delegate use taskId and no payload.',
+    '  // The execution prompt is operator-owned: never propose it, and put card content in "description".',
     `  "decisions": [ { "kind": one of ${DECISION_KINDS.map(value => `"${value}"`).join(' | ')}, "projectId": id or null, "title": string, "context": string, "options": [ { "label": string, "effect": "approve" | "reject" } ], "recommendation": string, "urgency": "urgent" | "normal" } ],`,
     '  "directiveEcho": [string]  // the operator directives you applied, quoted; [] if none',
     '  "noopReason": string or null  // non-empty when there is nothing useful to do',
@@ -415,14 +416,14 @@ function validateProject(value, projectIds) {
 /** Per-action payload fields a proposal may carry (bounded, no unknown keys). */
 const PAYLOAD_TEXT_MAX = Object.freeze({
   create_task: Object.freeze({ title: 200, description: 2000, urgency: 20 }),
-  update_task: Object.freeze({ title: 200, description: 2000, prompt: 2000, urgency: 20, waitingReason: 500 }),
+  update_task: Object.freeze({ title: 200, description: 2000, urgency: 20, waitingReason: 500 }),
   comment: Object.freeze({ body: 2000 }),
   launch_work: Object.freeze({ workItemId: 120 }),
   promote_task: Object.freeze({ reason: 500 }),
   open_pr: Object.freeze({ title: 200, body: 2000, head: 120, base: 120 }),
   delete_task: Object.freeze({ reason: 500 }),
   merge: Object.freeze({ headSha: 64, method: 10 }),
-  schedule: Object.freeze({ title: 200, description: 2000, prompt: 2000, urgency: 20, cron: 120, runAt: 60 }),
+  schedule: Object.freeze({ title: 200, description: 2000, urgency: 20, cron: 120, runAt: 60 }),
 })
 const PAYLOAD_BOOL = Object.freeze({ update_task: Object.freeze(['blocked', 'waitingForHuman']) })
 

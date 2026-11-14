@@ -146,6 +146,43 @@ test('a work item is dispatchable once, retried with a delay, and never looped',
     `${WORK_READINESS_REASONS.needsHumanDecision}:adr_not_accepted:proposed`)
 })
 
+test('one synthetic work item per project at a time (shared working tree)', () => {
+  const item = {
+    id: workItemIdOf({ projectId: 'p', source: 'todo', title: 'Second item of the project' }),
+    projectId: 'p', source: 'todo', title: 'Second item of the project', fingerprint: 'wf-p2', needsHumanDecision: false,
+  }
+  const running = [{ taskId: 'other', workspaceId: 'p', status: 'running', startedAt: 5, workSource: { fingerprint: 'wf-p1' } }]
+  assert.equal(workItemReadinessOf(item, { assignments: running, now: 10 }).reason, WORK_READINESS_REASONS.projectBusy)
+  assert.equal(workItemReadinessOf(item, { assignments: running, now: 10 }).ready, false)
+
+  // Another project is independent.
+  const elsewhere = [{ taskId: 'other', workspaceId: 'q', status: 'running', startedAt: 5, workSource: { fingerprint: 'wf-q1' } }]
+  assert.equal(workItemReadinessOf(item, { assignments: elsewhere, now: 10 }).reason, WORK_READINESS_REASONS.ready)
+
+  // A Task Board card owns its isolation contract: it never blocks a work item.
+  const card = [{ taskId: 't-card', workspaceId: 'p', status: 'running', startedAt: 5 }]
+  assert.equal(workItemReadinessOf(item, { assignments: card, now: 10 }).reason, WORK_READINESS_REASONS.ready)
+
+  // Completed for its current fingerprint: the completed verdict wins over contention.
+  const done = [
+    { taskId: item.id, workspaceId: 'p', status: 'done', startedAt: 1, endedAt: 2, workSource: { fingerprint: 'wf-p2' } },
+    ...running,
+  ]
+  assert.equal(workItemReadinessOf(item, { assignments: done, now: 10 }).reason, WORK_READINESS_REASONS.completed)
+
+  // Once the contending item ends, the item is ready again (subject to retry rules).
+  for (const status of ['done', 'failed', 'stopped', 'interrupted']) {
+    const ended = [{ taskId: 'other', workspaceId: 'p', status, startedAt: 5, endedAt: 6, workSource: { fingerprint: 'wf-p1' } }]
+    assert.equal(workItemReadinessOf(item, { assignments: ended, now: 10 }).reason, WORK_READINESS_REASONS.ready, status)
+  }
+  // The existing retry rules still apply once the project is free.
+  const retried = [
+    { taskId: item.id, workspaceId: 'p', status: 'failed', startedAt: 5, endedAt: 6 },
+    { taskId: 'other', workspaceId: 'p', status: 'failed', startedAt: 5, endedAt: 6, workSource: { fingerprint: 'wf-p1' } },
+  ]
+  assert.equal(workItemReadinessOf(item, { assignments: retried, now: 10 }).reason, WORK_READINESS_REASONS.retryWait)
+})
+
 test('the work prompt states the source, the project rules and the completion gesture', () => {
   const prompt = workPromptOf({
     id: 'work-1', projectId: 'w1', source: 'adr', ref: 'docs/adr/0007.md:12',
