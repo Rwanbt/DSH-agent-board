@@ -2334,6 +2334,7 @@ export function apply(ctx, config = {}) {
         directives,
         projectId,
         projectTitle: typeof workspace?.title === 'string' ? workspace.title : '',
+        permission: typeof task.permission === 'string' ? task.permission : null,
       }),
       '',
       `Agent Board assignment: ${assignment.id} (attempt ${assignment.attempt}, route ${routeKey(assignment.model)}).`,
@@ -3744,16 +3745,25 @@ export function apply(ctx, config = {}) {
    * readiness so the model cannot propose a launch the gate will refuse.
    */
   function brainTaskProjection(tasks, tasksById) {
-    const rank = readiness => readiness.ready ? 0
-      : (readiness.reason === 'task_blocked' || readiness.reason === 'task_waiting_for_human') ? 1 : 2
+    // A backlog card the host would accept for triage must be VISIBLE even on a
+    // busy board: it ranks right after the ready cards instead of being pushed
+    // out of the bounded view by unrelated cards.
+    const triageOf = task => (String(task?.status ?? '') === 'backlog' ? backlogReadinessOf(task, tasksById) : null)
+    const rank = task => {
+      const readiness = taskReadinessOf(task, tasksById)
+      if (readiness.ready) return 0
+      if (triageOf(task)?.promotable === true) return 1
+      return readiness.reason === 'task_blocked' || readiness.reason === 'task_waiting_for_human' ? 2 : 3
+    }
     const ordered = [...tasks].sort((left, right) => {
-      const delta = rank(taskReadinessOf(left, tasksById)) - rank(taskReadinessOf(right, tasksById))
+      const delta = rank(left) - rank(right)
       return delta !== 0 ? delta : String(left?.id ?? '').localeCompare(String(right?.id ?? ''))
     })
     const selected = ordered.slice(0, 25)
     return {
       tasks: selected.map(task => {
         const readiness = taskReadinessOf(task, tasksById)
+        const triage = triageOf(task)
         return {
           id: task.id,
           projectId: String(task.workspaceId ?? ''),
@@ -3765,6 +3775,9 @@ export function apply(ctx, config = {}) {
           dependsOn: Array.isArray(task.dependsOn) ? task.dependsOn.slice(0, 20).map(String) : [],
           ready: readiness.ready,
           readinessReason: readiness.reason,
+          // Backlog triage is a real capability only when the deterministic
+          // preconditions pass: the model must propose on facts, not on a guess.
+          ...(triage === null ? {} : { promotable: triage.promotable, triageReason: triage.reason }),
         }
       }),
       truncated: Math.max(0, ordered.length - selected.length),

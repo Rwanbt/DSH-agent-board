@@ -328,6 +328,9 @@ test('L4 triage moves ONE unblocked backlog card to todo through the native owne
       { id: 'p-4', action: 'promote_task', projectId: 'w1', taskId: 'b4', rationale: 'x', risk: 'low', expectedEffect: 'x', requiresApproval: false, payload: { reason: 'no' } },
     ])
     assert.equal(cycle.status, 200, JSON.stringify(cycle.body))
+    // The triage target is VISIBLE to the brain as promotable, not as a guess.
+    const brainPrompt = host.made.messages.map(message => message.text).join('\n')
+    assert.match(brainPrompt, /promotable=true/)
     const reasons = Object.fromEntries(cycle.body.value.refused.map(entry => [entry.id, entry.reason]))
     assert.equal(reasons['p-2'], 'task_waiting_for_human')
     assert.equal(reasons['p-3'], 'task_blocked')
