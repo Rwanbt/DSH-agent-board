@@ -65,14 +65,34 @@ checklists and forge issues become real dispatched work, with L4 backlog triage)
 
 | Branch | Role |
 |---|---|
-| `main` | Stable line: starts at the MVP baseline (`ec955fb`) and now carries the merged integration state — `main` and `dev` point at the same tree. |
-| `dev` | Integration branch: GOAL 1 UX + GOAL 2 runtime audit/corrections + GOAL 3 supervision/orchestration + the goal-6/7 mandate and autonomy work (real executors for every non-human action, project-declared work without the Task Board, L4 backlog triage), the branch to build and try. |
-| `fix/agent-board-runtime-e2e` | Feature history of the GOAL 2 corrections and review rounds (merged into `dev`). |
-| `goal3/supervision-orchestration` | GOAL 3 work: unified execution contract, layered routing/budget/fencing, supervision fidelity, adapters, benchmarks, reviews (to be merged into `dev`). |
-| `feat/agent-board-mascots-super-orchestrator` | GOAL 4: the 15 Mascot SVGs byte-identical, role registry/aliases, `AgentAvatar`, role-aware cards + hierarchy + filters, the Super Orchestrator supervision layer and the Task Board coordination read model. |
-| `feat/agent-board-responsive-cockpit` | GOAL 5: the responsive cockpit (global multi-project view by default, compact header/filters, Super Orchestrator band, runtime indicators, adaptive grid, inspector drawer / bottom sheet, two-column mobile mosaic). |
-| `feat/agent-board-superagent` | GOAL 6: explicit mandate (scope/levels/actions), single policy gate, Super Agent runtime (identity, directives, memory, DecisionInbox), portfolio planning, Task Board public-v1 client, opt-in GitHub writes, cockpit tabs. |
-| `feat/superagent-ux-polish` | GOAL 6/7 continuation: level profiles applied on selection, real executors (native delete/schedule/merge/policy, GitHub PR with credential discovery and per-project repository), project-declared work items without the Task Board, L4 backlog triage (merged into `dev` and `main`). |
+| `main` | Stable line: starts at the MVP baseline (`ec955fb`) and carries the merged integration state — `main` and `dev` point at the same tree. |
+| `dev` | Integration branch (default remote branch): GOAL 1 UX + GOAL 2 runtime audit/corrections + GOAL 3 supervision/orchestration + the goal-6/7 mandate and autonomy work (real executors for every non-human action, project-declared work without the Task Board, L4 backlog triage). This is the branch to build and try. |
+
+Historical feature branches were merged into `dev`/`main` and their refs were
+removed (nothing is lost: their commits are in `dev`'s history). They documented:
+
+- **GOAL 3** (`goal3/supervision-orchestration`) — unified execution contract,
+  layered routing/budget/fencing, supervision fidelity, adapters, benchmarks,
+  independent reviews.
+- **GOAL 4** (`feat/agent-board-mascots-super-orchestrator`) — the 15 Mascot SVGs
+  byte-identical, role registry/aliases, `AgentAvatar`, role-aware cards +
+  hierarchy + filters, the Super Orchestrator supervision layer and the Task Board
+  coordination read model.
+- **GOAL 5** (`feat/agent-board-responsive-cockpit`) — the responsive cockpit
+  (global multi-project view by default, compact header/filters, Super
+  Orchestrator band, runtime indicators, adaptive grid, inspector drawer / bottom
+  sheet, two-column mobile mosaic).
+- **GOAL 6** (`feat/agent-board-superagent`) — explicit mandate
+  (scope/levels/actions), single policy gate, Super Agent runtime (identity,
+  directives, memory, DecisionInbox), portfolio planning, Task Board public-v1
+  client, opt-in GitHub writes, cockpit tabs.
+- **GOAL 6/7 continuation** (`feat/superagent-ux-polish`,
+  `feat/superagent-assessment-repair`) — level profiles applied on selection, real
+  executors (native delete/schedule/merge/policy, GitHub PR with credential
+  discovery and per-project repository), project-declared work items without the
+  Task Board, L4 backlog triage.
+- **Runtime fixes** (`fix/agent-board-runtime-e2e`, `fix/svg-byte-exact-checkout`)
+  — GOAL 2 corrections/review rounds and the byte-exact SVG checkout.
 
 The board **never merges, never pushes a protected branch and never deletes** on
 a forge. It can open an issue/comment/PR **only** when the operator both enables
