@@ -61,3 +61,24 @@ test('the band exposes the published queue and its KPIs without inventing them',
   assert.equal(published.kpis.sessionsPerOperator, 50)
   assert.equal(published.exceptionMode, true)
 })
+
+
+test('fifty agents stay grouped by project and attention-first', () => {
+  const nodes = Array.from({ length: 50 }, (_, index) => ({
+    id: `s-${index}`, parentId: null, projectId: `p${index % 10}`, projectTitle: `P${index % 10}`,
+    title: `Agent ${index}`, role: null,
+    // One attention node per project, the rest healthy: the grid must lead with them.
+    status: index % 5 === 0 ? 'waiting_user' : 'running',
+    seen: true, archived: false, blank: false, updatedAt: NOW - 60_000, children: [], model: null, taskId: null, goal: null,
+  }))
+  const byId = new Map(nodes.map(entry => [entry.id, entry]))
+  const overview = buildOverview({ nodes, byId, roots: nodes, projects: [] }, { filter: 'all', now: NOW })
+  assert.equal(overview.counts.agents, 50)
+  // Every project is represented and the sections keep a fixed order.
+  const projects = new Set(overview.entries.map(entry => entry.node.projectId))
+  assert.equal(projects.size, 10)
+  // The first entries of the board are the ones that need a human.
+  const firstSection = overview.sections[0]
+  assert.ok(firstSection.entries.some(entry => entry.node.status === 'waiting_user'))
+  assert.equal(overview.entries.filter(entry => entry.node.status === 'waiting_user').length, 10)
+})

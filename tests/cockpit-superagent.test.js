@@ -1205,3 +1205,29 @@ test('do-not-disturb mutes the notification flag, and trust is only suggested', 
   assert.match(textOf(rows[0]), /approved 4 times without incident/)
   assert.equal(byClass(settings, 'dab-sa-dnd')[0].props.checked, true)
 })
+
+// ---------------------------------------- digest + two structural guarantees
+test('the settings render the per-project digest, never one message per session', () => {
+  const superagent = makeInactiveSuperagent({
+    attention: {
+      items: [],
+      counters: { total: 0, blocking: 0, high: 0, notify: 0, costSeconds: 0 },
+      digest: { projects: [{ projectId: 'ws:a', verifiedDone: 4, running: 2, blocked: 1, attention: 0, costSeconds: 0 }], totals: {}, text: 'ws:a: 4 verified, 2 running, 1 blocked' },
+    },
+  })
+  const tree = render(cockpit.DabSuperagentSettings({ superagent, mandate: makeMandate(), host: makeHost(), context: {}, ui: {}, taskboard: makeHost().taskboardPublic }))
+  const row = byClass(tree, 'dab-sa-digest-row')[0]
+  assert.equal(row.props['data-project-id'], 'ws:a')
+  assert.match(textOf(row), /4 verified · 2 running · 1 blocked/)
+})
+
+test('the client bundle holds ONE definition of the policy normalisers', async () => {
+  // The apparent "duplication" between src/contracts/model.js and the shipped
+  // bundle is the concatenation of that same module: one source, one copy. Two
+  // copies would mean someone hand-edited the generated artifact.
+  const { readFileSync } = await import('node:fs')
+  const bundle = readFileSync(join(ROOT, 'src', 'client.js'), 'utf8')
+  assert.equal((bundle.match(/^function normalizePolicy\(/gm) ?? []).length, 1)
+  assert.equal((bundle.match(/^function normalizeSupervision\(/gm) ?? []).length, 1)
+  assert.equal((bundle.match(/^function normalizeProviderConcurrency\(/gm) ?? []).length, 1)
+})

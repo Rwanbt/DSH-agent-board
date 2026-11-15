@@ -5485,6 +5485,12 @@ const DAB_STRINGS = {
     superSettingsDnd: 'Ne pas déranger',
     superDndHint: 'Aucune notification, même pour une décision bloquante.',
     superTrustSuggested: '{project} · {action} : approuvé {n} fois sans incident — passer en auto ?',
+    // Lot 5b — digest par projet (fait vérifié / en cours / bloqué), exportable.
+    superSettingsDigest: 'Digest par projet',
+    superDigestVerified: 'vérifiés',
+    superDigestRunning: 'en cours',
+    superDigestBlocked: 'bloqués',
+    superDigestHint: 'Résumé périodique : aucun message par session.',
     superDecisionsPending: '{n} décisions en attente',
     supervisionStatusStopped: 'Arrêté (observation)',
     supervisionStopNoAction: 'Mode Observation — aucune action tant que vous ne passez pas en Supervisé ou Autonome',
@@ -6000,6 +6006,11 @@ const DAB_STRINGS = {
     superSettingsDnd: 'Do not disturb',
     superDndHint: 'No notification at all, not even for a blocking decision.',
     superTrustSuggested: '{project} · {action}: approved {n} times without incident — switch to auto?',
+    superSettingsDigest: 'Per-project digest',
+    superDigestVerified: 'verified',
+    superDigestRunning: 'running',
+    superDigestBlocked: 'blocked',
+    superDigestHint: 'Periodic summary: never one message per session.',
     superDecisionsPending: '{n} pending decisions',
     supervisionStatusStopped: 'Stopped (observing)',
     supervisionStopNoAction: 'Stop mode — no action possible without switching to Supervised or Autonomous',
@@ -10539,6 +10550,17 @@ function DabSuperagentSettings({
                 }))),
           h('div', { className: 'dab-muted' }, dabT('superConcurrencyHint')))
       })()),
+    // Project digest: what was verified, what runs, what is blocked, per project.
+    (() => {
+      const digest = facts.attention?.digest
+      const rows = Array.isArray(digest?.projects) ? digest.projects.slice(0, 20) : []
+      if (rows.length === 0) return null
+      return dabSaSection(h, 'digest', dabT('superSettingsDigest'),
+        h('ul', { className: 'dab-sa-digest' }, rows.map(row => h('li', {
+          key: row.projectId, className: 'dab-sa-digest-row', 'data-project-id': row.projectId,
+        }, `${row.projectId} · ${row.verifiedDone} ${dabT('superDigestVerified')} · ${row.running} ${dabT('superDigestRunning')} · ${row.blocked} ${dabT('superDigestBlocked')}`))),
+        h('div', { className: 'dab-muted' }, dabT('superDigestHint')))
+    })(),
     dabSaSection(h, 'budget', dabT('superSettingsBudget'),
       budget === null
         ? dabSaReason(h, 'budget_not_published')

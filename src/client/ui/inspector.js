@@ -902,6 +902,17 @@ function DabSuperagentSettings({
                 }))),
           h('div', { className: 'dab-muted' }, dabT('superConcurrencyHint')))
       })()),
+    // Project digest: what was verified, what runs, what is blocked, per project.
+    (() => {
+      const digest = facts.attention?.digest
+      const rows = Array.isArray(digest?.projects) ? digest.projects.slice(0, 20) : []
+      if (rows.length === 0) return null
+      return dabSaSection(h, 'digest', dabT('superSettingsDigest'),
+        h('ul', { className: 'dab-sa-digest' }, rows.map(row => h('li', {
+          key: row.projectId, className: 'dab-sa-digest-row', 'data-project-id': row.projectId,
+        }, `${row.projectId} · ${row.verifiedDone} ${dabT('superDigestVerified')} · ${row.running} ${dabT('superDigestRunning')} · ${row.blocked} ${dabT('superDigestBlocked')}`))),
+        h('div', { className: 'dab-muted' }, dabT('superDigestHint')))
+    })(),
     dabSaSection(h, 'budget', dabT('superSettingsBudget'),
       budget === null
         ? dabSaReason(h, 'budget_not_published')

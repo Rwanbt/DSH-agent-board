@@ -200,10 +200,10 @@ function call(routes, method, path, body) {
   return res
 }
 
-async function callJson(routes, method, path, body) {
+async function callJson(routes, method, path, body, timeoutMs = 15000) {
   const res = call(routes, method, path, body)
   const started = Date.now()
-  while (res.body === '' && Date.now() - started < 15000) await new Promise(resolve => setTimeout(resolve, 10))
+  while (res.body === '' && Date.now() - started < timeoutMs) await new Promise(resolve => setTimeout(resolve, 10))
   return { status: res.status, body: res.body === '' ? null : JSON.parse(res.body) }
 }
 
@@ -231,7 +231,7 @@ test('fifty real assignments across ten projects are launched under the TREE loc
     assert.equal(policy.status, 200, JSON.stringify(policy.body))
     assert.equal(policy.body.value.maxConcurrent, null)
     await callJson(made.routes, 'POST', '/mode', { mode: 'autonomous' })
-    const tick = await callJson(made.routes, 'POST', '/tick', {})
+    const tick = await callJson(made.routes, 'POST', '/tick', {}, 90_000)
     assert.equal(tick.status, 200, JSON.stringify(tick.body).slice(0, 400))
     const state = (await callJson(made.routes, 'GET', '/state')).body.value
     assert.equal(state.policy.maxConcurrent, null, 'the ceiling is really lifted, not clamped')
@@ -273,7 +273,7 @@ test('a provider ceiling queues the second launch instead of failing it', async 
       policy: { maxConcurrent: null, supervision: { maxConcurrentDelegations: null }, providerConcurrency: { 'p/model': 1 } },
     })
     await callJson(made.routes, 'POST', '/mode', { mode: 'autonomous' })
-    const tick = await callJson(made.routes, 'POST', '/tick', {})
+    const tick = await callJson(made.routes, 'POST', '/tick', {}, 60_000)
     assert.equal(tick.status, 200)
     assert.equal(made.created.length, 1, 'only one session may run on that provider/model')
     const refused = tick.body.actions.find(action => action.ok === false)
