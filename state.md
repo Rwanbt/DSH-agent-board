@@ -122,3 +122,26 @@ questions. It is updated as lots land; it is not a product document.
   scenario plus a host-level test, not 50 real provider sessions.
 - Any live claim (real provider, real Task Board token) stays `UNVERIFIED —
   to be run by the operator`.
+
+## Final tally (round 2)
+
+| Fact | Value |
+|---|---|
+| Commits on `feat/production-ready-autonomy` | 25 (from `dev` @ `b3ca064`) |
+| Tests | **760 pass, 0 fail, 0 skipped** (base 693 → +67) |
+| `npm run check` | green |
+| Bundle | regenerated, `git diff --exit-code src/client.js` clean |
+| `git diff --check` | clean |
+| Working tree | clean |
+
+Closed in round 2 (beyond the first pass): concurrency settings in the inspector
+(global / supervision / agents / per provider / per project, empty = unlimited),
+grouped approval of same-scope decisions, self-contained attention context in the
+inbox, per-project digest in the panel, do-not-disturb + `data-notify` severity
+gating, graded-trust proposals, a fifty-agent grid test, and a test proving the
+bundle holds exactly one copy of the policy normalisers.
+
+Still open by design (see `docs/LIMITATIONS.md` P5-1…P5-9): 50 simultaneous HOST
+sessions need worktree isolation; no live 50-session/provider run; no OS/toast
+notification delivery; the mobile band height is a CSS contract, not a measured
+pixel; the live release steps are prepared but not executed.
