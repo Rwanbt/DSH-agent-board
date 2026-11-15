@@ -505,6 +505,11 @@ MIT — voir [LICENSE](LICENSE) et [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.
 
 ## Ce que change la 0.2.0 pour l'opérateur
 
+> La version courante est la **0.3.0** : elle remplace le compteur horaire de
+> délégations par un plafond de charge en temps réel (voir
+> `docs/adr/0003-load-in-real-time.md`). L'historique complet est dans
+> `CHANGELOG.md` ; la section ci-dessous est la version 0.2.0.
+
 - **La concurrence devient de la configuration.** `policy.maxConcurrent`,
   `policy.supervision.maxConcurrentDelegations`, `policy.superagent.*`,
   `mandate.projects[id].maxConcurrent` et `policy.providerConcurrency` sont

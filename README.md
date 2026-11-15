@@ -476,6 +476,10 @@ MIT — see [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.
 
 ## What 0.2.0 changes for an operator
 
+> The current release is **0.3.0**, which replaces the hourly delegation counter
+> with a real-time load ceiling (see `docs/adr/0003-load-in-real-time.md`). The
+> full history is in `CHANGELOG.md`; the section below is the 0.2.0 release.
+
 - **Concurrency is configuration, not a constant.** `policy.maxConcurrent`,
   `policy.supervision.maxConcurrentDelegations`, `policy.superagent.*`,
   `mandate.projects[id].maxConcurrent` and `policy.providerConcurrency` are all

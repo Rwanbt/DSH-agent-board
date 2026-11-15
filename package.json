@@ -1,6 +1,6 @@
 {
   "name": "dsh-agent-board",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Agent Board for the DSH web GUI: a card-and-branch cockpit over native sessions and sub-agents, with a host-side orchestration policy engine (off / supervised / autonomous), a failover-aware model router, restart-safe journals, and an open adapter registry (Task Board, forges, agent executors).",
   "type": "module",
