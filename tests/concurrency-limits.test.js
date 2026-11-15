@@ -23,7 +23,7 @@ import {
   providerCeilingOf,
   providerLoadOf,
 } from '../src/contracts/concurrency.js'
-import { DEFAULT_POLICY, normalizePolicy, normalizeSupervision } from '../src/contracts/model.js'
+import { DEFAULT_POLICY, migratePolicyToLoadModel, normalizePolicy, normalizeSupervision } from '../src/contracts/model.js'
 import { selectDispatchable } from '../src/orchestrator/dag.js'
 import { workingTreeKeyOf, workItemReadinessOf } from '../src/orchestrator/project-work.js'
 import { apply } from '../src/host/index.js'
@@ -50,6 +50,21 @@ function mandateFor(projectIds, overrides = {}) {
     ...overrides,
   }
 }
+
+test('the load-model lift is idempotent and never invents a zero', () => {
+  // `Number(null)` is 0: an already-lifted ceiling must stay `null`, or a second
+  // pass would turn "unlimited" into "freeze".
+  const legacy = normalizePolicy({ supervision: { maxDelegationsPerHour: 6, maxConcurrentDelegations: 2 } })
+  const once = migratePolicyToLoadModel(legacy)
+  assert.equal(once.migrated, true)
+  assert.equal(once.policy.supervision.maxDelegationsPerHour, null)
+  assert.equal(once.policy.supervision.maxConcurrentDelegations, null)
+  assert.deepEqual(once.from, { maxConcurrentDelegations: 2, maxDelegationsPerHour: 6 })
+  const twice = migratePolicyToLoadModel(normalizePolicy(once.policy))
+  assert.equal(twice.migrated, false, 'nothing left to lift')
+  assert.deepEqual(twice.from, { maxConcurrentDelegations: null, maxDelegationsPerHour: null })
+  assert.equal(normalizePolicy(twice.policy).supervision.maxDelegationsPerHour, null)
+})
 
 test('the limits are configurable and the defaults do not move', () => {
   // Documented defaults, unchanged from 0.1.0.

@@ -290,13 +290,19 @@ export function migratePolicyToLoadModel(policy, { at = null } = {}) {
   const source = policy !== null && typeof policy === 'object' && !Array.isArray(policy) ? policy : {}
   const supervision = source.supervision !== null && typeof source.supervision === 'object' ? source.supervision : {}
   const lift = (value, legacyDefault) => {
+    // `Number(null)` is 0: an ALREADY lifted ceiling stays `null` instead of
+    // turning into a zero the operator never set.
+    if (value === null || value === undefined) return null
     const number = Number(value)
     if (!Number.isFinite(number)) return null
     return number === legacyDefault ? null : number
   }
+  const readCeiling = value => (value === null || value === undefined ? null : (Number.isFinite(Number(value)) ? Number(value) : null))
   const from = {
-    maxConcurrentDelegations: Number.isFinite(Number(supervision.maxConcurrentDelegations)) ? Number(supervision.maxConcurrentDelegations) : null,
-    maxDelegationsPerHour: Number.isFinite(Number(supervision.maxDelegationsPerHour)) ? Number(supervision.maxDelegationsPerHour) : null,
+    // `Number(null)` is 0: an already-lifted ceiling must be reported as `null`,
+    // never as a zero that never existed.
+    maxConcurrentDelegations: readCeiling(supervision.maxConcurrentDelegations),
+    maxDelegationsPerHour: readCeiling(supervision.maxDelegationsPerHour),
   }
   const next = {
     ...source,

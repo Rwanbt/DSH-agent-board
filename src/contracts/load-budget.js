@@ -152,6 +152,31 @@ export function effectiveLoadCeiling({ operator, hardware, tokens, running = nul
 }
 
 /**
+ * The price of ONE turn, and where it comes from.
+ *
+ * A declared value wins (the operator knows their workload). Otherwise the price
+ * is MEASURED on this install once enough turns completed: the fallback constant
+ * is a start-up default, never a permanent assumption. `minTurns` exists because
+ * one huge turn is not an average.
+ *
+ * @param {{declared?: unknown, tokens?: unknown, turns?: unknown, minTurns?: number}} [input]
+ * @returns {{perTurn: number|null, source: 'declared'|'measured'|'fallback'}}
+ */
+export function tokensPerTurnOf({ declared, tokens, turns, minTurns = MEASURED_TURNS_MINIMUM } = {}) {
+  const exact = normalizeTokenPool(declared, null)
+  if (exact !== null && exact > 0) return { perTurn: exact, source: 'declared' }
+  const measuredTurns = wholeCount(turns)
+  const measuredTokens = wholeCount(tokens)
+  if (measuredTurns >= minTurns && measuredTokens > 0) {
+    return { perTurn: Math.max(1, Math.round(measuredTokens / measuredTurns)), source: 'measured' }
+  }
+  return { perTurn: null, source: 'fallback' }
+}
+
+/** Turns needed before a measured average replaces the fallback constant. */
+export const MEASURED_TURNS_MINIMUM = 3
+
+/**
  * Read the provider-reported usage out of a DSH `TokenMeasurement`.
  *
  * `totalTokens` of that object is the CURRENT request pressure, not the cost:

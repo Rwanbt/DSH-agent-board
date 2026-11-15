@@ -19,6 +19,7 @@ import {
   hardwareCeilingOf,
   tokenAccountOf,
   tokenCeilingOf,
+  tokensPerTurnOf,
   tokenUsageOf,
 } from '../src/contracts/load-budget.js'
 import { normalizeHardwareFacts, normalizeTokenPool } from '../src/contracts/concurrency.js'
@@ -128,6 +129,20 @@ test('a wave counter only adds what was not already counted', () => {
   assert.deepEqual(tokenAccountOf({ previous: 1_900, measured: 400 }), { billedTokens: 400, delta: 0 })
   assert.deepEqual(tokenAccountOf({ previous: null, measured: null }), { billedTokens: 0, delta: 0 })
   assert.deepEqual(tokenAccountOf({}), { billedTokens: 0, delta: 0 })
+})
+
+test('the price of a turn is declared, measured, and only then a fallback', () => {
+  // A declared price always wins: the operator knows their workload.
+  assert.deepEqual(tokensPerTurnOf({ declared: 12_000, tokens: 9_000_000, turns: 100 }), { perTurn: 12_000, source: 'declared' })
+  // Nothing measured yet: no invented figure, the caller applies the constant.
+  assert.deepEqual(tokensPerTurnOf({ tokens: 0, turns: 0 }), { perTurn: null, source: 'fallback' })
+  assert.deepEqual(tokensPerTurnOf({ tokens: 900_000, turns: 2 }), { perTurn: null, source: 'fallback' }, 'two turns are not an average')
+  // Measured on this install from the third completed turn.
+  assert.deepEqual(tokensPerTurnOf({ tokens: 900_000, turns: 3 }), { perTurn: 300_000, source: 'measured' })
+  assert.deepEqual(tokensPerTurnOf({ tokens: 1_000_000, turns: 4 }), { perTurn: 250_000, source: 'measured' })
+  // A declared zero or garbage is "not declared", never a free turn.
+  assert.equal(tokensPerTurnOf({ declared: 0, tokens: 900_000, turns: 3 }).source, 'measured')
+  assert.equal(tokensPerTurnOf({ declared: 'lots', tokens: 0, turns: 0 }).source, 'fallback')
 })
 
 test('the load contract stays on the host: the client only renders what is published', async () => {

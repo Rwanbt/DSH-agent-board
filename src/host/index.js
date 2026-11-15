@@ -33,7 +33,7 @@ import {
   CONCURRENCY_REASONS, concurrencyReached, effectiveConcurrencyOf, normalizeConcurrencyLimit, normalizeHardwareFacts, normalizeTokenPool, providerCeilingOf, providerLoadOf,
 } from '../contracts/concurrency.js'
 import {
-  LOAD_REASONS, effectiveLoadCeiling, hardwareCeilingOf, tokenAccountOf, tokenCeilingOf, tokenUsageOf,
+  LOAD_LIMITS, LOAD_REASONS, effectiveLoadCeiling, hardwareCeilingOf, tokenAccountOf, tokenCeilingOf, tokensPerTurnOf, tokenUsageOf,
 } from '../contracts/load-budget.js'
 import {
   ACTIONS, CRITICAL_ACTIONS, HUMAN_ONLY_ACTIONS, READ_ONLY_ACTIONS, applyMandatePatch, describeMandate, effectiveAutonomyOf,
@@ -2433,6 +2433,11 @@ export function apply(ctx, config = {}) {
           spentTokens: spentTokensOf() + account.delta,
           waveStartedAt: Number.isFinite(Number(state.loadWave?.waveStartedAt)) ? Number(state.loadWave.waveStartedAt) : Date.now(),
         }
+        // A finished attempt is ONE turn for the price average. It survives a
+        // wave reset: it is a property of this install, not of the pool.
+        const samples = Number.isFinite(Number(state.loadPrice?.turns)) ? Math.max(0, Math.trunc(Number(state.loadPrice.turns))) : 0
+        const tokens = Number.isFinite(Number(state.loadPrice?.tokens)) ? Math.max(0, Math.trunc(Number(state.loadPrice.tokens))) : 0
+        state.loadPrice = { tokens: tokens + account.delta, turns: samples + 1 }
       }
       return usage
     } catch (error) {
@@ -2454,7 +2459,15 @@ export function apply(ctx, config = {}) {
     const measured = liveTokenUsageOf()
     const budget = normalizeTokenPool(state.policy.load?.tokenBudget ?? null, null)
     const spent = spentTokensOf() + measured.billedTokens
-    const perTurn = normalizeTokenPool(state.policy.load?.tokensPerTurn ?? null, null)
+    // The price of a turn: declared by the operator, else MEASURED on this
+    // install, else the documented fallback — and the source is published so a
+    // guessed figure is never mistaken for a measured one.
+    const price = tokensPerTurnOf({
+      declared: state.policy.load?.tokensPerTurn ?? null,
+      tokens: state.loadPrice?.tokens,
+      turns: state.loadPrice?.turns,
+    })
+    const perTurn = price.perTurn
     const hardwareCeiling = hardwareCeilingOf(facts)
     const tokenCeiling = budget === null ? null : tokenCeilingOf({ budget, consumed: spent, tokensPerTurn: perTurn })
     const load = effectiveLoadCeiling({ hardware: hardwareCeiling, tokens: tokenCeiling, running: countRunning(state.assignments) })
@@ -2466,7 +2479,10 @@ export function apply(ctx, config = {}) {
         spent,
         measured: measured.billedTokens,
         measurable: measured.measurable,
-        perTurn,
+        perTurn: perTurn ?? LOAD_LIMITS.DEFAULT_TOKENS_PER_TURN,
+        // `declared` / `measured` / `fallback`: the cockpit never shows a guessed
+        // price as if it had been measured.
+        perTurnSource: price.source,
         sessions: measured.sessions.slice(0, MAX_LOAD_SESSIONS),
       },
       waveStartedAt: Number.isFinite(Number(state.loadWave?.waveStartedAt)) ? Number(state.loadWave.waveStartedAt) : null,
