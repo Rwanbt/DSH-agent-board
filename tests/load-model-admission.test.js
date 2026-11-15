@@ -194,6 +194,27 @@ test('a spent token pool queues the card and says which fact binds', async () =>
   }
 })
 
+test('a load block reaches the attention queue as ONE named cause', async () => {
+  const host = await boot({ budget: 0 })
+  try {
+    await callJson(host.routes, 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(host.routes, 'POST', '/tick', {})
+    const state = await host.readState()
+    const attention = state.attention
+    assert.ok(attention !== undefined, 'the attention payload is published')
+    const loadEntry = attention.items.find(item => item.reason === 'load_exhausted')
+    assert.ok(loadEntry !== undefined, JSON.stringify(attention.items).slice(0, 900))
+    assert.equal(loadEntry.severity, 'high', 'it stops every launch: it must notify')
+    assert.match(String(loadEntry.title), /tokens/i, 'the binding fact is named in the row')
+    // One cause, however many cards it holds.
+    assert.equal(attention.items.filter(item => item.reason === 'load_exhausted').length, 1)
+    assert.match(String(loadEntry.suggestedAction), /pool|wave|session/i)
+    assert.doesNotMatch(String(loadEntry.suggestedAction), /sliding hour/i)
+  } finally {
+    await host.close()
+  }
+})
+
 test('the published usage is measured and a new wave can be started', async () => {
   const host = await boot({ budget: 10_000_000 })
   try {

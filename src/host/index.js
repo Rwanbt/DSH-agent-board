@@ -645,7 +645,12 @@ export function apply(ctx, config = {}) {
       // stable project identity for the root cause.
       projectId: state.assignments.find(entry => String(entry.taskId) === String(action.taskId))?.workspaceId ?? null,
       reason: String(action.reason ?? 'unknown'),
-      title: `Launch refused: ${String(action.reason ?? 'unknown')}`,
+      // A load refusal says WHICH fact binds: the operator's next move differs
+      // between "the pool is spent" and "the machine is full".
+      title: action.reason === LOAD_REASONS.exhausted
+        ? `Launch queued: ${String(action.binding ?? 'load')} limit reached`
+        : `Launch refused: ${String(action.reason ?? 'unknown')}`,
+      binding: typeof action.binding === 'string' ? action.binding : null,
       at: Number(lastTick?.at) || now,
     }))
     const queue = buildAttentionQueue({ decisions: pending, assignments: state.assignments, blocks, now })
@@ -2761,7 +2766,17 @@ export function apply(ctx, config = {}) {
     const auth = preflight.ok ? authorizeLaunch(task, { source, action: gateAction }) : preflight
     if (!auth.ok) {
       audit({ type: auth.gate === 'delegation' ? 'delegation_refused' : 'launch_refused', taskId: task.id, source, reason: auth.reason, ...(auth.gate === 'delegation' ? { depth: auth.depth } : {}) })
-      return { ok: false, reason: auth.reason }
+      // Keep the DIAGNOSIS on the refusal: which fact binds a load block, which
+      // provider or project reached its ceiling. The cockpit shows it verbatim,
+      // and dropping it made every queue look like an unexplained refusal.
+      return {
+        ok: false,
+        reason: auth.reason,
+        ...(auth.binding === undefined ? {} : { binding: auth.binding }),
+        ...(auth.limit === undefined ? {} : { limit: auth.limit }),
+        ...(auth.provider === undefined ? {} : { provider: auth.provider }),
+        ...(auth.queued === true ? { queued: true } : {}),
+      }
     }
     // The super-orchestrator gate is ADDITIVE: the existing authorization gates
     // above stay the single authority, and this one can only narrow them. A

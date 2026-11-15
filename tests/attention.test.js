@@ -15,6 +15,7 @@ import {
   ATTENTION_REASONS,
   ATTENTION_SEVERITY,
   EXCEPTION_MODE_THRESHOLD,
+  NOTIFY_SEVERITIES,
   approvalTrustOf,
   attentionDigestOf,
   attentionKpisOf,
@@ -69,8 +70,24 @@ test('ten sessions blocked by the same cause are ONE entry', () => {
   assert.equal(queue.counters.high, 1)
 })
 
-test('the rank is severity, then what it unblocks, then age', () => {
-  const decisions = [
+test('a load block is its own cause, not the retired hourly counter', () => {
+  // Lot 11 removed the sliding-hour throttle: a load refusal must not be mapped
+  // to `budget_exceeded`, whose advice was "wait for the sliding hour".
+  const blocks = Array.from({ length: 6 }, (_, index) => ({
+    taskId: `t${index}`, projectId: 'pX', reason: 'load_exhausted', title: 'Launch queued: load', at: NOW - 500,
+  }))
+  const queue = buildAttentionQueue({ blocks, now: NOW })
+  assert.equal(queue.items.length, 1, 'six queued cards, one cause')
+  const item = queue.items[0]
+  assert.equal(item.reason, ATTENTION_REASONS.loadExhausted)
+  assert.equal(item.occurrences, 6)
+  assert.equal(item.severity, ATTENTION_SEVERITY.HIGH, 'it stops EVERY launch: the operator must see it')
+  assert.ok(NOTIFY_SEVERITIES.includes(item.severity))
+  assert.doesNotMatch(String(item.suggestedAction), /sliding hour/i, 'the hourly window no longer exists')
+  assert.match(String(item.suggestedAction), /pool|wave|session/i)
+})
+
+test('the rank is severity, then what it unblocks, then age', () => {  const decisions = [
     { id: 'd-old', kind: 'approval', status: 'pending', projectId: 'p1', title: 'Old normal', action: 'comment', taskIds: ['a'], urgency: 'normal', createdAt: NOW - 900_000 },
     { id: 'd-new', kind: 'approval', status: 'pending', projectId: 'p2', title: 'New normal', action: 'comment', taskIds: ['b'], urgency: 'normal', createdAt: NOW - 1_000 },
   ]

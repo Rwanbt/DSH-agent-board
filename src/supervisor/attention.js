@@ -35,6 +35,9 @@ export const ATTENTION_REASONS = Object.freeze({
   permissionBlocked: 'permission_blocked',
   treeConflict: 'tree_conflict',
   budgetExceeded: 'budget_exceeded',
+  // A launch queued because of the real-time load (machine or token pool). It is
+  // NOT `budget_exceeded`: there is no sliding hour to wait for any more.
+  loadExhausted: 'load_exhausted',
   providerUnavailable: 'provider_unavailable',
 })
 
@@ -44,7 +47,8 @@ const SUGGESTED_ACTION = Object.freeze({
   [ATTENTION_REASONS.workNotVerified]: 'Re-run the item, or open the session and finish it.',
   [ATTENTION_REASONS.permissionBlocked]: 'Grant the permission for this project, or narrow the work.',
   [ATTENTION_REASONS.treeConflict]: 'Wait for the running attempt, or give the item its own worktree.',
-  [ATTENTION_REASONS.budgetExceeded]: 'Raise the budget, or wait for the sliding hour to free a slot.',
+  [ATTENTION_REASONS.budgetExceeded]: 'Raise the budget, or wait for the window to free a slot.',
+  [ATTENTION_REASONS.loadExhausted]: 'Free the load: raise the token pool, start a new wave, or wait for a session to finish.',
   [ATTENTION_REASONS.providerUnavailable]: 'Switch the route for this project, or wait for the cooldown.',
 })
 
@@ -55,6 +59,7 @@ const COST_SECONDS = Object.freeze({
   [ATTENTION_REASONS.permissionBlocked]: 45,
   [ATTENTION_REASONS.treeConflict]: 20,
   [ATTENTION_REASONS.budgetExceeded]: 10,
+  [ATTENTION_REASONS.loadExhausted]: 15,
   [ATTENTION_REASONS.providerUnavailable]: 15,
 })
 
@@ -182,6 +187,20 @@ export function buildAttentionQueue({
     if (!isRecord(block)) continue
     const reason = textOf(block.reason)
     if (reason === '') continue
+    // A load block is named for what it is. It stops EVERY launch, so it ranks
+    // above a permission refusal — the operator cannot work around it per card.
+    if (reason.startsWith('load_')) {
+      add({
+        reason: ATTENTION_REASONS.loadExhausted,
+        severity: ATTENTION_SEVERITY.HIGH,
+        projectId: textOf(block.projectId) || null,
+        taskId: textOf(block.taskId) || null,
+        title: textOf(block.title) || 'Launch queued: no load left',
+        detail: reason,
+        since: block.at,
+      })
+      continue
+    }
     const mapped = reason.includes('permission')
       ? ATTENTION_REASONS.permissionBlocked
       : (reason.includes('provider') ? ATTENTION_REASONS.providerUnavailable : ATTENTION_REASONS.budgetExceeded)
