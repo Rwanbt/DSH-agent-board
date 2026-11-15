@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { availableParallelism, freemem } from 'node:os'
 import { createPublicContractAdapter } from '../connectors/taskboard-public-contract.js'
 /**
  * Agent Board host plugin.
@@ -29,8 +30,11 @@ import {
   textOfContent, truncate,
 } from '../contracts/model.js'
 import {
-  CONCURRENCY_REASONS, concurrencyReached, effectiveConcurrencyOf, normalizeConcurrencyLimit, providerCeilingOf, providerLoadOf,
+  CONCURRENCY_REASONS, concurrencyReached, effectiveConcurrencyOf, normalizeConcurrencyLimit, normalizeHardwareFacts, normalizeTokenPool, providerCeilingOf, providerLoadOf,
 } from '../contracts/concurrency.js'
+import {
+  LOAD_REASONS, effectiveLoadCeiling, hardwareCeilingOf, tokenAccountOf, tokenCeilingOf, tokenUsageOf,
+} from '../contracts/load-budget.js'
 import {
   ACTIONS, CRITICAL_ACTIONS, HUMAN_ONLY_ACTIONS, READ_ONLY_ACTIONS, applyMandatePatch, describeMandate, effectiveAutonomyOf,
   effectivePolicyOf, emptyMandate, migrateLegacyPolicy, normalizeMandate,
@@ -89,6 +93,9 @@ const TICK_MS = 4000
 const MAX_PROPOSALS = 8
 const MAX_ROUTE_EVENTS = 40
 const MAX_ASSIGNMENTS_KEPT = 60
+// Published per-session token rows are bounded like every other list: the fifty
+// tested sessions fit, a runaway never grows the frame.
+const MAX_LOAD_SESSIONS = 50
 const MAX_AUDIT = 200
 const MAX_GONE = 500
 const MAX_PUBLISHED_GONE = 120
@@ -709,6 +716,8 @@ export function apply(ctx, config = {}) {
       instance: { primary: isPrimary, lockHolder },
       supervision,
       events: publishedSupervisionEvents.slice(-MAX_SUPERVISION_EVENTS),
+      // Real-time load (Lot 11): what binds an admission right now, measured.
+      load: loadReportOf(),
     }
   }
 
@@ -2319,6 +2328,132 @@ export function apply(ctx, config = {}) {
   const isStopped = () => state.stoppedAt !== null
   const activeAssignments = () => state.assignments.filter(assignment => ACTIVE_STATUSES.includes(assignment.status))
 
+  /** Machine facts: an explicit policy override wins over the noisy measurement. */
+  function hardwareFactsOf() {
+    const declared = normalizeHardwareFacts(state.policy.load?.hardware)
+    if (declared !== null) return declared
+    try {
+      return { parallelism: availableParallelism(), freeBytes: freemem() }
+    } catch (error) {
+      warn(`hardware facts unavailable: ${String(error)}`)
+      return {}
+    }
+  }
+
+  /**
+   * The optional `tokenMeter` service, read WITHOUT the inject requirement.
+   *
+   * `tokenMeter` is not in `inject` (the board must load on a Host that does not
+   * provide it), so reading `ctx.tokenMeter` throws `cannot get property
+   * "tokenMeter" without inject`. That throw reached an uncaught route promise
+   * and took the whole Host down at startup. `ctx.get(name)` is the documented
+   * inject-free read and answers `undefined` when the service is absent; it is
+   * resolved per call so a meter provided later is picked up on the next
+   * admission instead of being frozen at load time.
+   */
+  function tokenMeterOf() {
+    try {
+      return typeof ctx.get === 'function' ? ctx.get('tokenMeter') ?? null : null
+    } catch (error) {
+      warn(`token meter unavailable: ${String(error)}`)
+      return null
+    }
+  }
+
+  /**
+   * Token usage of the LIVE sessions, measured by the provider.
+   *
+   * The meter is an optional DSH service: when it is absent the answer is "not
+   * measurable" and the load model binds on hardware only. A usage that no
+   * provider reported is never estimated into a bill.
+   */
+  function liveTokenUsageOf() {
+    const meter = tokenMeterOf()
+    if (typeof meter?.measure !== 'function') return { measurable: false, billedTokens: 0, sessions: [] }
+    const sessions = []
+    let billedTokens = 0
+    for (const assignment of activeAssignments()) {
+      try {
+        const agent = ctx.agents.get(assignment.sessionId)
+        if (agent === undefined) continue
+        const usage = tokenUsageOf(meter.measure(agent.session))
+        if (usage === null) continue
+        billedTokens += usage.billedTokens
+        sessions.push({ assignmentId: assignment.id, billedTokens: usage.billedTokens })
+      } catch (error) {
+        warn(`token measurement skipped for ${String(assignment.id)}: ${String(error)}`)
+      }
+    }
+    return { measurable: true, billedTokens, sessions }
+  }
+
+  /** Cumulative tokens accounted for the current work wave. */
+  function spentTokensOf() {
+    const stored = Number(state.loadWave?.spentTokens)
+    return Number.isFinite(stored) && stored > 0 ? Math.trunc(stored) : 0
+  }
+
+  /**
+   * Move one finished attempt's measured usage into the wave counter.
+   *
+   * `tokensBilled` on the assignment is the last measurement of that session, so
+   * a re-measure only adds the DELTA: a retried attempt must never bill twice.
+   */
+  function accountTokensOf(assignment) {
+    const meter = tokenMeterOf()
+    if (typeof meter?.measure !== 'function') return null
+    try {
+      const agent = ctx.agents.get(assignment.sessionId)
+      if (agent === undefined) return null
+      const usage = tokenUsageOf(meter.measure(agent.session))
+      if (usage === null) return null
+      const account = tokenAccountOf({ previous: assignment.tokensBilled, measured: usage.billedTokens })
+      assignment.tokensBilled = account.billedTokens
+      if (account.delta > 0) {
+        state.loadWave = {
+          spentTokens: spentTokensOf() + account.delta,
+          waveStartedAt: Number.isFinite(Number(state.loadWave?.waveStartedAt)) ? Number(state.loadWave.waveStartedAt) : Date.now(),
+        }
+      }
+      return usage
+    } catch (error) {
+      warn(`token accounting skipped for ${String(assignment.id)}: ${String(error)}`)
+      return null
+    }
+  }
+
+  /**
+   * The published load model: the machine and the token pool, in real time.
+   *
+   * This is NOT a quota over time: the operator's own ceilings keep their own
+   * gates (`maxConcurrent`, supervision, per-project, per-provider), and this
+   * one adds what nothing else can see — what the machine can carry and what the
+   * remaining pool can pay for.
+   */
+  function loadReportOf() {
+    const facts = hardwareFactsOf()
+    const measured = liveTokenUsageOf()
+    const budget = normalizeTokenPool(state.policy.load?.tokenBudget ?? null, null)
+    const spent = spentTokensOf() + measured.billedTokens
+    const perTurn = normalizeTokenPool(state.policy.load?.tokensPerTurn ?? null, null)
+    const hardwareCeiling = hardwareCeilingOf(facts)
+    const tokenCeiling = budget === null ? null : tokenCeilingOf({ budget, consumed: spent, tokensPerTurn: perTurn })
+    const load = effectiveLoadCeiling({ hardware: hardwareCeiling, tokens: tokenCeiling, running: countRunning(state.assignments) })
+    return {
+      ...load,
+      hardware: { parallelism: facts.parallelism ?? null, freeBytes: facts.freeBytes ?? null, ceiling: hardwareCeiling },
+      tokens: {
+        budget,
+        spent,
+        measured: measured.billedTokens,
+        measurable: measured.measurable,
+        perTurn,
+        sessions: measured.sessions.slice(0, MAX_LOAD_SESSIONS),
+      },
+      waveStartedAt: Number.isFinite(Number(state.loadWave?.waveStartedAt)) ? Number(state.loadWave.waveStartedAt) : null,
+    }
+  }
+
   /**
    * ONE authorization choke point for every launch path (timer tick, dispatch,
    * proposal approval, failover handoff). No path may create a session without
@@ -2602,6 +2737,13 @@ export function apply(ctx, config = {}) {
       if (concurrencyReached(load, ceiling.limit)) {
         return { ok: false, reason: CONCURRENCY_REASONS.provider, queued: true, provider: ceiling.key, limit: ceiling.limit }
       }
+    }
+    // The LOAD gate (Lot 11): what the machine can carry and what the remaining
+    // token pool pays for, recomputed at every admission. It queues — the card
+    // stays dispatchable — and it names the binding source in the refusal.
+    const load = loadReportOf()
+    if (concurrencyReached(load.running ?? 0, load.ceiling)) {
+      return { ok: false, reason: LOAD_REASONS.exhausted, queued: true, binding: load.binding, limit: load.ceiling }
     }
     return auth
   }
@@ -3294,6 +3436,10 @@ export function apply(ctx, config = {}) {
    */
   async function settleTurnOutcome(assignment, { kind, cwd, details = {}, delegationAllowed = true }) {
     const sessionId = assignment.sessionId
+    // Move this attempt's measured usage from the live bucket into the wave
+    // counter BEFORE the session is recycled: the load model must not forget a
+    // bill because the session it belonged to ended.
+    accountTokensOf(assignment)
     // The tree a commit would land in. The runtime's working directory wins; the
     // project directory is a truthful fallback (the attempt belongs to it), so a
     // host without that optional service can still verify a real commit.
@@ -5231,6 +5377,23 @@ export function apply(ctx, config = {}) {
     } catch { /* connection closed */ }
   }
 
+  /**
+   * Run one read route once the host is ready, and answer 500 on failure.
+   *
+   * These handlers are DETACHED promises: a rejection inside one has no catcher
+   * left, so Node turns it into an unhandled rejection and the Host child exits
+   * with code 1 — the desktop then reports "DSH will not start" for what is only
+   * one failed request. Every read route therefore fails its own request.
+   */
+  function answerAfterReady(res, run) {
+    void readyPromise
+      .then(run)
+      .catch(error => {
+        warn(`route failure: ${String(error)}`)
+        sendJson(res, 500, { ok: false, error: truncate(String(error?.message ?? error), 300) })
+      })
+  }
+
   function readJsonBody(req) {
     return new Promise(resolve => {
       const chunks = []
@@ -5271,11 +5434,11 @@ export function apply(ctx, config = {}) {
         const method = req.method ?? 'GET'
 
         if (method === 'GET' && route === '/state') {
-          void readyPromise.then(() => sendJson(res, 200, { ok: true, value: publicStateOf(state, connectors.describe(), publicExtra()) }))
+          answerAfterReady(res, () => sendJson(res, 200, { ok: true, value: publicStateOf(state, connectors.describe(), publicExtra()) }))
           return
         }
         if (method === 'GET' && route === '/events') {
-          void readyPromise.then(() => {
+          answerAfterReady(res, () => {
             res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
             res.write(`event: state\ndata: ${JSON.stringify(publicStateOf(state, connectors.describe(), publicExtra()))}\n\n`)
             streamClients.add(res)
@@ -5286,7 +5449,7 @@ export function apply(ctx, config = {}) {
           return
         }
         if (method === 'GET' && route === '/adapters') {
-          void readyPromise.then(() => sendJson(res, 200, { ok: true, value: connectors.describe() }))
+          answerAfterReady(res, () => sendJson(res, 200, { ok: true, value: connectors.describe() }))
           return
         }
         // The execution contract is part of the API, not a hidden capability: the
@@ -5300,12 +5463,12 @@ export function apply(ctx, config = {}) {
           return
         }
         if (method === 'GET' && route === '/diagnostics') {
-          void readyPromise.then(() => sendJson(res, 200, { ok: true, value: diagnostics() }))
+          answerAfterReady(res, () => sendJson(res, 200, { ok: true, value: diagnostics() }))
           return
         }
         // Shallow self-test: what does THIS running build provide? Read-only.
         if (method === 'GET' && route === '/selftest') {
-          void readyPromise.then(() => sendJson(res, 200, { ok: true, value: { at: Date.now(), checks: contractChecks(), deep: null } }))
+          answerAfterReady(res, () => sendJson(res, 200, { ok: true, value: { at: Date.now(), checks: contractChecks(), deep: null } }))
           return
         }
         // Simulation is read-only by construction: no session, no ledger write.
@@ -5317,7 +5480,7 @@ export function apply(ctx, config = {}) {
         }
         // CI checks for a ref (branch/tag/SHA) — read-only.
         if (method === 'GET' && route.startsWith('/forge/checks/')) {
-          void readyPromise.then(async () => {
+          answerAfterReady(res, async () => {
             const adapter = connectors.get('github')
             if (adapter === null || adapter === undefined || typeof adapter.checks !== 'function') {
               return sendJson(res, 404, { ok: false, error: 'github_not_configured' })
@@ -5486,6 +5649,16 @@ export function apply(ctx, config = {}) {
               supervisionDirty = true
               touch()
               return sendJson(res, 200, { ok: true, value: mandateView() })
+            }
+            // A token pool is spent by a WAVE of work: resetting starts a new one
+            // without touching the measured usage history (it stays auditable).
+            if (route === '/load/reset') {
+              const at = Date.now()
+              const previous = spentTokensOf()
+              state.loadWave = { spentTokens: 0, waveStartedAt: at }
+              audit({ type: 'load_wave_reset', at, previous })
+              touch()
+              return sendJson(res, 200, { ok: true, value: loadReportOf() })
             }
             if (route === '/superagent/start') {
               const result = await ensureSuperAgentSession()

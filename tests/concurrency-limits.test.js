@@ -30,6 +30,13 @@ import { apply } from '../src/host/index.js'
 import { resolveBudgetLimits } from '../src/routing/budget.js'
 import { setupAgentHandle } from './fixtures/secure-agent-context.js'
 
+/**
+ * The machine these tests are ABOUT is the tree lock, not the host's RAM: pin a
+ * generous box so the load model of Lot 11 never becomes the reason for a queue
+ * (`freemem()` differs on every CI runner).
+ */
+const FIFTY_SESSIONS_BOX = { parallelism: 64, freeBytes: 64 * 1024 ** 3 }
+
 function mandateFor(projectIds, overrides = {}) {
   return {
     version: 2,
@@ -226,7 +233,7 @@ test('fifty real assignments across ten projects are launched under the TREE loc
     await callJson(made.routes, 'GET', '/state')
     // Everything that used to cap the board is lifted explicitly.
     const policy = await callJson(made.routes, 'POST', '/policy', {
-      policy: { maxConcurrent: null, supervision: { maxConcurrentDelegations: null, maxDelegationsPerHour: 1000 }, autonomyBudget: { maxTasksPerHour: 1000 } },
+      policy: { maxConcurrent: null, supervision: { maxConcurrentDelegations: null, maxDelegationsPerHour: 1000 }, autonomyBudget: { maxTasksPerHour: 1000 }, load: { hardware: FIFTY_SESSIONS_BOX } },
     })
     assert.equal(policy.status, 200, JSON.stringify(policy.body))
     assert.equal(policy.body.value.maxConcurrent, null)
@@ -270,7 +277,7 @@ test('a provider ceiling queues the second launch instead of failing it', async 
   try {
     await callJson(made.routes, 'GET', '/state')
     await callJson(made.routes, 'POST', '/policy', {
-      policy: { maxConcurrent: null, supervision: { maxConcurrentDelegations: null }, providerConcurrency: { 'p/model': 1 } },
+      policy: { maxConcurrent: null, supervision: { maxConcurrentDelegations: null }, providerConcurrency: { 'p/model': 1 }, load: { hardware: FIFTY_SESSIONS_BOX } },
     })
     await callJson(made.routes, 'POST', '/mode', { mode: 'autonomous' })
     const tick = await callJson(made.routes, 'POST', '/tick', {}, 60_000)
