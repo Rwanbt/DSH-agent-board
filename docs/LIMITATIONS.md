@@ -81,3 +81,33 @@ rows stay for audit, but where they conflict this section wins.
 | G6 | **An approval is consumed at authorization time**, not at session creation: a failed `ctx.agents.create` still spends the decision (conservative). | Operator asks again; no duplicate effect. | **P2** |
 | G7 | **Model discovery may be absent.** Without `ctx.llm`, `/superagent/model` refuses (`model_discovery_unavailable`) and the runtime falls back to the host's default model selection. | No invented model is ever used. | **P2** |
 | G8 | **Item 1 above is re-scoped.** Task Board 0.12.0 does publish a versioned public-v1 API, but the legacy `/contract` route is still absent and the public surface is disabled on this install; the simulated contract leg therefore remains the only exercised execution contract. | Same as G2/G3. | — |
+
+## 0.2.0 update (2026-11-15) — production-ready autonomy
+
+Rows closed in this release, with the evidence that closes them:
+
+| Was | Now | Evidence |
+|---|---|---|
+| The decisions inbox was always empty in the UI (host object vs client array) | One versioned contract, decoded by the store and the panels | `tests/decisions-schema.test.js`, `tests/decisions-contract-host.test.js` |
+| A max-tokens (truncated) turn was recorded `DONE`/`succeeded` and its card moved to `in_review` | `max_tokens`/`cancelled`/`error`/unknown never settle; an unproven completion is continued, then escalated to the inbox | `tests/turn-outcome.test.js`, `tests/turn-outcome-host.test.js` |
+| The work-item fingerprint hashed the title (a moved line lost its history, a reworded line kept a stale proof) | Identity = locator, content = title+objective+criteria+block, with a pure v1→v2 journal migration | `tests/project-work-identity.test.js` |
+| The cockpit banner showed `identity.level` (never updated) | One `effectiveAutonomyOf` published as `autonomy`; the panels read only that | `tests/effective-autonomy.test.js`, `tests/cockpit-render.test.js` |
+| Concurrency hard-capped at 2/8/16 whatever the operator asked | One concurrency contract: `null` = unlimited, `0` = freeze, per-project and per-provider ceilings queue | `tests/concurrency-limits.test.js` |
+| One synthetic work item per project at a time | The lock is the working tree: distinct worktrees run in parallel, a shared directory stays serialised across both backends | `tests/project-work.test.js`, `tests/concurrency-limits.test.js` |
+| Personal home paths in the evidence | `<user>` placeholder + a guard test | `tests/no-personal-traces.test.js` |
+| No CI | `.github/workflows/ci.yml` on push/PR to `dev`/`main` | workflow file |
+| The attention cost was unknown | A queue, a digest and the product KPIs, silent by default | `tests/attention.test.js`, `tests/attention-cockpit.test.js` |
+
+### New limitations accepted in 0.2.0
+
+| # | Limitation | Impact | Priority |
+|---|---|---|---|
+| P5-1 | **Fifty SIMULTANEOUS host sessions need worktree isolation**, which only the `taskboard`/`contract` backends provide. On the `board` backend a card runs in the project directory, so the tree lock serialises it. | The dispatch path launches 50 items (tested) and 10 parallel shared-tree sessions; 50 parallel host sessions were not exercised. | **P1** |
+| P5-2 | **No live 50-session host run.** The queue, KPI and projection costs are measured on deterministic fixtures; no provider quota was consumed. | The projection budget (0.43 ms p95, 7.9 KB) is a lower bound on real work. | **P1** |
+| P5-3 | **The card-move proof is coarse**: it compares the ledger status at launch with the status at turn end. A card moved by another actor into a different status also counts as evidence. | A false positive needs a concurrent foreign move; the commit/structured proofs are stricter. | **P2** |
+| P5-4 | **A truncated turn spends up to 3 extra provider calls** per attempt (`MAX_CONTINUATIONS`). | Bounded, but a stubbornly truncated task costs 4 turns. | **P2** |
+| P5-5 | **The exceptions-only grid mode is a filter, not a separate screen**: it keeps what a HUMAN must unblock, but the "needs my attention" ordering is still the attention-first section order. | The operator still sees the board; it is not a dedicated inbox screen. | **P2** |
+| P5-6 | **Bulk approval groups by the operator's selection**, not by an automatic same-type/same-scope clustering in the UI: the contract (one single-use grant per decision) exists and is tested, the automatic grouping is not rendered. | Grouping is manual today. | **P2** |
+| P5-7 | **Notifications are still badges only** (no toast/OS notification); the DND mode is not implemented. Severity is published (`notify: true` for blocking/high) so a future notifier has its input. | The request to "notify only high severity, grouped, with DND" is only partially met. | **P2** |
+| P5-8 | **The mobile band height is a CSS contract, not a measured pixel**: no browser runs in the suite. The 56 px figure comes from 34 px mascot + 2×8 px padding + 34 px line box. | A visual regression would be caught by a screenshot harness, not by CI. | **P3** |
+| P5-9 | **The trust suggestion has no UI**: `approvalTrustOf` computes it and never promotes; the panel does not yet offer the promotion. | The operator cannot act on it from the cockpit. | **P3** |
