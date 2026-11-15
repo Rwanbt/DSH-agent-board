@@ -22,6 +22,10 @@ import { fileURLToPath } from 'node:url'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PARTS = [
   'src/contracts/model.js',
+  // The public decisions contract (v1): ONE decoder for the host payload, shared
+  // by the store and the panels, so the inbox can never read an array that the
+  // host publishes as an object.
+  'src/contracts/decisions-schema.js',
   // Role identity (15 mascot roles, declared-name aliases, status tones). Pure
   // and shared with the host; every UI module below may use it.
   'src/contracts/agent-roles.js',

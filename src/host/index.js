@@ -28,6 +28,7 @@ import {
   ACTIONS, CRITICAL_ACTIONS, HUMAN_ONLY_ACTIONS, READ_ONLY_ACTIONS, applyMandatePatch, describeMandate, effectivePolicyOf,
   emptyMandate, migrateLegacyPolicy, normalizeMandate,
 } from '../contracts/mandate.js'
+import { DECISIONS_PAYLOAD_LIMITS, decisionsPayloadOf } from '../contracts/decisions-schema.js'
 import { buildProjection, normalizeSessions } from '../supervisor/projection.js'
 import { MAX_SUPERVISION_EVENTS, buildSupervision, mergeSupervisionEvents, supervisionEvents } from '../supervisor/super-orchestrator.js'
 import { selectDispatchable, stopPlan, readinessOf, mandateCheck, countRunning } from '../orchestrator/dag.js'
@@ -3526,11 +3527,13 @@ export function apply(ctx, config = {}) {
       memory: { digest: agent.memory.digest ?? null, facts: agent.memory.facts.length, decisions: agent.memory.decisions.length },
       directives: agent.directives.filter(directive => directive.status === 'active').slice(-40),
       directivesRevoked: agent.directives.filter(directive => directive.status === 'revoked').slice(-10),
-      decisions: {
-        pending: pendingDecisions(agent.decisions).slice(0, 20),
-        recent: agent.decisions.filter(decision => decision.status !== 'pending').slice(-10),
+      // Versioned, bounded public contract: the client decodes THIS shape (and
+      // still accepts the legacy flat array from an older host).
+      decisions: decisionsPayloadOf({
+        pending: pendingDecisions(agent.decisions).slice(0, DECISIONS_PAYLOAD_LIMITS.pending),
+        recent: agent.decisions.filter(decision => decision.status !== 'pending').slice(-DECISIONS_PAYLOAD_LIMITS.recent),
         summary: inboxSummary(agent.decisions),
-      },
+      }),
       plan: agent.plan,
       activity: agent.activity.slice(-40),
       budget: agent.budget,
