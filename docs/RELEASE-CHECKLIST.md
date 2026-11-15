@@ -39,6 +39,8 @@ CI run URL once this branch is pushed.
 | 2.3 | `/selftest` shallow probe | LIVE | `GET /dsh-agent-board/api/v2/selftest` | `value.checks` all `ok:true` |
 | 2.4 | `/selftest` deep probe (ephemeral session) | LIVE | `POST /dsh-agent-board/api/v2/selftest` `{ "deep": true, "confirm": "EPHEMERAL_SESSION" }` | one session created then disposed, never prompted |
 | 2.5 | Dry run writes nothing | LIVE | `GET /dsh-agent-board/api/v2/dry-run` | `writes: 0`, `limits.effectiveConcurrent` present |
+| 2.6 | The load model answers on this machine | LIVE | `node scripts/replay-state.mjs` then `GET /api/v2/state` | a non-zero `load.ceiling`, a `load.binding`, `load.reasons[].raw` populated |
+| 2.7 | Fifty sessions, one operator | LIVE | follow `docs/LIVE-50-SESSIONS.md` | record `load.*` at steady state and the RAM used; verdict in `docs/PERFORMANCE.md` |
 
 EVIDENCE: the JSON payloads, and the disposable home path you used.
 
