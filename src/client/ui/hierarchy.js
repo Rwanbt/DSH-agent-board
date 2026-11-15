@@ -534,6 +534,12 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
   const level = typeof autonomy?.level === 'string'
     ? autonomy.level
     : (typeof identity?.level === 'string' ? identity.level : (typeof mandate?.level === 'string' ? mandate.level : null))
+  // The host's attention queue (Lot 5b). Absent on an older host: the panel says
+  // so instead of inventing a queue. A healthy session is never in it.
+  const attention = sa?.attention !== null && typeof sa?.attention === 'object' && !Array.isArray(sa.attention)
+    ? sa.attention
+    : (context?.attention !== null && typeof context?.attention === 'object' && !Array.isArray(context?.attention) ? context.attention : null)
+  const attentionItems = Array.isArray(attention?.items) ? attention.items : []
   return {
     available: sa !== null,
     identity,
@@ -554,6 +560,13 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
     level,
     scope: typeof autonomy?.scope === 'string' ? autonomy.scope : (typeof mandate?.scopeMode === 'string' ? mandate.scopeMode : null),
     autonomy,
+    // What needs a HUMAN, plus the product KPIs. `null` on an older host.
+    attention,
+    attentionItems,
+    attentionCount: attentionItems.length,
+    attentionCostSeconds: typeof attention?.counters?.costSeconds === 'number' ? attention.counters.costSeconds : null,
+    exceptionsOnly: attention?.exceptionMode === true,
+    kpis: attention?.kpis !== null && typeof attention?.kpis === 'object' ? attention.kpis : null,
     enabledProjects,
     totalProjects,
     decisions,

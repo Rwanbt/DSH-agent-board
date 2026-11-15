@@ -4418,6 +4418,9 @@ function buildOverview(projection, options = {}) {
   const now = Number(options.now) || Date.now()
 
   const filter = VIEW_FILTERS.includes(options.filter) ? options.filter : 'attention'
+  // "Exceptions only": from N live agents, watching stops being cheaper than
+  // filtering, so the cockpit defaults to what only a HUMAN can unblock.
+  const exceptionsOnly = options.exceptionsOnly === true
   const query = typeof options.query === 'string' ? options.query.trim().toLowerCase() : ''
   const focus = OVERVIEW_BUCKETS.includes(options.focus) ? options.focus : null
   const project = typeof options.project === 'string' && options.project !== '' ? options.project : null
@@ -4475,6 +4478,9 @@ function buildOverview(projection, options = {}) {
     // views (an explicit "all" or a search still reaches it), as in view.js.
     if (dismissed.has(node.id) && query === '' && filter !== 'all') continue
     if (project !== null && node.projectId !== project) continue
+    // Exceptions only: a session the board can still drive by itself is not shown,
+    // even in the attention view (a search and the selected card still reach it).
+    if (exceptionsOnly && query === '' && !isActionRequired(node)) continue
     if (!matchesHierarchyFilters(node, roles, effectiveFilters, taskStates, reviewAvailable)) continue
     const bucket = buckets.get(node.id) ?? 'other'
     if (focus !== null) {
@@ -4527,7 +4533,7 @@ function buildOverview(projection, options = {}) {
   }
   counts.shown = entries.length
 
-  return { sections, entries, counts, filter, query, focus }
+  return { sections, entries, counts, filter, query, focus, exceptionsOnly }
 }
 
 
@@ -4706,7 +4712,7 @@ const HOST_STATE_ARRAY_KEYS = ['assignments', 'proposals', 'routeEvents', 'audit
 // GOAL 6 additive fields. They are recognised as a host-state marker but never
 // type-validated here: a partially populated superagent payload must still
 // reach the UI, which guards every field access itself.
-const HOST_STATE_EXTRA_KEYS = ['mandate', 'capabilities', 'superagent', 'dryRun', 'supervision', 'projects', 'models', 'taskboardPublic', 'build']
+const HOST_STATE_EXTRA_KEYS = ['mandate', 'capabilities', 'superagent', 'dryRun', 'supervision', 'projects', 'models', 'taskboardPublic', 'build', 'attention']
 
 /**
  * Is this object a host state frame? The event stream is shared, so a valid
@@ -4864,6 +4870,9 @@ function createBoardStore(ctx, options = {}) {
       // GOAL 6 views, normalized once so every component receives the same
       // null-safe shape (an old host yields null and the UI says so).
       superagent: superagentOf(host),
+      // The operator's attention queue (Lot 5b): a payload the panels read
+      // directly, never recomputed from sessions.
+      attention: plainObjectOrNull(host?.attention),
       mandate: mandateOf(host),
       capabilities: capabilitiesOf(host),
       hostError,
@@ -8400,6 +8409,12 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
   const level = typeof autonomy?.level === 'string'
     ? autonomy.level
     : (typeof identity?.level === 'string' ? identity.level : (typeof mandate?.level === 'string' ? mandate.level : null))
+  // The host's attention queue (Lot 5b). Absent on an older host: the panel says
+  // so instead of inventing a queue. A healthy session is never in it.
+  const attention = sa?.attention !== null && typeof sa?.attention === 'object' && !Array.isArray(sa.attention)
+    ? sa.attention
+    : (context?.attention !== null && typeof context?.attention === 'object' && !Array.isArray(context?.attention) ? context.attention : null)
+  const attentionItems = Array.isArray(attention?.items) ? attention.items : []
   return {
     available: sa !== null,
     identity,
@@ -8420,6 +8435,13 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
     level,
     scope: typeof autonomy?.scope === 'string' ? autonomy.scope : (typeof mandate?.scopeMode === 'string' ? mandate.scopeMode : null),
     autonomy,
+    // What needs a HUMAN, plus the product KPIs. `null` on an older host.
+    attention,
+    attentionItems,
+    attentionCount: attentionItems.length,
+    attentionCostSeconds: typeof attention?.counters?.costSeconds === 'number' ? attention.counters.costSeconds : null,
+    exceptionsOnly: attention?.exceptionMode === true,
+    kpis: attention?.kpis !== null && typeof attention?.kpis === 'object' ? attention.kpis : null,
     enabledProjects,
     totalProjects,
     decisions,
@@ -11168,7 +11190,10 @@ function dabMakePage(store, ctx) {
       filter: ui.filter, query: ui.query, project: ui.project, dismissed: dismissedSet,
       roles: hierarchy.roles, taskStates, taskTitles, filters, focus, selectedId,
       now: nowBucket * 60000 + 60000, aggregates,
-    }), [projection, aggregates, ui.filter, ui.query, ui.project, dismissedSet, hierarchy.roles, taskStates, taskTitles, filters, focus, selectedId, nowBucket])
+      // The host publishes whether the board is big enough for watching to stop
+      // paying off; the grid then defaults to exceptions only.
+      exceptionsOnly: snapshot.attention?.exceptionMode === true,
+    }), [projection, aggregates, ui.filter, ui.query, ui.project, dismissedSet, hierarchy.roles, taskStates, taskTitles, filters, focus, selectedId, nowBucket, snapshot.attention])
 
     // Every width keeps the projects overview: all projects, each foldable.
     const shownProjects = React.useMemo(() => {

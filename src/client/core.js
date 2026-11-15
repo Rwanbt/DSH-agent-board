@@ -94,7 +94,7 @@ const HOST_STATE_ARRAY_KEYS = ['assignments', 'proposals', 'routeEvents', 'audit
 // GOAL 6 additive fields. They are recognised as a host-state marker but never
 // type-validated here: a partially populated superagent payload must still
 // reach the UI, which guards every field access itself.
-const HOST_STATE_EXTRA_KEYS = ['mandate', 'capabilities', 'superagent', 'dryRun', 'supervision', 'projects', 'models', 'taskboardPublic', 'build']
+const HOST_STATE_EXTRA_KEYS = ['mandate', 'capabilities', 'superagent', 'dryRun', 'supervision', 'projects', 'models', 'taskboardPublic', 'build', 'attention']
 
 /**
  * Is this object a host state frame? The event stream is shared, so a valid
@@ -252,6 +252,9 @@ export function createBoardStore(ctx, options = {}) {
       // GOAL 6 views, normalized once so every component receives the same
       // null-safe shape (an old host yields null and the UI says so).
       superagent: superagentOf(host),
+      // The operator's attention queue (Lot 5b): a payload the panels read
+      // directly, never recomputed from sessions.
+      attention: plainObjectOrNull(host?.attention),
       mandate: mandateOf(host),
       capabilities: capabilitiesOf(host),
       hostError,

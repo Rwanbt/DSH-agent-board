@@ -237,7 +237,10 @@ function dabMakePage(store, ctx) {
       filter: ui.filter, query: ui.query, project: ui.project, dismissed: dismissedSet,
       roles: hierarchy.roles, taskStates, taskTitles, filters, focus, selectedId,
       now: nowBucket * 60000 + 60000, aggregates,
-    }), [projection, aggregates, ui.filter, ui.query, ui.project, dismissedSet, hierarchy.roles, taskStates, taskTitles, filters, focus, selectedId, nowBucket])
+      // The host publishes whether the board is big enough for watching to stop
+      // paying off; the grid then defaults to exceptions only.
+      exceptionsOnly: snapshot.attention?.exceptionMode === true,
+    }), [projection, aggregates, ui.filter, ui.query, ui.project, dismissedSet, hierarchy.roles, taskStates, taskTitles, filters, focus, selectedId, nowBucket, snapshot.attention])
 
     // Every width keeps the projects overview: all projects, each foldable.
     const shownProjects = React.useMemo(() => {
