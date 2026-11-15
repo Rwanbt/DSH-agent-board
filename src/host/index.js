@@ -89,6 +89,17 @@ const execFileAsync = promisify(execFile)
 export const name = 'dsh-agent-board'
 export const inject = ['agents', 'webServer', 'connection', 'workspaceRegistry']
 
+/**
+ * The build identity this module publishes in `/state`.
+ *
+ * `package.json` is what a package manager DOWNLOADS, so it is the release
+ * version; this constant is what the running host REPORTS. They drifted once
+ * (package 0.1.0, build 0.2.0, changelog 0.3.0) and the suite did not notice, so
+ * `tests/release-version.test.js` now pins all three to the newest changelog
+ * entry.
+ */
+export const BUILD_VERSION = '0.3.0'
+
 const API_PATH = '/dsh-agent-board/api/v2'
 const TICK_MS = 4000
 const MAX_PROPOSALS = 8
@@ -408,7 +419,7 @@ export function apply(ctx, config = {}) {
   // reusing the previous model (audit A06).
   let superagentRecycleRequested = false
   const HOST_BUILD = Object.freeze({
-    version: '0.2.0',
+    version: BUILD_VERSION,
     schemaVersion: 2,
     // The panel compares this list with its own: a missing feature is a build
     // skew, not an absent capability.
