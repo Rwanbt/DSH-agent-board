@@ -44,8 +44,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test tests/",
-    "check": "node --check src/host/index.js && node --check src/client.js && node --test tests/",
+    "test": "node --test",
+    "check": "node --check src/host/index.js && node --check src/client.js && node --test",
     "assets": "node scripts/build-assets.mjs",
     "client": "node scripts/build-client.mjs",
     "gallery": "node scripts/mascot-gallery.mjs",
