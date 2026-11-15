@@ -2,6 +2,7 @@
  * All registrations below MUST use the factory-supplied agentCtx (never host ctx).
  */
 import { allowedPermissionOf } from '../contracts/model.js'
+import { optionalServiceOf } from './services.js'
 
 function refusal(code) {
   const error = new Error(code)
@@ -10,7 +11,7 @@ function refusal(code) {
 }
 
 function service(ctx, name, methods) {
-  const value = ctx?.get?.(name)
+  const value = optionalServiceOf(ctx, name)
   if (!value || methods.some(method => typeof value[method] !== 'function')) {
     throw refusal(`security_service_unavailable:${name}`)
   }

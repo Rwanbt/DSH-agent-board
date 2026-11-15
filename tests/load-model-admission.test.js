@@ -155,19 +155,27 @@ test('a Host without the optional token meter still answers, unmeasured', async 
   }
 })
 
-test('a failing read route answers 500 instead of taking the Host down', async () => {
+test('a throwing service probe is reported, not fatal to the route', async () => {
   const host = await boot({ budget: null })
   try {
-    // The route promises are detached: before the guard, a throw here became an
-    // unhandled rejection and the Host child exited with code 1.
+    // Route promises are detached: before the guard, a throw here became an
+    // unhandled rejection and the Host child exited with code 1. A probe that
+    // throws is now ABSORBED and reported as an unavailable capability, which is
+    // strictly better than answering 500 for a diagnostic route.
     const reachable = host.made.ctx.get
     host.made.ctx.get = name => {
       if (name === 'tools') throw new Error('tools probe exploded')
       return reachable(name)
     }
     const res = await callJson(host.routes, 'GET', '/selftest')
-    assert.equal(res.status, 500)
-    assert.equal(res.body.ok, false)
+    assert.equal(res.status, 200, JSON.stringify(res.body))
+    const checks = res.body.value.checks
+    const toolsChecks = checks.filter(check => String(check.id).startsWith('tools.'))
+    assert.ok(toolsChecks.length >= 3, 'the three tools checks are still reported')
+    assert.ok(toolsChecks.every(check => check.ok === false && check.reason === 'runtime_unavailable'))
+    // The board keeps serving everything else afterwards.
+    const state = await callJson(host.routes, 'GET', '/state')
+    assert.equal(state.status, 200)
   } finally {
     await host.close()
   }

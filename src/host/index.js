@@ -81,6 +81,7 @@ import { fairOrder } from '../plan/scheduler.js'
 import { createSecuredAgent, effectiveWorkerPermission, secureAssessmentAgent, secureWorkerAgent } from './security.js'
 import { sanitizeActionPayload } from '../contracts/action-payloads.js'
 import { executeNativeScheduledCreate, executeNativeTaskDelete, executeNativeTaskPromotion, nativeToolAvailable, nativeToolsReady } from './native-tools.js'
+import { optionalServiceOf } from './services.js'
 import { executeNativeMerge, nativeMergeReady, prepareNativeMerge } from './native-forge.js'
 
 const execFileAsync = promisify(execFile)
@@ -517,7 +518,7 @@ export function apply(ctx, config = {}) {
    */
   function refreshLiveProjection() {
     try {
-      const sessions = ctx.get?.('sessions')
+      const sessions = serviceOf('sessions')
       if (sessions?.list === undefined) return false
       liveProjection = buildProjection({ list: sessions.list(), statusMap: new Map(), hostState: state, workspaces: {}, now: Date.now() })
       supervisionDirty = true
@@ -799,8 +800,21 @@ export function apply(ctx, config = {}) {
    * cache refreshed at most every five minutes; `discovered:false` with a reason
    * is the honest answer when the service is absent.
    */
+  /**
+   * Resolve an OPTIONAL Cordis service without ever throwing.
+   *
+   * `ctx.get(name)` normally answers `undefined` for an absent service, but a
+   * provider that failed to construct can make it throw — and an unguarded probe
+   * on a route path took the whole Host down once already (the load model, on
+   * `/state`). Every optional probe goes through here: it reports the failure and
+   * answers `null`, so the caller degrades instead of dying.
+   */
+  function serviceOf(name) {
+    return optionalServiceOf(ctx, name, error => warn(`service ${name} unavailable: ${String(error)}`))
+  }
+
   async function refreshModelSnapshot() {
-    const llm = llmService ?? ctx.get?.('llm')
+    const llm = llmService ?? serviceOf('llm')
     if (llm === undefined || llm === null || typeof llm.listProviders !== 'function') {
       modelSnapshot = { discovered: false, at: Date.now(), reason: 'llm_service_unavailable', providers: [] }
       modelSnapshotAt = Date.now()
@@ -851,7 +865,7 @@ export function apply(ctx, config = {}) {
    * host without `resolveModelInfo` answers `efforts: []` with a reason.
    */
   async function resolveModelEfforts(provider, model) {
-    const llm = llmService ?? ctx.get?.('llm')
+    const llm = llmService ?? serviceOf('llm')
     if (llm === undefined || llm === null || typeof llm.resolveModelInfo !== 'function') {
       return { efforts: [], defaultEffort: null, reason: 'llm_service_unavailable' }
     }
@@ -2255,7 +2269,7 @@ export function apply(ctx, config = {}) {
     // using it would defeat the local-only layer. No route = explicit refusal.
     if (policy?.locality === 'local') return null
     try {
-      const selection = ctx.get?.('agentDefaultModel')?.currentSelection?.()
+      const selection = serviceOf('agentDefaultModel')?.currentSelection?.()
       if (selection !== null && selection !== undefined && typeof selection.provider === 'string' && typeof selection.model === 'string') {
         return { provider: selection.provider, model: selection.model, locality: 'remote' }
       }
@@ -2348,13 +2362,13 @@ export function apply(ctx, config = {}) {
   /**
    * The optional `tokenMeter` service, read WITHOUT the inject requirement.
    *
-   * `tokenMeter` is not in `inject` (the board must load on a Host that does not
-   * provide it), so reading `ctx.tokenMeter` throws `cannot get property
+   * It is not declared in `inject` (the board must load on a Host that does not
+   * provide it), so reading it as a PROPERTY throws `cannot get property
    * "tokenMeter" without inject`. That throw reached an uncaught route promise
-   * and took the whole Host down at startup. `ctx.get(name)` is the documented
-   * inject-free read and answers `undefined` when the service is absent; it is
-   * resolved per call so a meter provided later is picked up on the next
-   * admission instead of being frozen at load time.
+   * and took the whole Host down while the plugin was live. `ctx.get(name)` is
+   * the documented inject-free read and answers `undefined` when the service is
+   * absent; it is resolved per call so a meter provided later is picked up on
+   * the next admission instead of being frozen at load time.
    */
   function tokenMeterOf() {
     try {
@@ -2653,8 +2667,8 @@ export function apply(ctx, config = {}) {
       warn(`attachSession(${sessionId}) failed: ${String(error)}`)
     }
     try {
-      const sessions = ctx.get?.('sessions')
-      const title = ctx.get?.('sessionTitle')
+      const sessions = serviceOf('sessions')
+      const title = serviceOf('sessionTitle')
       const session = sessions?.get?.(sessionId)
       if (session !== undefined && title?.rename !== undefined) title.rename(session, `Agent Board — ${truncate(task.title, 60)}`)
     } catch { /* cosmetic / optional */ }
@@ -3617,7 +3631,7 @@ export function apply(ctx, config = {}) {
     }
     const cwd = (() => {
       try {
-        return ctx.get?.('workingDirectory')?.get?.(ctx.get?.('sessions')?.get?.(sessionId)) ?? undefined
+        return serviceOf('workingDirectory')?.get?.(serviceOf('sessions')?.get?.(sessionId)) ?? undefined
       } catch {
         return undefined
       }
@@ -4041,7 +4055,7 @@ export function apply(ctx, config = {}) {
       if (workspace !== undefined && typeof workspace.path === 'string' && workspace.path !== '') return workspace.path
     }
     try {
-      const fallback = ctx.get?.('workingDirectory')?.defaultDirectory
+      const fallback = serviceOf('workingDirectory')?.defaultDirectory
       if (typeof fallback === 'string' && fallback !== '') return fallback
     } catch { /* optional */ }
     return process.cwd()
@@ -4170,8 +4184,8 @@ export function apply(ctx, config = {}) {
       activeModel: { provider: route.provider, model: route.model, ...(typeof route.reasoningEffort === 'string' ? { reasoningEffort: route.reasoningEffort } : {}) },
     }
     try {
-      const sessions = ctx.get?.('sessions')
-      const title = ctx.get?.('sessionTitle')
+      const sessions = serviceOf('sessions')
+      const title = serviceOf('sessionTitle')
       const session = sessions?.get?.(sessionId)
       if (session !== undefined && title?.rename !== undefined) title.rename(session, `Super Agent — ${agent.identity.agentId}`)
     } catch { /* cosmetic */ }
@@ -5036,11 +5050,11 @@ export function apply(ctx, config = {}) {
       return ok === true
     }
     check('agents.create', typeof ctx.agents?.create === 'function', ctx.agents?.create === undefined ? { reason: 'runtime_unavailable' } : {})
-    const tools = ctx.get?.('tools')
+    const tools = serviceOf('tools')
     for (const method of ['restrict', 'guard', 'setExecutor']) {
       check(`tools.${method}`, typeof tools?.[method] === 'function', tools?.[method] === undefined ? { reason: 'runtime_unavailable' } : {})
     }
-    const presets = ctx.get?.('permissionPresets')
+    const presets = serviceOf('permissionPresets')
     for (const method of ['resolve', 'set', 'current']) {
       check(`permissionPresets.${method}`, typeof presets?.[method] === 'function', presets?.[method] === undefined ? { reason: 'runtime_unavailable' } : {})
     }
@@ -5093,7 +5107,7 @@ export function apply(ctx, config = {}) {
       .map(projectId => resolveWorkspace(projectId)?.path)
       .find(path => typeof path === 'string' && path !== '')
       ?? workspaceList().find(workspace => typeof workspace.path === 'string' && workspace.path !== '')?.path
-      ?? ctx.get?.('workingDirectory')?.defaultDirectory
+      ?? serviceOf('workingDirectory')?.defaultDirectory
       ?? null
     if (directory === null) return { ok: false, reason: 'no_working_directory' }
     const sessionId = `session-agentboard-selftest-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`
@@ -5107,7 +5121,7 @@ export function apply(ctx, config = {}) {
       return { ok: false, reason, message: truncate(String(error?.message ?? error), 200) }
     }
     let applied = null
-    try { applied = ctx.get?.('permissionPresets')?.current?.(handle.agent.session) ?? null } catch { applied = null }
+    try { applied = serviceOf('permissionPresets')?.current?.(handle.agent.session) ?? null } catch { applied = null }
     let disposed = false
     try { await handle.dispose?.(); disposed = true } catch (error) {
       return { ok: false, reason: 'dispose_failed', message: truncate(String(error?.message ?? error), 200), sessionId }

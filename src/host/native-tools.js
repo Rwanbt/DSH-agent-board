@@ -5,10 +5,11 @@
  */
 import { canonicalIntentPayload } from '../superagent/decisions.js'
 import { createSecuredAgent, secureWorkerAgent } from './security.js'
+import { optionalServiceOf } from './services.js'
 
 /** Is the exact owner tool callable through this host's pipeline? */
 export function nativeToolAvailable(ctx, name) {
-  const tools = ctx?.get?.('tools')
+  const tools = optionalServiceOf(ctx, 'tools')
   return typeof ctx?.agents?.create === 'function' && typeof tools?.execute === 'function'
     && typeof tools?.get === 'function' && tools.get(name) !== undefined
 }
@@ -36,7 +37,7 @@ export async function runNativeTool(ctx, { workspace, name, args, beforeExecute,
     beforeExecute()
     handle = await createSecuredAgent(ctx.agents, { sessionId, meta: { cwd: workspace.path } }, (agentCtx, agent) => {
       secureWorkerAgent(agentCtx, agent, 'read-only')
-      tools = agentCtx?.get?.('tools')
+      tools = optionalServiceOf(agentCtx, 'tools')
       if (typeof tools?.guard !== 'function' || typeof tools?.execute !== 'function'
         || typeof tools?.executable !== 'function' || !tools.executable(name, agent)) {
         throw Object.assign(new Error('native_tool_unavailable'), { code: 'native_tool_unavailable' })

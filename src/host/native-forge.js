@@ -5,10 +5,12 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 const execFileAsync = promisify(execFile)
+import { optionalServiceOf } from './services.js'
+
 const SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i
 
 export function nativeMergeReady(ctx) {
-  const forge = ctx?.get?.('forge')
+  const forge = optionalServiceOf(ctx, 'forge')
   return ['repositoryFromRemote', 'fetchChecks', 'merge'].every(key => typeof forge?.[key] === 'function')
 }
 
@@ -22,7 +24,7 @@ async function mergeTarget(ctx, { workspace, payload, beforeExecute }) {
     remote = result.stdout.trim()
   } catch { return { ok: false, reason: 'forge_project_unverifiable' } }
   beforeExecute()
-  const forge = ctx.get('forge')
+  const forge = optionalServiceOf(ctx, 'forge')
   const repository = forge.repositoryFromRemote(remote)
   if (!repository) return { ok: false, reason: 'forge_repository_unsupported' }
   if (!['forge', 'host', 'owner', 'name'].every(key =>
