@@ -10,6 +10,8 @@
  * @module dsh-agent-board/contracts/model
  */
 
+import { normalizeConcurrencyLimit, normalizeProviderConcurrency } from './concurrency.js'
+
 export const SCHEMA_VERSION = 1
 
 /**
@@ -101,8 +103,9 @@ export const SUPERVISION_DEFAULT = Object.freeze({
   enabled: true,
   emblem: 'crown',
   // Board-launched assignments in flight (starting/running/recovering).
+  // `null`/`0` means unlimited: supervision must not become the product ceiling.
   maxConcurrentDelegations: 2,
-  // Real delegation starts inside the sliding hour.
+  // Real delegation starts inside the sliding hour. 0 = unlimited.
   maxDelegationsPerHour: 6,
   // A delegated launch may not delegate again (depth 0 = a root delegation).
   maxDelegationDepth: 1,
@@ -158,6 +161,16 @@ export const DEFAULT_POLICY = Object.freeze({
   allowUnverifiedHandoff: false,
   // Super Orchestrator supervision layer (pure policy; see SUPERVISION_DEFAULT).
   supervision: SUPERVISION_DEFAULT,
+  // Per-provider (or per provider/model) ceilings. Empty = no provider ceiling:
+  // the global concurrency and the provider's own rate limits still apply.
+  providerConcurrency: {},
+  // Super Agent runtime budget. These were literals in the host; they are policy
+  // now, persisted and validated like every other limit. 0 = unlimited.
+  superagent: Object.freeze({
+    maxConcurrentAgents: 2,
+    cyclesPerHour: 6,
+    modelCallsPerHour: 12,
+  }),
 })
 
 const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
@@ -165,7 +178,9 @@ const EXECUTION_BACKENDS = Object.freeze(['board', 'taskboard', 'contract'])
 
 export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
   const mode = isMode(input.mode) ? input.mode : fallback.mode
-  const maxConcurrent = clampInt(input.maxConcurrent, 0, 8, fallback.maxConcurrent)
+  // 0/`null` = unlimited. The hard ceiling only catches a typing mistake, and the
+  // default stays 2 so an upgrade changes nothing.
+  const maxConcurrent = normalizeConcurrencyLimit(input.maxConcurrent, fallback.maxConcurrent)
   const maxSwitches = clampInt(input.maxSwitches, 0, 5, fallback.maxSwitches)
   return {
     mode,
@@ -207,6 +222,27 @@ export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     // Backward compatible: a persisted state.json written before the
     // supervision layer has no `supervision` key and receives the defaults.
     supervision: normalizeSupervision(input.supervision, fallback.supervision ?? SUPERVISION_DEFAULT),
+    providerConcurrency: normalizeProviderConcurrency(input.providerConcurrency ?? fallback.providerConcurrency),
+    superagent: normalizeSuperagentBudget(input.superagent, fallback.superagent ?? DEFAULT_POLICY.superagent),
+  }
+}
+
+/**
+ * The Super Agent's own runtime budget, configurable through the policy.
+ *
+ * These were three literals in the host (`maxConcurrentAgents: 2`,
+ * `cyclesPerHour: 6`, `modelCallsPerHour: 12`), so an operator running dozens of
+ * projects could not let the agent keep up. 0 means unlimited for all three.
+ */
+export function normalizeSuperagentBudget(input, fallback = DEFAULT_POLICY.superagent) {
+  const source = input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}
+  const previous = fallback !== null && typeof fallback === 'object' ? fallback : DEFAULT_POLICY.superagent
+  return {
+    maxConcurrentAgents: normalizeConcurrencyLimit(source.maxConcurrentAgents, previous.maxConcurrentAgents),
+    // Hourly ceilings are RATE limits, not concurrency: they do not belong under
+    // the concurrency hard ceiling (fifty sessions legitimately exceed 256 calls).
+    cyclesPerHour: clampInt(source.cyclesPerHour, 0, 100_000, previous.cyclesPerHour),
+    modelCallsPerHour: clampInt(source.modelCallsPerHour, 0, 100_000, previous.modelCallsPerHour),
   }
 }
 
@@ -228,8 +264,8 @@ export function normalizeSupervision(input, fallback = SUPERVISION_DEFAULT) {
   return {
     enabled: source.enabled === undefined ? previous.enabled !== false : source.enabled === true,
     emblem: EMBLEMS.includes(source.emblem) ? source.emblem : (EMBLEMS.includes(previous.emblem) ? previous.emblem : SUPERVISION_DEFAULT.emblem),
-    maxConcurrentDelegations: clampInt(source.maxConcurrentDelegations, 0, 16, previous.maxConcurrentDelegations ?? SUPERVISION_DEFAULT.maxConcurrentDelegations),
-    maxDelegationsPerHour: clampInt(source.maxDelegationsPerHour, 0, 200, previous.maxDelegationsPerHour ?? SUPERVISION_DEFAULT.maxDelegationsPerHour),
+    maxConcurrentDelegations: normalizeConcurrencyLimit(source.maxConcurrentDelegations, previous.maxConcurrentDelegations ?? SUPERVISION_DEFAULT.maxConcurrentDelegations),
+    maxDelegationsPerHour: clampInt(source.maxDelegationsPerHour, 0, 10_000, previous.maxDelegationsPerHour ?? SUPERVISION_DEFAULT.maxDelegationsPerHour),
     maxDelegationDepth: clampInt(source.maxDelegationDepth, 0, 8, previous.maxDelegationDepth ?? SUPERVISION_DEFAULT.maxDelegationDepth),
     allowCrossProjectDelegation: source.allowCrossProjectDelegation === undefined
       ? previous.allowCrossProjectDelegation === true

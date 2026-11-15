@@ -24,6 +24,8 @@
 export const SCOPE_MODES = Object.freeze(['none', 'selected', 'all'])
 
 /** Ordered autonomy levels. The array order IS the ranking. */
+import { normalizeConcurrencyLimit, concurrencyReached } from './concurrency.js'
+
 export const AUTONOMY_LEVELS = Object.freeze(['L0', 'L1', 'L2', 'L3', 'L4'])
 
 export const LEVEL_RANK = Object.freeze(
@@ -228,6 +230,9 @@ function normalizeProjectPolicy(value) {
     priority: clampInt(source.priority, 0, 9, 5),
     model: normalizeModel(source.model),
     budget: { maxTasksPerHour: clampInt(source.budget?.maxTasksPerHour, 0, 100, 6) },
+    // Per-project concurrency ceiling. `null`/0 inherits the global ceiling; a
+    // project cap lets one project saturate without freezing the others.
+    maxConcurrent: normalizeConcurrencyLimit(source.maxConcurrent, null),
     note: text(source.note, 240),
   }
 }
@@ -569,8 +574,9 @@ export function effectivePolicyOf({
     return { ...base, reason: critical ? 'critical_action_not_granted' : 'action_disabled' }
   }
 
-  // 7. Concurrency is a real refusal, not decoration.
-  if ((action === 'launch' || action === 'delegate') && Number(running) >= Number(maxConcurrent)) {
+  // 7. Concurrency is a real refusal, not decoration. An unlimited ceiling
+  //    (`null`/0) never refuses, and the default parameter stays Infinity.
+  if ((action === 'launch' || action === 'delegate') && concurrencyReached(running, maxConcurrent)) {
     return { ...base, reason: 'concurrency_limit', requiresApproval: LEVEL_RANK[level] < LEVEL_RANK.L3 }
   }
 

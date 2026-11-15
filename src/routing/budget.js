@@ -31,6 +31,8 @@
  * @module dsh-agent-board/routing/budget
  */
 
+import { concurrencyReached, normalizeConcurrencyLimit } from '../contracts/concurrency.js'
+
 const HOUR_MS = 3_600_000
 
 /** Sliding window used by every hourly ceiling. */
@@ -63,7 +65,9 @@ export function resolveBudgetLimits(policy = {}) {
     ? source.autonomyBudget
     : {}
   return {
-    maxConcurrent: limitOf(source.maxConcurrent, BUDGET_DEFAULTS.maxConcurrent),
+    // `null` = unlimited (see contracts/concurrency.js): the budget must be able
+    // to say "no ceiling" instead of silently clamping to a small number.
+    maxConcurrent: normalizeConcurrencyLimit(source.maxConcurrent, BUDGET_DEFAULTS.maxConcurrent),
     tasksPerHour: limitOf(source.tasksPerHour ?? autonomy.maxTasksPerHour, BUDGET_DEFAULTS.tasksPerHour),
     requestsPerHour: limitOf(source.requestsPerHour, BUDGET_DEFAULTS.requestsPerHour),
     maxRetries: limitOf(source.maxRetries, BUDGET_DEFAULTS.maxRetries),
@@ -105,7 +109,9 @@ export function consume(usage, event, now = Date.now()) {
 
   switch (kind) {
     case 'start': {
-      if (current.concurrent >= limits.maxConcurrent) {
+      // `null` is unlimited: comparing with `>=` would coerce it to 0 and refuse
+      // every launch at the very setting that means "no ceiling".
+      if (concurrencyReached(current.concurrent, limits.maxConcurrent)) {
         return { ok: false, reason: 'concurrency_limit', usage: current }
       }
       return { ok: true, reason: 'ok', usage: { ...current, concurrent: current.concurrent + 1, lastEventAt: at } }
@@ -179,7 +185,7 @@ export function describeBudget(policy, usage, now = Date.now()) {
       cooldownRemainingMs,
     },
     remaining: {
-      concurrency: Math.max(0, limits.maxConcurrent - current.concurrent),
+      concurrency: limits.maxConcurrent === null ? null : Math.max(0, limits.maxConcurrent - current.concurrent),
       tasks: Math.max(0, limits.tasksPerHour - current.tasks.length),
       requests: Math.max(0, limits.requestsPerHour - current.requests.length),
       retries: Math.max(0, limits.maxRetries - current.retries),
