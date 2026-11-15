@@ -455,8 +455,14 @@ test('a decision approval authorizes ONE launch, then is consumed', async () => 
 
     // The session ends without moving the card (visible in the real E2E): the
     // card is still todo, so the next tick would relaunch it — and must NOT,
-    // because the approval was consumed.
-    listeners.get('session/event')({ id: created[0].sessionId }, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed' } } })
+    // because the approval was consumed. The turn reports a verifiable result, so
+    // the attempt itself settles `done` (an unproven completion would instead be
+    // continued and the item would not be dispatchable at all).
+    listeners.get('session/event')({ id: created[0].sessionId }, {
+      type: 'turn/end',
+      time: Date.now(),
+      data: { reason: { kind: 'completed', structuredResult: { status: 'done', summary: 'gate completion', testsRun: ['node --test tests/: pass'] } } },
+    })
     await new Promise(resolve => setTimeout(resolve, 60))
 
     const second = await callJson(routes, 'POST', '/tick', {})

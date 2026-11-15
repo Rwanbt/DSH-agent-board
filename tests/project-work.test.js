@@ -70,7 +70,7 @@ test('an accepted ADR yields follow-up work; a proposed ADR yields a human decis
   assert.equal(unknown.status, 'unknown')
 })
 
-test('document work discovery is deterministic, deduplicated and bounded', () => {
+test('document work discovery is deterministic, locator-identified and bounded', () => {
   const files = [
     { path: 'docs/adr/0007-journal.md', content: ADR },
     { path: 'docs/adr/0008-worker.md', content: PROPOSED_ADR },
@@ -85,7 +85,13 @@ test('document work discovery is deterministic, deduplicated and bounded', () =>
   const titles = first.map(item => item.title)
   assert.equal(new Set(first.map(item => item.id)).size, first.length, 'no duplicate id')
   assert.ok(titles.includes('Ship the ADR triage'))
-  assert.equal(titles.filter(title => title === 'Ship the ADR triage').length, 1, 'the same intent is one item')
+  // Approved correction (Lot 11a): identity is WHERE a line is declared, so the
+  // same sentence in two documents is two works, never one silently collapsed item.
+  assert.equal(titles.filter(title => title === 'Ship the ADR triage').length, 2, 'two locators are two items')
+  assert.deepEqual(
+    first.filter(item => item.title === 'Ship the ADR triage').map(item => item.ref).sort(),
+    ['ROADMAP.md:2', 'TODO.md:4'],
+  )
 
   const proposed = first.find(item => item.title === 'Extract the scheduler loop into a worker')
   assert.equal(proposed.source, 'adr')
@@ -159,9 +165,14 @@ test('one synthetic work item per project at a time (shared working tree)', () =
   const elsewhere = [{ taskId: 'other', workspaceId: 'q', status: 'running', startedAt: 5, workSource: { fingerprint: 'wf-q1' } }]
   assert.equal(workItemReadinessOf(item, { assignments: elsewhere, now: 10 }).reason, WORK_READINESS_REASONS.ready)
 
-  // A Task Board card owns its isolation contract: it never blocks a work item.
-  const card = [{ taskId: 't-card', workspaceId: 'p', status: 'running', startedAt: 5 }]
+  // A Task Board card that owns its own worktree writes elsewhere: it does not
+  // contend with the project's shared tree.
+  const card = [{ taskId: 't-card', workspaceId: 'p', status: 'running', startedAt: 5, isolation: 'worktree' }]
   assert.equal(workItemReadinessOf(item, { assignments: card, now: 10 }).reason, WORK_READINESS_REASONS.ready)
+  // …but a card running in the SAME shared directory does (P1-F: the lock covers
+  // both backends, because what matters is the tree, not the backend).
+  const sharedCard = [{ taskId: 't-card', workspaceId: 'p', status: 'running', startedAt: 5, isolation: 'none' }]
+  assert.equal(workItemReadinessOf(item, { assignments: sharedCard, now: 10 }).reason, WORK_READINESS_REASONS.projectBusy)
 
   // Completed for its current fingerprint: the completed verdict wins over contention.
   const done = [

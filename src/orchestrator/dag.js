@@ -9,6 +9,7 @@
  */
 
 import { MODES } from '../contracts/model.js'
+import { CONCURRENCY_DEFAULTS as ConcurrencyDefaults, normalizeConcurrencyLimit } from '../contracts/concurrency.js'
 
 const ACTIVE_ASSIGNMENT_STATUSES = Object.freeze(['starting', 'running', 'recovering'])
 const URGENCY_WEIGHT = Object.freeze({ urgent: 0, normal: 1, relaxed: 2 })
@@ -144,8 +145,13 @@ export function selectDispatchable({ tasks, assignments = [], proposals = [], po
     if (task !== null && typeof task === 'object' && typeof task.id === 'string') tasksById.set(task.id, task)
   }
   const mode = policy?.mode ?? MODES.OFF
-  const maxConcurrent = Math.max(0, Number(policy?.maxConcurrent) || 0)
-  const slots = Math.max(0, maxConcurrent - countRunning(assignments))
+  // `null`/0 means UNLIMITED: `Number(null)` is 0, which would report "no slot"
+  // and silently freeze the board at the very setting that unlocks it.
+  const limit = normalizeConcurrencyLimit(policy?.maxConcurrent, ConcurrencyDefaults.global)
+  const maxConcurrent = limit === null ? Number.POSITIVE_INFINITY : limit
+  const slots = maxConcurrent === Number.POSITIVE_INFINITY
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, maxConcurrent - countRunning(assignments))
   const actions = []
   const skipped = []
 

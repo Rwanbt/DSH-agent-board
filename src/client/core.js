@@ -17,6 +17,7 @@
 
 import { buildProjection, modelHistoryOf, resolveNodeModel, trackModelChange } from '../supervisor/projection.js'
 import { aggregateSubtrees } from '../board/view.js'
+import { pendingDecisionsOfPayload } from '../contracts/decisions-schema.js'
 
 export function emptyHostState() {
   return {
@@ -69,10 +70,15 @@ export function capabilitiesOf(host) {
   return plainObjectOrNull(host?.capabilities)
 }
 
-/** Real pending decisions only: an answered/expired/superseded one is not pending. */
+/**
+ * Real pending decisions only: an answered/expired/superseded one is not pending.
+ *
+ * Reads the versioned decisions contract, so the legacy flat array of an older
+ * host and the v1 object both decode. The previous `Array.isArray(superagent
+ * .decisions)` guess is exactly what kept the inbox permanently empty.
+ */
 export function pendingDecisionsOf(superagent) {
-  const list = Array.isArray(superagent?.decisions) ? superagent.decisions : []
-  return list.filter(decision => plainObjectOrNull(decision) !== null && decision.status === 'pending')
+  return pendingDecisionsOfPayload(superagent?.decisions)
 }
 
 export function pendingDecisionCountOf(superagent) {
@@ -88,7 +94,7 @@ const HOST_STATE_ARRAY_KEYS = ['assignments', 'proposals', 'routeEvents', 'audit
 // GOAL 6 additive fields. They are recognised as a host-state marker but never
 // type-validated here: a partially populated superagent payload must still
 // reach the UI, which guards every field access itself.
-const HOST_STATE_EXTRA_KEYS = ['mandate', 'capabilities', 'superagent', 'dryRun', 'supervision', 'projects', 'models', 'taskboardPublic', 'build']
+const HOST_STATE_EXTRA_KEYS = ['mandate', 'capabilities', 'superagent', 'dryRun', 'supervision', 'projects', 'models', 'taskboardPublic', 'build', 'attention']
 
 /**
  * Is this object a host state frame? The event stream is shared, so a valid
@@ -246,6 +252,9 @@ export function createBoardStore(ctx, options = {}) {
       // GOAL 6 views, normalized once so every component receives the same
       // null-safe shape (an old host yields null and the UI says so).
       superagent: superagentOf(host),
+      // The operator's attention queue (Lot 5b): a payload the panels read
+      // directly, never recomputed from sessions.
+      attention: plainObjectOrNull(host?.attention),
       mandate: mandateOf(host),
       capabilities: capabilitiesOf(host),
       hostError,
@@ -364,6 +373,10 @@ export function createBoardStore(ctx, options = {}) {
     unack: sessionId => post('/ack', { sessionId, seen: false }),
     resume: () => post('/resume', {}),
     setMode: mode => post('/mode', { mode }),
+    /** Full policy patch. The host normalises and persists every limit. */
+    setPolicy: policy => post('/policy', { policy: policy ?? {} }),
+    // Lot 11 — start a new token-budget wave (measured history is untouched).
+    resetLoad: () => post('/load/reset', {}),
     stop: () => post('/stop', {}),
     tick: () => post('/tick', {}),
     decide: (proposalId, approve) => post(`/proposals/${encodeURIComponent(proposalId)}/decide`, { approve }),
@@ -412,6 +425,8 @@ export function createBoardStore(ctx, options = {}) {
     stopSuperagent: () => post('/superagent/stop', {}),
     cycleSuperagent: trigger => post('/superagent/cycle', { trigger: trigger ?? 'manual' }),
     setSuperagentModel: model => post('/superagent/model', model ?? {}),
+    /** Answer several same-scope decisions in ONE gesture (each stays single-use). */
+    answerDecisions: decisions => post('/superagent/decisions/bulk', { decisions: Array.isArray(decisions) ? decisions : [] }),
     /** Exact-route efforts for one model (read-only; no state refresh). */
     modelInfo: (provider, model) => request('POST', '/models/info', { provider, model }),
     probeTaskboard: () => post('/integrations/taskboard/probe', {}),

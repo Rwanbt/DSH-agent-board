@@ -162,7 +162,9 @@ test('a turn/end that lands while the session is still being created settles the
     // The session id is known BEFORE `ctx.agents.create` resolves, so an early
     // turn/end can be attributed to the assignment.
     const listener = made.listeners.get('session/event')
-    listener({ id: sessionId }, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed' } } })
+    // A turn/end alone is not a proof of work: the completion carries the
+    // verifiable report the host now requires before it settles `done`.
+    listener({ id: sessionId }, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed', structuredResult: { status: 'done', summary: 'early completion', testsRun: ['node --test tests/: pass'] } } } })
     release()
     const tick = await tickPromise
     assert.equal(tick.status, 200)
@@ -193,8 +195,10 @@ test('duplicate turn/end events settle once and an unknown session is ignored', 
     const sessionId = made.created[0].sessionId
     const listener = made.listeners.get('session/event')
     listener({ id: 'unknown-session' }, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'error' } } })
-    listener({ id: sessionId }, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed' } } })
-    listener({ id: sessionId }, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed' } } })
+    // Two identical completions: the FIRST one settles, the duplicate is ignored.
+    const completion = { reason: { kind: 'completed', structuredResult: { status: 'done', summary: 'duplicate turn end', testsRun: ['node --test tests/: pass'] } } }
+    listener({ id: sessionId }, { type: 'turn/end', time: Date.now(), data: completion })
+    listener({ id: sessionId }, { type: 'turn/end', time: Date.now(), data: completion })
     const state = await callJson(handler(), 'GET', '/state')
     assert.equal(state.body.value.assignments.length, 1)
     assert.equal(state.body.value.assignments[0].status, 'done')
@@ -321,6 +325,15 @@ test('overlapping ticks coalesce and concurrent dispatches start exactly one ses
     assert.equal(tickB.status, 200)
     assert.equal(made.created.length, 1, 'a coalesced tick must not launch twice')
 
+    // Finish the first attempt so the project's shared tree is free: the work-tree
+    // lock (a different guarantee, tested elsewhere) would otherwise serialise the
+    // two dispatches before the single-winner race could be observed.
+    made.listeners.get('session/event')({ id: made.created[0].sessionId }, {
+      type: 'turn/end',
+      time: Date.now(),
+      data: { reason: { kind: 'completed', structuredResult: { status: 'done', summary: 'first attempt', testsRun: ['node --test tests/: pass'] } } },
+    })
+    assert.ok(await waitFor(() => made.created.length === 1))
     tasksRef.tasks = [{ ...structuredClone(TASK), id: 't-res-2', version: 2 }]
     const [a, b] = await Promise.all([
       callJson(handler(), 'POST', '/dispatch', { taskId: 't-res-2' }),

@@ -113,5 +113,29 @@ report.verdict = anyError ? 'error' : configured.length === 0 ? 'incomplete' : c
 if (report.state !== null && report.state.schemaVersion === 2) report.next.push('Board state is schemaVersion 2; configure the mandate in the cockpit (Projects tab) or POST /mandate before enabling any mode.')
 if (report.github.writeEnabled !== true) report.next.push('GitHub writes remain disabled by design; enabling them requires allowGithubWrites:true plus the matching mandate action.')
 
+// ------------------------------------------------- release checklist (Lot 9)
+// The steps below need THIS operator's DSH instance, a real provider, or the real
+// Task Board. The script PREPARES them (exact request, expected result) and
+// reports them as `unverified`; it never runs them, so it can never claim a live
+// green it did not observe.
+const boardUrl = process.env.DSH_AGENT_BOARD_URL ?? 'http://127.0.0.1:<port>'
+const releaseSteps = [
+  { id: 'selftest', kind: 'read', method: 'GET', path: '/dsh-agent-board/api/v2/selftest', expect: 'value.checks all ok:true' },
+  { id: 'selftest-deep', kind: 'write-disposable', method: 'POST', path: '/dsh-agent-board/api/v2/selftest', body: { deep: true, confirm: 'EPHEMERAL_SESSION' }, expect: 'one ephemeral session created then disposed' },
+  { id: 'dry-run', kind: 'read', method: 'GET', path: '/dsh-agent-board/api/v2/dry-run', expect: 'writes: 0 and limits.effectiveConcurrent present' },
+  { id: 'decisions-visible', kind: 'read', method: 'GET', path: '/dsh-agent-board/api/v2/state', expect: 'superagent.decisions.pending[] is non-empty after one cycle' },
+  { id: 'decision-single-use', kind: 'write', method: 'POST', path: '/dsh-agent-board/api/v2/superagent/decisions/<id>/answer', body: { optionId: 'approve' }, expect: 'pending -1, exactly one effect, replay refused' },
+  { id: 'max-tokens-continuation', kind: 'write', method: 'POST', path: '/dsh-agent-board/api/v2/tick', expect: 'assignment stays running with continuations +1, then failed after 3' },
+  { id: 'card-review-once', kind: 'write', method: 'POST', path: '/dsh-agent-board/api/v2/dispatch', body: { taskId: '<card>' }, expect: 'card moves to in_review once, never done' },
+  { id: 'stop-restart', kind: 'lifecycle', method: 'n/a', path: 'restart the host', expect: 'no assignment left running, inbox preserved' },
+]
+report.release = {
+  baseUrl: boardUrl,
+  status: 'unverified',
+  note: 'Prepared by the script; executing them needs the operator instance and is never claimed here. See docs/RELEASE-CHECKLIST.md.',
+  steps: releaseSteps.map(step => ({ ...step, executed: false })),
+}
+
 console.log(JSON.stringify(report, null, 2))
 process.exit(anyError ? 2 : 0)
+

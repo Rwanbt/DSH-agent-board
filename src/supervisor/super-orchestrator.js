@@ -28,6 +28,7 @@
  * @module dsh-agent-board/supervisor/super-orchestrator
  */
 
+import { concurrencyReached } from '../contracts/concurrency.js'
 import { DEFAULT_POLICY, STATUS, normalizeSupervision } from '../contracts/model.js'
 import { dabResolveAgentRole } from '../contracts/agent-roles.js'
 
@@ -679,7 +680,9 @@ function supervisionBuildRecommendations({ tasks, assignments, proposals, policy
   const pendingProposalTaskIds = new Set(proposals
     .filter(proposal => proposal?.status === 'pending')
     .map(proposal => String(proposal?.taskId)))
-  const withinLimits = inFlight < config.maxConcurrentDelegations && usedThisHour < config.maxDelegationsPerHour
+  // Unlimited (`null`) contributes no ceiling; `0` still means zero.
+  const withinLimits = !concurrencyReached(inFlight, config.maxConcurrentDelegations)
+    && !concurrencyReached(usedThisHour, config.maxDelegationsPerHour)
   const worktreeCapable = policy?.executionBackend === 'taskboard' || policy?.executionBackend === 'contract'
 
   const push = (kind, task, reason, evidence) => {

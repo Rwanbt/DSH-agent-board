@@ -86,8 +86,10 @@ inside your mandate, executes.
 - **Supervision** — a workspace-level Super Orchestrator **layer** (not an AI
   agent) that aggregates real project/agent/task facts, exposes blocks and
   cross-project dependencies, proposes (never applies) reassignments, and gates
-  board-owned delegations with concurrency/hourly/depth/cycle limits. The
-  `Projets` tree and `Hiérarchie` views keep role/status/task-state filters.
+  board-owned delegations with concurrency/depth limits, and admits a launch on the
+  real-time load: what the machine can carry and what your remaining token pool
+  pays for, with the binding fact published (see `docs/adr/0003-load-in-real-time.md`).
+  The `Projets` tree and `Hiérarchie` views keep role/status/task-state filters.
 - **Cards & branches** — sessions from the native `sessions.list` snapshot,
   sub-agents from the `subagentCatalog` projection and/or `parentId`, grouped by
   DSH workspace, collapsible sub-trees, compact mode, responsive down to a phone
@@ -471,3 +473,34 @@ See [docs/LIMITATIONS.md](docs/LIMITATIONS.md) before trusting a claim.
 ## License
 
 MIT — see [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## What 0.2.0 changes for an operator
+
+- **Concurrency is configuration, not a constant.** `policy.maxConcurrent`,
+  `policy.supervision.maxConcurrentDelegations`, `policy.superagent.*`,
+  `mandate.projects[id].maxConcurrent` and `policy.providerConcurrency` are all
+  configurable. `null` means UNLIMITED, `0` still means a freeze, and the defaults
+  are unchanged (2 / 2 / 6 / 12) so an upgrade changes nothing silently. The lock
+  is the working tree: distinct worktrees run in parallel, a shared directory
+  serialises, and a provider ceiling QUEUES work instead of failing it.
+- **The decisions inbox now shows up.** Decisions are published as a versioned
+  contract `{schemaVersion, pending, recent, summary}`; the panel counts and
+  renders them, a legacy host payload still decodes, an approval stays single-use,
+  and a bulk answer answers several same-scope questions in one gesture.
+- **A finished turn is not finished work.** A turn settles `done` only with a
+  proof (a new commit, a validated `{status:"done", summary, testsRun|commit}`
+  report, or a card the agent moved). A truncated turn (`max-tokens`) is
+  continued up to 3 times, then escalated to the attention queue; `cancelled`,
+  `error` and unknown endings never settle `done`. `POST
+  /api/v2/assignments/:id/reopen` puts a settled item back in the pool.
+- **One operator, many sessions.** The attention queue aggregates what needs a
+  HUMAN (decisions, unverified work, permission/tree/budget blocks), deduplicated
+  by root cause and ranked by what it unblocks; healthy sessions produce no entry.
+  KPIs (`interventionsPerHour`, `medianTimeToDecisionMs`, `sessionsPerOperator`,
+  `itemsBlockedOnHuman`) are published in `/state`.
+- **One effective autonomy level.** `/mandate/level` now updates what every panel
+  shows, because the host publishes the computed value (`autonomy`) instead of
+  three copies that could disagree.
+
+See `CHANGELOG.md`, `docs/RELEASE-CHECKLIST.md`, `docs/adr/0001-*`, `docs/adr/0002-*`
+and the 0.2.0 addendum in `docs/LIMITATIONS.md`.

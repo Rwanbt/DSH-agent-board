@@ -492,10 +492,11 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
   const session = sa?.session !== null && typeof sa?.session === 'object' ? sa.session : null
   const runtime = sa?.runtime !== null && typeof sa?.runtime === 'object' ? sa.runtime : null
   const plan = sa?.plan !== null && typeof sa?.plan === 'object' ? sa.plan : null
-  const decisions = Array.isArray(sa?.decisions) ? sa.decisions.filter(entry => entry !== null && typeof entry === 'object') : []
+  const decisionsPayload = decodeDecisions(sa?.decisions)
+  const decisions = [...decisionsPayload.pending, ...decisionsPayload.recent]
   const directives = Array.isArray(sa?.directives) ? sa.directives.filter(entry => entry !== null && typeof entry === 'object') : []
   const activity = Array.isArray(sa?.activity) ? sa.activity.filter(entry => entry !== null && typeof entry === 'object') : []
-  const pendingDecisions = decisions.filter(entry => entry.status === 'pending')
+  const pendingDecisions = decisionsPayload.pending
   const model = identity?.model !== null && typeof identity?.model === 'object' ? identity.model : null
   const stopped = context !== null && context !== undefined && context.stopped === true
   const sessionStatus = typeof session?.active === 'boolean' ? session.active : null
@@ -524,6 +525,21 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
   const enabledProjects = policyIds.filter(id => policies[id]?.enabled === true).length
   const totalProjects = policyIds.length
   const lastActivity = activity.length > 0 ? activity[activity.length - 1] : null
+  // The ONE autonomy fact the host publishes (global ∩ project ∩ integration).
+  // `identity.level` is only a fallback for an older host, and it is no longer a
+  // second source of truth: the host now derives it too.
+  const autonomy = sa?.autonomy !== null && typeof sa?.autonomy === 'object' && !Array.isArray(sa.autonomy)
+    ? sa.autonomy
+    : (context?.autonomy !== null && typeof context?.autonomy === 'object' ? context.autonomy : null)
+  const level = typeof autonomy?.level === 'string'
+    ? autonomy.level
+    : (typeof identity?.level === 'string' ? identity.level : (typeof mandate?.level === 'string' ? mandate.level : null))
+  // The host's attention queue (Lot 5b). Absent on an older host: the panel says
+  // so instead of inventing a queue. A healthy session is never in it.
+  const attention = sa?.attention !== null && typeof sa?.attention === 'object' && !Array.isArray(sa.attention)
+    ? sa.attention
+    : (context?.attention !== null && typeof context?.attention === 'object' && !Array.isArray(context?.attention) ? context.attention : null)
+  const attentionItems = Array.isArray(attention?.items) ? attention.items : []
   return {
     available: sa !== null,
     identity,
@@ -541,12 +557,27 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
       ? `${typeof model.provider === 'string' ? `${model.provider}/` : ''}${model.model}`
       : null,
     fallbackModels: Array.isArray(model?.fallback) ? model.fallback.filter(entry => entry !== null && typeof entry === 'object') : [],
-    level: typeof identity?.level === 'string' ? identity.level : (typeof mandate?.level === 'string' ? mandate.level : null),
+    level,
+    scope: typeof autonomy?.scope === 'string' ? autonomy.scope : (typeof mandate?.scopeMode === 'string' ? mandate.scopeMode : null),
+    autonomy,
+    // What needs a HUMAN, plus the product KPIs. `null` on an older host.
+    attention,
+    attentionItems,
+    attentionCount: attentionItems.length,
+    attentionCostSeconds: typeof attention?.counters?.costSeconds === 'number' ? attention.counters.costSeconds : null,
+    exceptionsOnly: attention?.exceptionMode === true,
+    kpis: attention?.kpis !== null && typeof attention?.kpis === 'object' ? attention.kpis : null,
+    // Graded trust: what the operator approved N times without incident. The UI
+    // may PROPOSE a promotion; nothing is promoted automatically.
+    trust: Array.isArray(attention?.trust) ? attention.trust.filter(entry => entry !== null && typeof entry === 'object') : [],
     enabledProjects,
     totalProjects,
     decisions,
     pendingDecisions,
     pendingCount: pendingDecisions.length,
+    // The host's authoritative counters (they cover the WHOLE inbox, not the
+    // bounded published lists). Null when the payload carries none.
+    decisionsSummary: decisionsPayload.summary,
     pendingApprovals: pendingDecisions.filter(entry => entry.kind === 'approval').length,
     directives: directives.filter(entry => entry.status !== 'revoked'),
     revokedDirectives: directives.filter(entry => entry.status === 'revoked'),
@@ -627,7 +658,11 @@ function dabProjectPolicyRows(host, superagent, mandate) {
       enabled,
       selected,
       level: DAB_AUTONOMY_LEVELS.includes(policy.level) ? policy.level : null,
-      effectiveLevel: DAB_AUTONOMY_LEVELS.includes(policy.level) ? policy.level : (DAB_AUTONOMY_LEVELS.includes(mandate?.level) ? mandate.level : 'L0'),
+      // The host publishes the per-project effective value (global ∩ project ∩
+      // integration). Only an older host falls back to recombining it here.
+      effectiveLevel: DAB_AUTONOMY_LEVELS.includes(mandate?.effectiveLevels?.[entry.id])
+        ? mandate.effectiveLevels[entry.id]
+        : (DAB_AUTONOMY_LEVELS.includes(policy.level) ? policy.level : (DAB_AUTONOMY_LEVELS.includes(mandate?.level) ? mandate.level : 'L0')),
       inheritedLevel: DAB_AUTONOMY_LEVELS.includes(mandate?.level) ? mandate.level : 'L0',
       modelInherited: policy.model === null || typeof policy.model !== 'object',
       priority: Number.isFinite(Number(policy.priority)) ? Number(policy.priority) : 5,
@@ -704,7 +739,9 @@ function dabDecisionIsPending(decision) {
 }
 
 function dabDecisionGroups(decisions) {
-  const pending = (Array.isArray(decisions) ? decisions : []).filter(dabDecisionIsPending)
+  // Accepts the v1 payload, the legacy flat array, or the flattened list built by
+  // `dabSuperagentFacts`: `decodeDecisions` is tolerant and idempotent.
+  const pending = decodeDecisions(decisions).pending.filter(dabDecisionIsPending)
   return {
     pending,
     approvals: pending.filter(entry => entry.kind === 'approval'),

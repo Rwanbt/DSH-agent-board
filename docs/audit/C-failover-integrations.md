@@ -4,7 +4,7 @@ Audit read-only du dépôt `D:\App\DSH-agent-board` (plugin « Agent Board »), 
 `src/routing/*`, `src/recovery/checkpoint.js`, `src/connectors/*`, `src/contracts/*`,
 `tests/router.test.js`, `tests/connectors.test.js`, `docs/CONTRACTS.md`, `docs/LIMITATIONS.md`,
 `README.md`, plus la vérité externe du fork Task Board
-(`C:\Users\barat\Documents\deepseek-harness\default-workspace\dsh-taskboard`) et du profil DSH desktop.
+(`C:\Users\<user>\Documents\deepseek-harness\default-workspace\dsh-taskboard`) et du profil DSH desktop.
 
 Aucun fichier `src/`, `tests/` ou état git n'a été modifié **par moi**. Seul ce fichier a été créé.
 **Ancrage** : toutes les preuves `path:line` ci-dessous ont été lues puis re-vérifiées sur
@@ -28,12 +28,12 @@ mon périmètre** et **non auditées** ici : ce rapport décrit le HEAD demandé
 | Version Task Board locale | `dsh-taskboard` **0.10.2** | externe `…\dsh-taskboard\package.json:4` |
 | Compatibilité Task Board | 0.2.0-rc.2 | externe `…\dsh-taskboard\package.json:24-25` |
 | `dsh-llm-fallbacks` | **absent** du profil desktop et du runtime décompressé | voir §0.3 |
-| Release DSH | 0.2.2-rc.1 (indirecte : dépendance de profil `@deepseek-ai/dsh-subagent-claude-code` 0.2.2-rc.1 + bloc `dsh.compatibility`) — version du binaire `app.asar` non lue | `package.json:37-38`, `C:\Users\barat\.dsh\profiles\desktop\package.json` |
+| Release DSH | 0.2.2-rc.1 (indirecte : dépendance de profil `@deepseek-ai/dsh-subagent-claude-code` 0.2.2-rc.1 + bloc `dsh.compatibility`) — version du binaire `app.asar` non lue | `package.json:37-38`, `C:\Users\<user>\.dsh\profiles\desktop\package.json` |
 | Node | v26.13.0 | `node -v` |
 | Tests | **69 pass / 0 fail** (500 ms) | `node --test tests/` |
-| Lignée réelle du ledger Task Board | `schemaVersion=1`, `revision=179`, 20 tâches, tâches avec `version` (pas `revision`) | `C:\Users\barat\.dsh\dsh-taskboard.json` |
-| État réel Agent Board | 1 assignment `done`, `routeEvents=0`, `health={}`, `sync.ledgerRevision=null`, clé d'idempotence `taskboard:t-mw9q6fpe-qfjnvy@0#0`, `revision=null`, `checkpoint=null` | `C:\Users\barat\.dsh\agent-board\state.json` |
-| Journal réel | 32 lignes, **aucun** `route_decision` / `handoff` / `switch` | `C:\Users\barat\.dsh\agent-board\audit.jsonl` |
+| Lignée réelle du ledger Task Board | `schemaVersion=1`, `revision=179`, 20 tâches, tâches avec `version` (pas `revision`) | `C:\Users\<user>\.dsh\dsh-taskboard.json` |
+| État réel Agent Board | 1 assignment `done`, `routeEvents=0`, `health={}`, `sync.ledgerRevision=null`, clé d'idempotence `taskboard:t-mw9q6fpe-qfjnvy@0#0`, `revision=null`, `checkpoint=null` | `C:\Users\<user>\.dsh\agent-board\state.json` |
+| Journal réel | 32 lignes, **aucun** `route_decision` / `handoff` / `switch` | `C:\Users\<user>\.dsh\agent-board\audit.jsonl` |
 | Politique réelle persistée | `routeChain` = **une seule** route (`opencode-go/deepseek-v4.1-flash`, `locality=remote`), `maxSwitches=1`, `allowCloudFallback=false` | `state.json` (profil desktop) |
 
 Conséquence immédiate : **aucun failover réel n'a jamais eu lieu** sur cette installation
@@ -42,9 +42,9 @@ contient **aucune route alternative** : même un déclencheur correct aboutirait
 
 ### 0.3 `dsh-llm-fallbacks` : absence confirmée, conséquence
 
-Vérifications : `C:\Users\barat\.dsh\profiles\desktop\package.json` (dépendances) ne le liste pas ;
+Vérifications : `C:\Users\<user>\.dsh\profiles\desktop\package.json` (dépendances) ne le liste pas ;
 `…\profiles\desktop\node_modules` ne le contient pas ; recherche récursive de tout répertoire
-`*fallback*` sous `C:\Users\barat\.dsh` et sous `…\DeepSeek Harness\resources` : **aucun résultat** ;
+`*fallback*` sous `C:\Users\<user>\.dsh` et sous `…\DeepSeek Harness\resources` : **aucun résultat** ;
 aucune occurrence dans les lockfiles du profil. Le binaire `app.asar` (213 Mo) n'est pas
 décompressé intégralement → je ne peux pas prouver qu'aucun bundle interne ne le référence.
 
@@ -609,6 +609,6 @@ une lecture. → D15.
   (`src/host/index.js`), la projection et l'UI.
 - Vérité externe : `dsh-taskboard/package.json`, `src/shared/protocol.ts`,
   `src/host/routes.ts`, `src/host/tools.ts`, `src/shared/dependencies.ts`, le ledger réel
-  `C:\Users\barat\.dsh\dsh-taskboard.json`, l'état réel `C:\Users\barat\.dsh\agent-board\state.json`
+  `C:\Users\<user>\.dsh\dsh-taskboard.json`, l'état réel `C:\Users\<user>\.dsh\agent-board\state.json`
   et `audit.jsonl`.
 - Aucune exécution de scénario de panne ; aucun test modifié ; aucun fichier source modifié.

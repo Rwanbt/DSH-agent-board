@@ -29,7 +29,8 @@ import { createBoardStore, pendingDecisionCountOf, superagentOf } from '../src/c
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 const MODULES = [
-  'src/contracts/model.js',
+  'src/contracts/concurrency.js', 'src/contracts/model.js',
+  'src/contracts/decisions-schema.js',
   'src/contracts/agent-roles.js',
   'src/supervisor/projection.js',
   'src/supervisor/super-orchestrator.js',
@@ -1101,4 +1102,162 @@ test('settings explain level profiles and let an existing L4 reapply permissions
   assert.deepEqual(levels, ['L4'])
   const busy = render(cockpit.DabSuperagentSettings({ ...props, busy: true }))
   assert.equal(byClass(busy, 'dab-sa-reapply-level')[0].props.disabled, true)
+})
+
+// ------------------------------------------- concurrency settings (Lot 5 UI)
+test('the inspector edits the SAME concurrency limits the launch gate reads', () => {
+  const patches = []
+  const resets = []
+  const host = {
+    ...makeHost(),
+    policy: { maxConcurrent: null, supervision: { maxConcurrentDelegations: 4, enabled: true }, superagent: { maxConcurrentAgents: 6 }, providerConcurrency: { deepseek: 3 } },
+    budget: { limits: { maxConcurrent: null }, used: { concurrency: 12 } },
+    host: { ...makeHost().host, models: { discovered: true, providers: [{ id: 'deepseek', name: 'DeepSeek', models: [{ id: 'v4' }] }] } },
+  }
+  const tree = render(cockpit.DabSuperagentSettings({
+    superagent: makeInactiveSuperagent(), mandate: makeMandate(), host, context: {}, ui: {}, taskboard: makeHost().taskboardPublic,
+    onSetPolicy: patch => { patches.push(patch); return { ok: true } },
+  }))
+  // An unlimited global ceiling is SHOWN as unlimited, never as 0.
+  assert.match(textOf(byClass(tree, 'dab-sa-concurrency-running')[0]), /12 \/ unlimited/)
+  const globalInput = byClass(tree, 'dab-sa-max-concurrent')[0]
+  assert.equal(globalInput.props.value, '', 'unlimited renders as an empty field')
+  globalInput.props.onChange({ target: { value: '50' } })
+  globalInput.props.onChange({ target: { value: '' } })
+  assert.deepEqual(patches, [{ maxConcurrent: 50 }, { maxConcurrent: null }], 'empty means unlimited, never 0')
+  byClass(tree, 'dab-sa-max-delegations')[0].props.onChange({ target: { value: '16' } })
+  assert.equal(patches[2].supervision.maxConcurrentDelegations, 16)
+  byClass(tree, 'dab-sa-provider-deepseek')[0].props.onChange({ target: { value: '8' } })
+  assert.deepEqual(patches[3].providerConcurrency, { deepseek: 8 })
+  // Clearing a provider ceiling removes the entry instead of setting 0.
+  byClass(tree, 'dab-sa-provider-deepseek')[0].props.onChange({ target: { value: '' } })
+  assert.deepEqual(patches[4].providerConcurrency, {})
+
+  // ---- LOT 11: the real-time load, published by the host, is editable here ----
+  const loadTree = render(cockpit.DabSuperagentSettings({
+    superagent: makeInactiveSuperagent(), mandate: makeMandate(), ui: {}, taskboard: makeHost().taskboardPublic, context: {},
+    host: {
+      ...host,
+      load: {
+        ceiling: 6, binding: 'tokens', blocked: false, running: 4,
+        reasons: [], waveStartedAt: 1,
+        tokens: { budget: 900_000, spent: 180_000, measured: 60_000, measurable: true, perTurn: 60_000, sessions: [] },
+        hardware: { parallelism: 16, freeBytes: 8 * 1024 ** 3, ceiling: 128 },
+      },
+    },
+    onSetPolicy: patch => { patches.push(patch); return { ok: true } },
+    onResetLoad: () => resets.push('reset'),
+  }))
+  assert.match(textOf(byClass(loadTree, 'dab-sa-load-running')[0]), /4 \/ 6/)
+  assert.match(textOf(byClass(loadTree, 'dab-sa-load-binding')[0]), /token/i, 'the binding fact is named, not hidden')
+  const budgetInput = byClass(loadTree, 'dab-sa-token-budget')[0]
+  assert.equal(budgetInput.props.value, '900000')
+  budgetInput.props.onChange({ target: { value: '' } })
+  assert.deepEqual(patches.at(-1).load.tokenBudget, null, 'no pool is a real choice')
+  byClass(loadTree, 'dab-sa-load-reset')[0].props.onClick()
+  assert.deepEqual(resets, ['reset'])
+  // The hourly counter is no longer the lever: it is an ADVANCED guard, labelled
+  // as legacy, and it can express "no rate limit" with an empty field.
+  const hourly = byClass(loadTree, 'dab-sa-hourly-guard')[0]
+  assert.equal(hourly.props.value, '', 'unlimited by default since the load model')
+  hourly.props.onChange({ target: { value: '20' } })
+  assert.equal(patches.at(-1).supervision.maxDelegationsPerHour, 20)
+  // The per-project ceiling lives on the project row and inherits when empty.
+  const projectPatches = []
+  const projects = render(cockpit.DabSuperagentProjects({
+    superagent: makeInactiveSuperagent(), mandate: makeMandate(), host: makeHost(), context: {}, dryRun: null,
+    onSetProjectConcurrency: (projectId, value) => projectPatches.push([projectId, value]),
+  }))
+  const field = byClass(projects, 'dab-sa-project-concurrency')[0]
+  assert.equal(field.props.value, '', 'no project ceiling yet')
+  field.props.onChange({ target: { value: '3' } })
+  field.props.onChange({ target: { value: '' } })
+  assert.deepEqual(projectPatches[0], ['ws:a', 3])
+  assert.deepEqual(projectPatches[1], ['ws:a', null])
+})
+
+// ------------------------------------- grouped approval + context (Lot 5b UI)
+test('same-scope approvals are grouped, each grant staying single-use', () => {
+  const approval = (id, projectId, taskId) => ({
+    id, kind: 'approval', projectId, action: 'launch', status: 'pending', title: `Approve ${id}`, taskIds: [taskId], urgency: 'normal',
+    options: [{ id: 'approve', label: 'Approve', effect: 'approve' }, { id: 'reject', label: 'Reject', effect: 'reject' }],
+    costToResolveSeconds: 30, createdAt: 1,
+  })
+  const sent = []
+  const superagent = makeInactiveSuperagent({
+    decisions: [approval('d1', 'ws:a', 't1'), approval('d2', 'ws:a', 't2'), approval('d3', 'ws:b', 't3')],
+  })
+  const attention = {
+    items: [{ id: 'att-1', severity: 'blocking', title: 'Approve the launch', suggestedAction: 'Approve or reject.', costToResolveSeconds: 30 }],
+    counters: { total: 1, blocking: 1, high: 0, notify: 1, costSeconds: 30 },
+  }
+  const tree = render(cockpit.DabSuperagentDecisions({ superagent, filter: 'approvals', onAnswerBulk: entries => sent.push(entries), attention }))
+  // Only the SAME project+action pair is grouped: ws:a has two, ws:b has one.
+  const bulk = byClass(tree, 'dab-sa-bulk-approve')
+  assert.equal(bulk.length, 1)
+  assert.equal(bulk[0].props['data-count'], '2')
+  bulk[0].props.onClick()
+  assert.deepEqual(sent, [[{ id: 'd1', optionId: 'approve' }, { id: 'd2', optionId: 'approve' }]])
+  // The context needed to decide is on screen, one line per entry.
+  assert.match(textOf(byClass(tree, 'dab-sa-attention')[0]), /Approve the launch/)
+  assert.match(textOf(byClass(tree, 'dab-sa-attention')[0]), /30s/)
+  // No grouping without a same-scope pair.
+  const single = render(cockpit.DabSuperagentDecisions({
+    superagent: makeInactiveSuperagent({ decisions: [approval('d1', 'ws:a', 't1'), approval('d3', 'ws:b', 't3')] }),
+    filter: 'approvals', onAnswerBulk: () => {},
+  }))
+  assert.equal(byClass(single, 'dab-sa-bulk-approve').length, 0)
+})
+
+// ------------------------------- silence by default + graded trust (Lot 5b UI)
+test('do-not-disturb mutes the notification flag, and trust is only suggested', () => {
+  const attention = {
+    items: [{ id: 'a1', severity: 'blocking', title: 'Blocking decision', suggestedAction: 'Decide.', costToResolveSeconds: 30, notify: true }],
+    counters: { total: 1, blocking: 1, high: 0, notify: 1, costSeconds: 30 },
+    trust: [{ projectId: 'ws:a', action: 'comment', approvals: 4, incidents: 0, suggested: true }],
+  }
+  const superagent = { identity: { level: 'L3', status: 'idle', model: null }, decisions: [], directives: [], activity: [], budget: {}, attention }
+  const mandate = { scopeMode: 'selected', selectedWorkspaces: ['ws:a'], level: 'L3', projects: { 'ws:a': { enabled: true } } }
+  const bandFor = notificationsEnabled => band({ superagent, mandate, attention, notificationsEnabled, compact: true })
+  assert.equal(byClass(bandFor(true), 'dab-attention-badge')[0].props['data-notify'], 'true')
+  assert.equal(byClass(bandFor(false), 'dab-attention-badge')[0].props['data-notify'], 'false', 'DND silences the badge notification')
+  // The badge still counts while muted: the operator can look, nothing interrupts.
+  assert.equal(byClass(bandFor(false), 'dab-attention-badge')[0].props['data-count'], '1')
+
+  // Trust: the settings PROPOSE the promotion, and never apply it.
+  const settings = render(cockpit.DabSuperagentSettings({
+    superagent, mandate, host: makeHost(), context: {}, ui: { doNotDisturb: true }, taskboard: makeHost().taskboardPublic,
+    onToggleDnd: () => {},
+  }))
+  const rows = byClass(settings, 'dab-sa-trust-row')
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].props['data-action'], 'comment')
+  assert.match(textOf(rows[0]), /approved 4 times without incident/)
+  assert.equal(byClass(settings, 'dab-sa-dnd')[0].props.checked, true)
+})
+
+// ---------------------------------------- digest + two structural guarantees
+test('the settings render the per-project digest, never one message per session', () => {
+  const superagent = makeInactiveSuperagent({
+    attention: {
+      items: [],
+      counters: { total: 0, blocking: 0, high: 0, notify: 0, costSeconds: 0 },
+      digest: { projects: [{ projectId: 'ws:a', verifiedDone: 4, running: 2, blocked: 1, attention: 0, costSeconds: 0 }], totals: {}, text: 'ws:a: 4 verified, 2 running, 1 blocked' },
+    },
+  })
+  const tree = render(cockpit.DabSuperagentSettings({ superagent, mandate: makeMandate(), host: makeHost(), context: {}, ui: {}, taskboard: makeHost().taskboardPublic }))
+  const row = byClass(tree, 'dab-sa-digest-row')[0]
+  assert.equal(row.props['data-project-id'], 'ws:a')
+  assert.match(textOf(row), /4 verified · 2 running · 1 blocked/)
+})
+
+test('the client bundle holds ONE definition of the policy normalisers', async () => {
+  // The apparent "duplication" between src/contracts/model.js and the shipped
+  // bundle is the concatenation of that same module: one source, one copy. Two
+  // copies would mean someone hand-edited the generated artifact.
+  const { readFileSync } = await import('node:fs')
+  const bundle = readFileSync(join(ROOT, 'src', 'client.js'), 'utf8')
+  assert.equal((bundle.match(/^function normalizePolicy\(/gm) ?? []).length, 1)
+  assert.equal((bundle.match(/^function normalizeSupervision\(/gm) ?? []).length, 1)
+  assert.equal((bundle.match(/^function normalizeProviderConcurrency\(/gm) ?? []).length, 1)
 })

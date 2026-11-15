@@ -108,7 +108,7 @@ function makeCtx({ projectPath, nativeMove }) {
             messages.push({ sessionId: options.sessionId, text: message?.content?.[0]?.text ?? '' })
             setTimeout(() => {
               emit(options.sessionId, { type: 'assistant/message', time: Date.now(), data: { message: { content: [{ type: 'text', text: control.replyText }] } } })
-              emit(options.sessionId, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed' } } })
+              emit(options.sessionId, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed', structuredResult: { status: 'done', summary: 'fixture worker completion', testsRun: ['node --test tests/: pass'] } } } })
             }, control.replyDelayMs)
           },
         }
@@ -245,13 +245,22 @@ test('NO Task Board: the project documents become work, launch_work opens a real
   try {
     const state = await host.view()
     assert.equal(state.adapters !== undefined, true)
-    const readyId = workItemIdOf({ projectId: 'w1', source: 'adr', title: 'Write the state file through a temp file and a rename' })
-    const todoId = workItemIdOf({ projectId: 'w1', source: 'todo', title: 'Add the restart test' })
-    const proposedId = workItemIdOf({ projectId: 'w1', source: 'adr', title: 'Extract the scheduler loop into a worker' })
 
     // The dry run describes the same sources before anything is launched.
     const dry = await host.callJson('GET', '/dry-run')
     assert.equal(dry.status, 200, JSON.stringify(dry.body))
+    // A work item is identified by its LOCATOR (document + line), not by its
+    // title: the ids come from the published view instead of being recomputed
+    // from a title the discovery is free to move to another line.
+    const idOf = title => {
+      const item = dry.body.value.work.items.find(entry => entry.title === title)
+      assert.ok(item !== undefined, `work item not discovered: ${title}`)
+      return item.id
+    }
+    const readyId = idOf('Write the state file through a temp file and a rename')
+    const todoId = idOf('Add the restart test')
+    const proposedId = idOf('Extract the scheduler loop into a worker')
+
     assert.equal(dry.body.value.work.total, 3, JSON.stringify(dry.body.value.work))
     assert.equal(dry.body.value.work.ready, 2, JSON.stringify(dry.body.value.work))
     assert.ok(dry.body.value.work.items.some(item => item.source === 'adr' && item.ready === true))
@@ -319,7 +328,7 @@ test('NO Task Board: the project documents become work, launch_work opens a real
     assert.equal(workAssignments.length, 2)
     assert.equal(workAssignments[0].workSource.source, 'adr')
     assert.equal(workAssignments[1].workSource.source, 'todo')
-    assert.match(workAssignments[0].workSource.fingerprint, /^wf-/)
+    assert.match(workAssignments[0].workSource.fingerprint, /^wf2-/)
 
     // Once the item is dispatched (here the fake turn completes immediately), a
     // second cycle refuses it: the journal proves it was already handled.
@@ -341,9 +350,14 @@ test('NO Task Board: the project documents become work, launch_work opens a real
 test('a work item the operator did not authorize is refused, and an unknown id is never resolved', async () => {
   const host = await boot({ tasks: null, docs: { 'TODO.md': TODO }, level: 'L0' })
   try {
+    // The real locator of the declared item, read from the published view (an id
+    // is derived from the document and the line, never from the title).
+    const dryRun = await host.callJson('GET', '/dry-run')
+    const declaredId = dryRun.body.value.work.items.find(item => item.title === 'Add the restart test')?.id
+    assert.ok(typeof declaredId === 'string' && declaredId !== '')
     // L0: no action at all, only observation.
     const cycle = await host.cycle([
-      { id: 'x-1', action: 'launch_work', projectId: 'w1', taskId: null, rationale: 'x', risk: 'low', expectedEffect: 'session', requiresApproval: false, payload: { workItemId: workItemIdOf({ projectId: 'w1', source: 'todo', title: 'Add the restart test' }) } },
+      { id: 'x-1', action: 'launch_work', projectId: 'w1', taskId: null, rationale: 'x', risk: 'low', expectedEffect: 'session', requiresApproval: false, payload: { workItemId: declaredId } },
     ])
     assert.equal(cycle.status, 200, JSON.stringify(cycle.body))
     assert.equal(cycle.body.value.authorized.length, 0)

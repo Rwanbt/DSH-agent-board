@@ -28,6 +28,7 @@
  * @module dsh-agent-board/orchestrator/delegation
  */
 
+import { concurrencyReached } from '../contracts/concurrency.js'
 import { DEFAULT_POLICY, MODES, allowedPermissionOf, normalizeSupervision } from '../contracts/model.js'
 import { mandateCheck } from './dag.js'
 import { taskReadinessOf } from './readiness.js'
@@ -199,10 +200,13 @@ export function evaluateDelegation({ policy = {}, task = null, taskboard = null,
   const inFlight = Number.isFinite(Number(usage?.inFlight))
     ? Math.max(0, Math.trunc(Number(usage.inFlight)))
     : countActiveDelegations(assignments)
-  if (inFlight >= config.maxConcurrentDelegations) return refusal('delegation_concurrency_exceeded')
+  // `null` = unlimited: a raw `>=` would coerce it to 0 and refuse every launch.
+  if (concurrencyReached(inFlight, config.maxConcurrentDelegations)) return refusal('delegation_concurrency_exceeded')
 
   const launches = launchesWithinHour(usage, assignments, now)
-  if (launches.length >= config.maxDelegationsPerHour) return refusal('delegation_budget_exhausted')
+  // Same rule as the concurrency ceiling: `null` = no rate limit at all, which is
+  // the default since the load model. A raw `>=` would compare against 0.
+  if (concurrencyReached(launches.length, config.maxDelegationsPerHour)) return refusal('delegation_budget_exhausted')
 
   return { allow: true, reason: 'allowed' }
 }

@@ -193,3 +193,47 @@ Commands: `node scripts/bench/payload-bench.mjs` and
 
 Limits: size only, no serialization latency, no SSE throughput, no browser JSON
 parsing measured.
+
+## Lot 5 update — the 50-session budget (production-ready autonomy)
+
+The product target is **one developer supervising 50 simultaneous AI sessions
+across 10 projects**. This section records what that costs on the projection and
+payload side, measured with the same deterministic fixtures as above.
+
+Re-run (2026-11-15, same machine, `node --expose-gc scripts/bench/projection-bench.mjs`):
+
+| Scenario | Nodes | build p50 | build p95 | aggregate p95 | /state payload | heap delta |
+|---|---|---|---|---|---|---|
+| live-5 | 5 | 0.051 ms | 0.079 ms | 0.007 ms | 0.9 KB | ~0 MB |
+| live-20 | 20 | 0.108 ms | 0.207 ms | 0.017 ms | 3.3 KB | ~0 MB |
+| **live-50** | **50** | **0.167 ms** | **0.432 ms** | **0.009 ms** | **7.9 KB** | **~0 MB** |
+| live-150 | 150 | 0.233 ms | 0.421 ms | 0.027 ms | 23.3 KB | 0.02 MB |
+| history-1000 | 1000 | 1.449 ms | 2.052 ms | 0.142 ms | 144.4 KB | 0.11 MB |
+
+Client coalescing: **50 native notifications in 1 000 ms → 5 projection rebuilds**
+(200 ms window), i.e. one rebuild per ~10 events, not one per event.
+
+### Budget this supports
+
+- **Rendering**: a 50-session board rebuilds in well under 1 ms p95; at 60 fps the
+  projection is not the cost. The DOM is (see `docs/LIMITATIONS.md`, no
+  virtualisation).
+- **Network**: 7.9 KB per `/state` frame at 50 sessions, so the SSE stream is not
+  the bottleneck on localhost; the portfolio/project count dominates it, not the
+  session count.
+- **Scheduling**: with the ceilings lifted (`maxConcurrent: null`), one tick
+  dispatches 50 items; the host test
+  `tests/concurrency-limits.test.js` proves 50 dispatches across 10 projects and
+  the work-tree lock (10 parallel shared-tree launches, 40 queued). 50 *simultaneous
+  host sessions* additionally require worktree isolation, which only the
+  `taskboard`/`contract` backends provide.
+- **Attention**: the operator-facing cost is the one measured by the attention
+  KPIs (`interventionsPerHour`, `medianTimeToDecision`, `itemsBlockedOnHuman`),
+  not by the projection.
+
+### What is NOT measured
+
+- A live host with 50 real provider sessions (no provider quota was consumed):
+  `UNVERIFIED — to be run by the operator`.
+- Browser paint/DOM cost of 50+ cards on a low-end device.
+- Provider rate limits: enforced as a queue, not benchmarked.

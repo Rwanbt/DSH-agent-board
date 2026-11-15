@@ -179,6 +179,9 @@ export function buildOverview(projection, options = {}) {
   const now = Number(options.now) || Date.now()
 
   const filter = VIEW_FILTERS.includes(options.filter) ? options.filter : 'attention'
+  // "Exceptions only": from N live agents, watching stops being cheaper than
+  // filtering, so the cockpit defaults to what only a HUMAN can unblock.
+  const exceptionsOnly = options.exceptionsOnly === true
   const query = typeof options.query === 'string' ? options.query.trim().toLowerCase() : ''
   const focus = OVERVIEW_BUCKETS.includes(options.focus) ? options.focus : null
   const project = typeof options.project === 'string' && options.project !== '' ? options.project : null
@@ -236,6 +239,9 @@ export function buildOverview(projection, options = {}) {
     // views (an explicit "all" or a search still reaches it), as in view.js.
     if (dismissed.has(node.id) && query === '' && filter !== 'all') continue
     if (project !== null && node.projectId !== project) continue
+    // Exceptions only: a session the board can still drive by itself is not shown,
+    // even in the attention view (a search and the selected card still reach it).
+    if (exceptionsOnly && query === '' && !isActionRequired(node)) continue
     if (!matchesHierarchyFilters(node, roles, effectiveFilters, taskStates, reviewAvailable)) continue
     const bucket = buckets.get(node.id) ?? 'other'
     if (focus !== null) {
@@ -288,5 +294,5 @@ export function buildOverview(projection, options = {}) {
   }
   counts.shown = entries.length
 
-  return { sections, entries, counts, filter, query, focus }
+  return { sections, entries, counts, filter, query, focus, exceptionsOnly }
 }

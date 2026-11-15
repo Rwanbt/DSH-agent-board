@@ -166,10 +166,15 @@ test('supervised mode proposes, approval launches a real session, duplicate disp
     assert.equal(created.length, 1, 'a duplicate dispatch must not start a second session')
 
     // A completed turn settles the assignment; the task itself is left to the
-    // agent and to the human (the board never writes the ledger).
+    // agent and to the human (the board never writes the ledger). The completion
+    // must carry a verifiable report: a turn/end alone never settles `done`.
     const listener = listeners.get('session/event')
     assert.equal(typeof listener, 'function')
-    listener({ id: created[0].sessionId }, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed' } } })
+    listener({ id: created[0].sessionId }, {
+      type: 'turn/end',
+      time: Date.now(),
+      data: { reason: { kind: 'completed', structuredResult: { status: 'done', summary: 'integration completion', testsRun: ['node --test tests/: pass'] } } },
+    })
     await waitFor(() => created.length > 0)
     state = await callJson(routeRef.current.handler, 'GET', '/state')
     assert.equal(state.body.value.assignments[0].status, 'done')

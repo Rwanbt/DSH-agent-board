@@ -4,6 +4,251 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const { useState, useEffect, useMemo, useSyncExternalStore, useCallback, useRef } = React
+// ---- src/contracts/concurrency.js ----
+/**
+ * Concurrency limits: ONE source of truth.
+ *
+ * The product exists to let one developer supervise dozens of AI sessions at
+ * once, but every ceiling used to be a hard-coded clamp (`0..8`, `0..16`, the
+ * literal `maxConcurrentAgents: 2`): the technical limit became the product
+ * limit. Every knob is now configurable, with three explicit rules:
+ *
+ *   1. DEFAULTS DO NOT MOVE. The documented default of each limit is the 0.1.0
+ *      value, so an upgrade changes no behaviour silently.
+ *   2. `null` means UNLIMITED, explicitly (`UNLIMITED`). `0` keeps its historical
+ *      meaning: ZERO slots, i.e. a deliberate freeze. Inverting `0` into "no
+ *      ceiling" would turn an operator's freeze into an unlimited grant — the
+ *      one silent behaviour change a safety-minded product must never make (an
+ *      existing test pins `maxDelegationsPerHour: 0` = no delegation at all).
+ *   3. `CONCURRENCY_HARD_CEILING` only guards a typing mistake (someone types
+ *      100000). It is not a product cap and it is not reachable by accident.
+ *
+ * Pure: no clock, no I/O, no randomness.
+ *
+ * @module dsh-agent-board/contracts/concurrency
+ */
+
+/**
+ * Anti-typo guard. A limit above this is clamped to it; it is deliberately far
+ * above anything a machine+provider pair can sustain (50 sessions is the tested
+ * product target).
+ */
+const CONCURRENCY_HARD_CEILING = 256
+
+/** The value that means "no ceiling at all". */
+const UNLIMITED = null
+
+/** Documented defaults. Identical to 0.1.0 on purpose (no silent change). */
+const CONCURRENCY_DEFAULTS = Object.freeze({
+  global: 2,
+  supervisorConcurrent: 2,
+  // A project inherits the global ceiling until the operator caps it.
+  project: UNLIMITED,
+  superagentAgents: 2,
+  cyclesPerHour: 6,
+  modelCallsPerHour: 12,
+})
+
+/** Reason codes, stable across the API and the panel. */
+const CONCURRENCY_REASONS = Object.freeze({
+  global: 'concurrency_limit',
+  project: 'project_concurrency_limit',
+  provider: 'provider_concurrency_limit',
+})
+
+/**
+ * Normalise a TOKEN POOL, in tokens.
+ *
+ * `null`, `undefined`, an empty string and any unreadable value mean "no pool"
+ * (nothing binds on money). `0` is a real pool of zero — everything is spent.
+ * Unlike a concurrency ceiling there is no anti-typo cap: a pool is a quantity,
+ * not a number of slots.
+ *
+ * @param {unknown} value
+ * @param {number|null} [fallback]
+ * @returns {number|null}
+ */
+function normalizeTokenPool(value, fallback = null) {
+  return normalizeQuantity(value, fallback)
+}
+
+/** Hard ceiling of a rate limit: a typo, never a product cap. */
+const RATE_HARD_CEILING = 10_000
+
+/**
+ * Normalise a RATE limit (starts per hour, model calls per hour).
+ *
+ * `null` means no rate limit at all — Lot 11 turned that into the default, since
+ * a counter over time measures starts, not load. `0` stays a real zero (no call
+ * at all), which is what 0.1.0 documented and what an existing test pins.
+ *
+ * @param {unknown} value
+ * @param {number|null} [fallback]
+ * @param {number} [ceiling]
+ * @returns {number|null}
+ */
+function normalizeHourlyRate(value, fallback = null, ceiling = RATE_HARD_CEILING) {
+  const count = normalizeQuantity(value, fallback)
+  return count === null ? null : Math.min(ceiling, count)
+}
+
+/** A non-negative whole quantity, or `null` when the value is not one. */
+function normalizeQuantity(value, fallback) {
+  if (value === null || value === undefined) return fallback
+  if (typeof value === 'string' && value.trim() === '') return fallback
+  if (typeof value === 'boolean') return fallback
+  const number = Number(value)
+  if (!Number.isFinite(number) || number < 0) return fallback
+  return Math.trunc(number)
+}
+
+/**
+ * An EXPLICIT machine description, or `null` to measure the real machine.
+ *
+ * `freemem()` is noisy — Windows in particular reports a fraction of what is
+ * actually available — so an operator who knows their box, and a test that must
+ * not depend on the box, can state the two facts instead. Only two positive
+ * quantities are accepted; anything else means "measure it".
+ *
+ * @param {unknown} value
+ * @returns {{parallelism: number, freeBytes: number}|null}
+ */
+function normalizeHardwareFacts(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
+  const parallelism = normalizeQuantity(value.parallelism, 0)
+  const freeBytes = normalizeQuantity(value.freeBytes, 0)
+  if (parallelism === 0 || freeBytes === 0) return null
+  return { parallelism, freeBytes }
+}
+
+/**
+ * Normalise one limit. `null` (or an absent value with a `null` fallback) means
+ * unlimited; a finite value is truncated and clamped to `0..CONCURRENCY_HARD_CEILING`
+ * where 0 is a real zero (a freeze), not "unlimited".
+ *
+ * @param {unknown} value
+ * @param {number|null} [fallback] applied when the value is not finite
+ * @returns {number|null}
+ */
+function normalizeConcurrencyLimit(value, fallback = UNLIMITED) {
+  if (value === null) return UNLIMITED
+  const effective = value === undefined ? fallback : value
+  if (effective === null || effective === undefined) return UNLIMITED
+  if (typeof effective === 'string' && effective.trim() === '') return UNLIMITED
+  const number = Number(effective)
+  if (!Number.isFinite(number)) return fallback === null || fallback === undefined ? UNLIMITED : normalizeConcurrencyLimit(null, null)
+  return Math.min(CONCURRENCY_HARD_CEILING, Math.max(0, Math.trunc(number)))
+}
+
+/**
+ * Per-provider (or per provider/model) concurrency ceilings. Bounded and
+ * sanitised: an unknown key or a non-numeric value is dropped, never trusted.
+ *
+ * @param {unknown} value
+ * @returns {Record<string, number>}
+ */
+function normalizeProviderConcurrency(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {}
+  const out = {}
+  let kept = 0
+  for (const [key, limit] of Object.entries(value)) {
+    if (kept >= 20) break
+    if (typeof key !== 'string' || key.trim() === '') continue
+    const normalized = normalizeConcurrencyLimit(limit, null)
+    if (normalized === null) continue
+    out[key.trim()] = normalized
+    kept += 1
+  }
+  return out
+}
+
+/** Does the current load reach the (possibly unlimited) ceiling? */
+function concurrencyReached(running, limit) {
+  const normalized = normalizeConcurrencyLimit(limit, UNLIMITED)
+  if (normalized === null) return false
+  return Math.max(0, Number(running) || 0) >= normalized
+}
+/**
+ * The EFFECTIVE global concurrency: the board policy and the supervision layer
+ * both apply, and once either of them is unlimited the other one is the ceiling.
+ * `supervision: { enabled:false }` disables that layer's own ceiling.
+ *
+ * @param {{global?: unknown, supervisorConcurrent?: unknown, supervisionEnabled?: boolean, running?: number}} [input]
+ * @returns {{global: number|null, supervision: number|null, effective: number|null, unlimited: boolean, running: number}}
+ */
+function effectiveConcurrencyOf({
+  global = CONCURRENCY_DEFAULTS.global,
+  supervisorConcurrent = CONCURRENCY_DEFAULTS.supervisorConcurrent,
+  supervisionEnabled = true,
+  running = 0,
+} = {}) {
+  const globalLimit = normalizeConcurrencyLimit(global, CONCURRENCY_DEFAULTS.global)
+  const supervisionLimit = supervisionEnabled === false
+    ? UNLIMITED
+    : normalizeConcurrencyLimit(supervisorConcurrent, CONCURRENCY_DEFAULTS.supervisorConcurrent)
+  let effective
+  if (globalLimit === null) effective = supervisionLimit
+  else if (supervisionLimit === null) effective = globalLimit
+  else effective = Math.min(globalLimit, supervisionLimit)
+  return {
+    global: globalLimit,
+    supervision: supervisionLimit,
+    effective,
+    unlimited: effective === null,
+    running: Math.max(0, Number(running) || 0),
+  }
+}
+
+/** Provider key a per-provider ceiling is registered under. */
+function providerKeyOfRoute(route) {
+  if (route === null || typeof route !== 'object') return null
+  const provider = typeof route.provider === 'string' ? route.provider.trim() : ''
+  if (provider === '') return null
+  const model = typeof route.model === 'string' ? route.model.trim() : ''
+  return model === '' ? provider : `${provider}/${model}`
+}
+
+/**
+ * Active load per provider, keyed by BOTH `provider` and `provider/model`, so a
+ * ceiling may be declared at either granularity.
+ *
+ * @param {object[]} assignments
+ * @returns {Record<string, number>}
+ */
+function providerLoadOf(assignments) {
+  const load = {}
+  for (const assignment of Array.isArray(assignments) ? assignments : []) {
+    if (assignment === null || typeof assignment !== 'object') continue
+    if (!['starting', 'running', 'recovering'].includes(assignment.status)) continue
+    const provider = typeof assignment.model?.provider === 'string' ? assignment.model.provider : ''
+    if (provider === '') continue
+    load[provider] = (load[provider] ?? 0) + 1
+    const key = providerKeyOfRoute(assignment.model)
+    if (key !== null && key !== provider) load[key] = (load[key] ?? 0) + 1
+  }
+  return load
+}
+
+/**
+ * The most specific ceiling that applies to a route, or null.
+ *
+ * @param {Record<string, number>} providerConcurrency
+ * @param {object|null} route
+ * @returns {{key: string, limit: number}|null}
+ */
+function providerCeilingOf(providerConcurrency, route) {
+  if (providerConcurrency === null || typeof providerConcurrency !== 'object') return null
+  const key = providerKeyOfRoute(route)
+  if (key === null) return null
+  const exact = providerConcurrency[key]
+  if (Number.isFinite(Number(exact))) return { key, limit: Number(exact) }
+  const provider = typeof route?.provider === 'string' ? route.provider : ''
+  const byProvider = providerConcurrency[provider]
+  if (Number.isFinite(Number(byProvider))) return { key: provider, limit: Number(byProvider) }
+  return null
+}
+
+
 // ---- src/contracts/model.js ----
 /**
  * Stable domain contracts for the Agent Board.
@@ -16,6 +261,7 @@ window.__ModuleLoader__.load({
  *
  * @module dsh-agent-board/contracts/model
  */
+
 
 const SCHEMA_VERSION = 1
 
@@ -108,14 +354,34 @@ const SUPERVISION_DEFAULT = Object.freeze({
   enabled: true,
   emblem: 'crown',
   // Board-launched assignments in flight (starting/running/recovering).
+  // `null` means no ceiling of its own; `0` is a real freeze (see
+  // `contracts/concurrency.js`), which the operator UI never lets you type.
   maxConcurrentDelegations: 2,
-  // Real delegation starts inside the sliding hour.
+  // Real delegation starts inside the sliding hour. Superseded by the load model
+  // (Lot 11) and kept only as an advanced safety valve; `null` = no rate limit.
   maxDelegationsPerHour: 6,
   // A delegated launch may not delegate again (depth 0 = a root delegation).
   maxDelegationDepth: 1,
   // A subtask in another project/workspace is a cross-project delegation.
   allowCrossProjectDelegation: false,
 })
+
+/**
+ * The real-time load slice (Lot 11).
+ *
+ * `tokenBudget` is the size of the pool the operator is willing to spend on the
+ * current work wave (`null` = no pool, nothing binds on money). `tokensPerTurn`
+ * is the price of one turn used to translate the pool into a session count:
+ * `null` means "measure it on this install, else use the documented fallback".
+ */
+const LOAD_DEFAULT = Object.freeze({
+  tokenBudget: null,
+  tokensPerTurn: null,
+  hardware: null,
+})
+
+/** Journal marker of the load model migration, stored outside the policy. */
+const LOAD_MODEL_VERSION = 1
 
 /** Default limits. Every one is configurable through the board API. */
 const DEFAULT_POLICY = Object.freeze({
@@ -165,6 +431,19 @@ const DEFAULT_POLICY = Object.freeze({
   allowUnverifiedHandoff: false,
   // Super Orchestrator supervision layer (pure policy; see SUPERVISION_DEFAULT).
   supervision: SUPERVISION_DEFAULT,
+  // Per-provider (or per provider/model) ceilings. Empty = no provider ceiling:
+  // the global concurrency and the provider's own rate limits still apply.
+  providerConcurrency: {},
+  // Super Agent runtime budget. These were literals in the host; they are policy
+  // now, persisted and validated like every other limit. Concurrency `null` =
+  // unlimited, `0` = freeze; the hourly figures are rates (0 = no call at all).
+  superagent: Object.freeze({
+    maxConcurrentAgents: 2,
+    cyclesPerHour: 6,
+    modelCallsPerHour: 12,
+  }),
+  // Real-time load slice (Lot 11): the token pool and the price of a turn.
+  load: LOAD_DEFAULT,
 })
 
 const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
@@ -172,7 +451,9 @@ const EXECUTION_BACKENDS = Object.freeze(['board', 'taskboard', 'contract'])
 
 function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
   const mode = isMode(input.mode) ? input.mode : fallback.mode
-  const maxConcurrent = clampInt(input.maxConcurrent, 0, 8, fallback.maxConcurrent)
+  // 0/`null` = unlimited. The hard ceiling only catches a typing mistake, and the
+  // default stays 2 so an upgrade changes nothing.
+  const maxConcurrent = normalizeConcurrencyLimit(input.maxConcurrent, fallback.maxConcurrent)
   const maxSwitches = clampInt(input.maxSwitches, 0, 5, fallback.maxSwitches)
   return {
     mode,
@@ -214,6 +495,95 @@ function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     // Backward compatible: a persisted state.json written before the
     // supervision layer has no `supervision` key and receives the defaults.
     supervision: normalizeSupervision(input.supervision, fallback.supervision ?? SUPERVISION_DEFAULT),
+    providerConcurrency: normalizeProviderConcurrency(input.providerConcurrency ?? fallback.providerConcurrency),
+    superagent: normalizeSuperagentBudget(input.superagent, fallback.superagent ?? DEFAULT_POLICY.superagent),
+    load: normalizeLoad(input.load, fallback.load ?? LOAD_DEFAULT),
+  }
+}
+
+/**
+ * Normalize the load slice: a pool in tokens (`null` = no pool) and the price of
+ * one turn (`null` = measure it, else the documented fallback).
+ *
+ * A pool is never invented and never rounded up: `0` is a spent pool, a negative
+ * or unreadable value falls back to "no pool".
+ */
+function normalizeLoad(input, fallback = LOAD_DEFAULT) {
+  const source = input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}
+  const previous = fallback !== null && typeof fallback === 'object' && !Array.isArray(fallback) ? fallback : LOAD_DEFAULT
+  return {
+    tokenBudget: normalizeTokenPool(source.tokenBudget, normalizeTokenPool(previous.tokenBudget, null)),
+    tokensPerTurn: normalizeTokenPool(source.tokensPerTurn, normalizeTokenPool(previous.tokensPerTurn, null)),
+    // `null` = measure the real machine; an explicit pair overrides the noisy
+    // `freemem()` reading and makes the admission testable without a box.
+    hardware: normalizeHardwareFacts(
+      source.hardware === undefined ? previous.hardware : source.hardware,
+    ),
+  }
+}
+
+/**
+ * Lift the two legacy ceilings that used to throttle the product, ONCE.
+ *
+ * A document written by 0.1.0 carries the documented defaults (2 concurrent and
+ * 6 starts per hour). They are replaced by `null` — "no ceiling of its own", the
+ * load model decides — while a value that is NOT the old default is preserved:
+ * an operator who typed 20 meant 20. The old values stay readable in the audit
+ * entry, and the hourly field remains an active advanced safety valve.
+ *
+ * @param {object} policy a normalized policy
+ * @param {{at?: number}} [options]
+ * @returns {{policy: object, migrated: boolean, from: {maxConcurrentDelegations: number|null, maxDelegationsPerHour: number|null}}}
+ */
+function migratePolicyToLoadModel(policy, { at = null } = {}) {
+  const source = policy !== null && typeof policy === 'object' && !Array.isArray(policy) ? policy : {}
+  const supervision = source.supervision !== null && typeof source.supervision === 'object' ? source.supervision : {}
+  const lift = (value, legacyDefault) => {
+    // `Number(null)` is 0: an ALREADY lifted ceiling stays `null` instead of
+    // turning into a zero the operator never set.
+    if (value === null || value === undefined) return null
+    const number = Number(value)
+    if (!Number.isFinite(number)) return null
+    return number === legacyDefault ? null : number
+  }
+  const readCeiling = value => (value === null || value === undefined ? null : (Number.isFinite(Number(value)) ? Number(value) : null))
+  const from = {
+    // `Number(null)` is 0: an already-lifted ceiling must be reported as `null`,
+    // never as a zero that never existed.
+    maxConcurrentDelegations: readCeiling(supervision.maxConcurrentDelegations),
+    maxDelegationsPerHour: readCeiling(supervision.maxDelegationsPerHour),
+  }
+  const next = {
+    ...source,
+    supervision: {
+      ...supervision,
+      maxConcurrentDelegations: lift(supervision.maxConcurrentDelegations, SUPERVISION_DEFAULT.maxConcurrentDelegations),
+      maxDelegationsPerHour: lift(supervision.maxDelegationsPerHour, SUPERVISION_DEFAULT.maxDelegationsPerHour),
+    },
+  }
+  const migrated = next.supervision.maxConcurrentDelegations !== from.maxConcurrentDelegations
+    || next.supervision.maxDelegationsPerHour !== from.maxDelegationsPerHour
+  return { policy: migrated ? next : source, migrated, from, ...(Number.isFinite(Number(at)) ? { at: Number(at) } : {}) }
+}
+
+/**
+ * The Super Agent's own runtime budget, configurable through the policy.
+ *
+ * These were three literals in the host (`maxConcurrentAgents: 2`,
+ * `cyclesPerHour: 6`, `modelCallsPerHour: 12`), so an operator running dozens of
+ * projects could not let the agent keep up. 0 means unlimited for all three.
+ */
+function normalizeSuperagentBudget(input, fallback = DEFAULT_POLICY.superagent) {
+  const source = input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}
+  const previous = fallback !== null && typeof fallback === 'object' ? fallback : DEFAULT_POLICY.superagent
+  return {
+    maxConcurrentAgents: normalizeConcurrencyLimit(source.maxConcurrentAgents, previous.maxConcurrentAgents),
+    // Hourly ceilings are RATE limits, not concurrency: they do not belong under
+    // the concurrency hard ceiling (fifty sessions legitimately exceed 256 calls).
+    // `null` = no rate limit, which is the default since the load model (Lot 11);
+    // an absent value still inherits the previous layer.
+    cyclesPerHour: normalizeHourlyRate(source.cyclesPerHour === undefined ? previous.cyclesPerHour : source.cyclesPerHour, null, 100_000),
+    modelCallsPerHour: normalizeHourlyRate(source.modelCallsPerHour === undefined ? previous.modelCallsPerHour : source.modelCallsPerHour, null, 100_000),
   }
 }
 
@@ -235,8 +605,13 @@ function normalizeSupervision(input, fallback = SUPERVISION_DEFAULT) {
   return {
     enabled: source.enabled === undefined ? previous.enabled !== false : source.enabled === true,
     emblem: EMBLEMS.includes(source.emblem) ? source.emblem : (EMBLEMS.includes(previous.emblem) ? previous.emblem : SUPERVISION_DEFAULT.emblem),
-    maxConcurrentDelegations: clampInt(source.maxConcurrentDelegations, 0, 16, previous.maxConcurrentDelegations ?? SUPERVISION_DEFAULT.maxConcurrentDelegations),
-    maxDelegationsPerHour: clampInt(source.maxDelegationsPerHour, 0, 200, previous.maxDelegationsPerHour ?? SUPERVISION_DEFAULT.maxDelegationsPerHour),
+    maxConcurrentDelegations: normalizeConcurrencyLimit(source.maxConcurrentDelegations, previous.maxConcurrentDelegations ?? SUPERVISION_DEFAULT.maxConcurrentDelegations),
+    // An ABSENT value keeps the previous layer; an EXPLICIT `null` means "no rate
+    // limit", which is what the Lot 11 migration writes on purpose.
+    maxDelegationsPerHour: normalizeHourlyRate(
+      source.maxDelegationsPerHour === undefined ? previous.maxDelegationsPerHour : source.maxDelegationsPerHour,
+      null,
+    ),
     maxDelegationDepth: clampInt(source.maxDelegationDepth, 0, 8, previous.maxDelegationDepth ?? SUPERVISION_DEFAULT.maxDelegationDepth),
     allowCrossProjectDelegation: source.allowCrossProjectDelegation === undefined
       ? previous.allowCrossProjectDelegation === true
@@ -394,6 +769,295 @@ function clampInt(value, min, max, fallback) {
   const number = Number(value)
   if (!Number.isFinite(number)) return fallback
   return Math.min(max, Math.max(min, Math.trunc(number)))
+}
+
+
+// ---- src/contracts/decisions-schema.js ----
+/**
+ * The PUBLIC decisions contract, version 1.
+ *
+ * One question always had two shapes in this plugin, and the cockpit lost the
+ * inbox because of it: the host published `{ pending, recent, summary }` while
+ * every client helper read `Array.isArray(superagent.decisions)`. This module is
+ * the single owner of the shape, so the emitter and the readers can never drift
+ * again.
+ *
+ * Rules it enforces:
+ *   - the emitter is STRICT (`decisionsPayloadOf`): explicit field construction,
+ *     bounded lists, an effect that is never promoted to `approve` by default;
+ *   - the reader is TOLERANT (`decodeDecisions`): the versioned object, the
+ *     legacy flat array (a pre-0.2.0 host), and anything else, which must read as
+ *     an empty inbox rather than throw inside a render pass.
+ *
+ * A decision entry is a PUBLIC VIEW: only the fields the operator needs to
+ * decide are copied, so a host that grows an internal field does not leak it
+ * through the panel.
+ *
+ * Pure: no clock, no I/O, no randomness. Inputs are never mutated.
+ *
+ * @module dsh-agent-board/contracts/decisions-schema
+ */
+
+/** Version of the payload this module emits. Bumped only on a breaking change. */
+const DECISIONS_SCHEMA_VERSION = 1
+
+/**
+ * Bounded list sizes. The host used to hard-code `.slice(0, 20)` / `.slice(-10)`
+ * at the call site; naming them here keeps the emitter and the decoder in sync.
+ */
+const DECISIONS_PAYLOAD_LIMITS = Object.freeze({
+  pending: 20,
+  recent: 10,
+  options: 8,
+  taskIds: 20,
+})
+
+const DECISION_STATUSES = Object.freeze(['pending', 'answered', 'expired', 'superseded'])
+const PENDING_STATUS = 'pending'
+const DEFAULT_OPTION_EFFECT = 'reject'
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** A bounded non-negative integer, or null. Strings are never coerced. */
+function finiteIntOrNull(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null
+}
+
+function countOf(value) {
+  const parsed = finiteIntOrNull(value)
+  return parsed === null || parsed < 0 ? 0 : parsed
+}
+
+function textOf(value) {
+  return typeof value === 'string' ? value : ''
+}
+
+function textOrNull(value) {
+  return typeof value === 'string' && value !== '' ? value : null
+}
+
+/**
+ * One option. A missing/unknown `effect` becomes `reject`: only an explicit
+ * `approve` carried by the host may authorize anything, and the reader must not
+ * invent one from a corrupt frame.
+ */
+function decodeOption(raw) {
+  if (!isRecord(raw)) return null
+  const id = textOf(raw.id)
+  if (id === '') return null
+  const effect = textOf(raw.effect)
+  return {
+    id,
+    label: textOf(raw.label) || id,
+    effect: effect === '' ? DEFAULT_OPTION_EFFECT : effect,
+  }
+}
+
+function decodeAnswer(raw) {
+  if (!isRecord(raw)) return null
+  const optionId = textOf(raw.optionId)
+  if (optionId === '') return null
+  return {
+    optionId,
+    by: textOf(raw.by) || 'operator',
+    at: finiteIntOrNull(raw.at),
+    note: textOrNull(raw.note),
+  }
+}
+
+/** The persisted approval binding. Without a payload hash it authorizes nothing. */
+function decodeIntent(raw) {
+  if (!isRecord(raw)) return null
+  const payloadHash = textOf(raw.payloadHash)
+  if (payloadHash === '') return null
+  return {
+    action: textOrNull(raw.action),
+    projectId: textOrNull(raw.projectId),
+    taskId: textOrNull(raw.taskId),
+    taskVersion: finiteIntOrNull(raw.taskVersion),
+    payloadHash,
+    mandateRevision: finiteIntOrNull(raw.mandateRevision),
+    expiry: finiteIntOrNull(raw.expiry),
+  }
+}
+
+function decodeTaskIds(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const entry of raw) {
+    if (out.length >= DECISIONS_PAYLOAD_LIMITS.taskIds) break
+    const id = textOf(entry)
+    if (id === '' || out.includes(id)) continue
+    out.push(id)
+  }
+  return out
+}
+
+/**
+ * One decision, as the cockpit is allowed to see it.
+ *
+ * Returns null when the entry cannot be displayed at all (not a record, or no
+ * usable id): a corrupt entry is DROPPED, never rendered as an empty question
+ * whose "approve" button would carry an undefined id.
+ *
+ * @param {unknown} raw
+ * @returns {object|null}
+ */
+function decodeDecision(raw) {
+  if (!isRecord(raw)) return null
+  const id = textOf(raw.id)
+  if (id === '') return null
+  const options = []
+  for (const entry of Array.isArray(raw.options) ? raw.options : []) {
+    if (options.length >= DECISIONS_PAYLOAD_LIMITS.options) break
+    const option = decodeOption(entry)
+    if (option !== null) options.push(option)
+  }
+  return {
+    id,
+    kind: textOf(raw.kind) || 'unknown',
+    title: textOf(raw.title),
+    context: textOf(raw.context),
+    action: textOf(raw.action),
+    projectId: textOrNull(raw.projectId),
+    taskIds: decodeTaskIds(raw.taskIds),
+    options,
+    recommendation: textOf(raw.recommendation),
+    urgency: textOf(raw.urgency).toLowerCase() === 'urgent' ? 'urgent' : 'normal',
+    status: DECISION_STATUSES.includes(raw.status) ? raw.status : PENDING_STATUS,
+    createdAt: finiteIntOrNull(raw.createdAt),
+    answeredAt: finiteIntOrNull(raw.answeredAt),
+    expiresAt: finiteIntOrNull(raw.expiresAt),
+    // Single-use marker: the whole guarantee that one human answer authorizes
+    // exactly one action. It must survive decoding.
+    usedAt: finiteIntOrNull(raw.usedAt),
+    risk: textOrNull(raw.risk),
+    impact: textOrNull(raw.impact),
+    expectedEffect: textOrNull(raw.expectedEffect),
+    answer: decodeAnswer(raw.answer),
+    // Replayed after the answer, so the operator must be able TO READ it. It is
+    // already canonical and size-bounded by the host (`normalizeApprovalOperation`).
+    operation: isRecord(raw.operation) ? raw.operation : null,
+    intent: decodeIntent(raw.intent),
+    provenance: textOrNull(raw.provenance),
+    resumeHint: textOrNull(raw.resumeHint),
+  }
+}
+
+function decodeList(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const entry of raw) {
+    const decision = decodeDecision(entry)
+    if (decision !== null) out.push(decision)
+  }
+  return out
+}
+
+function decodeSummary(raw) {
+  if (!isRecord(raw)) return { pending: 0, urgent: 0, answered: 0, oldestAt: null }
+  return {
+    pending: countOf(raw.pending),
+    urgent: countOf(raw.urgent),
+    answered: countOf(raw.answered),
+    oldestAt: finiteIntOrNull(raw.oldestAt),
+  }
+}
+
+/** Counters derived from the entries actually received (legacy/partial frames). */
+function summaryOf(decisions) {
+  let pending = 0
+  let urgent = 0
+  let answered = 0
+  let oldestAt = null
+  for (const decision of decisions) {
+    if (decision.status === 'answered') answered += 1
+    if (decision.status !== PENDING_STATUS) continue
+    pending += 1
+    if (decision.urgency === 'urgent') urgent += 1
+    const createdAt = decision.createdAt
+    if (createdAt === null) continue
+    if (oldestAt === null || createdAt < oldestAt) oldestAt = createdAt
+  }
+  return { pending, urgent, answered, oldestAt }
+}
+
+/** An empty, well-formed payload (safe to render, safe to spread). */
+function emptyDecisionsPayload() {
+  return {
+    schemaVersion: DECISIONS_SCHEMA_VERSION,
+    pending: [],
+    recent: [],
+    summary: { pending: 0, urgent: 0, answered: 0, oldestAt: null },
+  }
+}
+
+/**
+ * Decode any historical/foreign `decisions` value into the v1 payload.
+ *
+ * Accepted inputs:
+ *   - the v1 object `{ schemaVersion?, pending, recent, summary? }`;
+ *   - the legacy flat array (a host that published the whole inbox);
+ *   - anything else (`null`, a string, a number, a partial object) → empty.
+ *
+ * The result always has the same shape, so a caller can read `.pending`,
+ * `.recent` and `.summary` without a guard.
+ *
+ * @param {unknown} raw
+ * @returns {{schemaVersion: number, pending: object[], recent: object[], summary: object}}
+ */
+function decodeDecisions(raw) {
+  if (Array.isArray(raw)) {
+    const all = decodeList(raw)
+    return {
+      schemaVersion: DECISIONS_SCHEMA_VERSION,
+      pending: all.filter(decision => decision.status === PENDING_STATUS).slice(0, DECISIONS_PAYLOAD_LIMITS.pending),
+      recent: all.filter(decision => decision.status !== PENDING_STATUS).slice(-DECISIONS_PAYLOAD_LIMITS.recent),
+      summary: summaryOf(all),
+    }
+  }
+  if (!isRecord(raw)) return emptyDecisionsPayload()
+  const pending = decodeList(raw.pending).slice(0, DECISIONS_PAYLOAD_LIMITS.pending)
+  const recent = decodeList(raw.recent).slice(-DECISIONS_PAYLOAD_LIMITS.recent)
+  return {
+    schemaVersion: DECISIONS_SCHEMA_VERSION,
+    pending,
+    recent,
+    // A valid host summary counts the WHOLE inbox, which is larger than the two
+    // bounded lists: prefer it. Only a missing/corrupt one is derived locally.
+    summary: isRecord(raw.summary) ? decodeSummary(raw.summary) : summaryOf([...pending, ...recent]),
+  }
+}
+
+/**
+ * The only pending decisions. This is what the inbox badge counts, so it must be
+ * derived from the published payload and never from an `Array.isArray` guess.
+ *
+ * @param {unknown} raw
+ * @returns {object[]}
+ */
+function pendingDecisionsOfPayload(raw) {
+  return decodeDecisions(raw).pending.filter(decision => decision.status === PENDING_STATUS)
+}
+
+/**
+ * Build the published payload (host side). Strict on purpose: unknown keys of an
+ * input decision never reach the wire, and every list is bounded here.
+ *
+ * @param {{pending?: unknown, recent?: unknown, summary?: unknown}} [input]
+ * @returns {{schemaVersion: number, pending: object[], recent: object[], summary: object}}
+ */
+function decisionsPayloadOf({ pending = [], recent = [], summary = null } = {}) {
+  const decodedPending = decodeList(pending).slice(0, DECISIONS_PAYLOAD_LIMITS.pending)
+  const decodedRecent = decodeList(recent).slice(-DECISIONS_PAYLOAD_LIMITS.recent)
+  return {
+    schemaVersion: DECISIONS_SCHEMA_VERSION,
+    pending: decodedPending,
+    recent: decodedRecent,
+    summary: isRecord(summary) ? decodeSummary(summary) : summaryOf([...decodedPending, ...decodedRecent]),
+  }
 }
 
 
@@ -2689,7 +3353,9 @@ function supervisionBuildRecommendations({ tasks, assignments, proposals, policy
   const pendingProposalTaskIds = new Set(proposals
     .filter(proposal => proposal?.status === 'pending')
     .map(proposal => String(proposal?.taskId)))
-  const withinLimits = inFlight < config.maxConcurrentDelegations && usedThisHour < config.maxDelegationsPerHour
+  // Unlimited (`null`) contributes no ceiling; `0` still means zero.
+  const withinLimits = !concurrencyReached(inFlight, config.maxConcurrentDelegations)
+    && !concurrencyReached(usedThisHour, config.maxDelegationsPerHour)
   const worktreeCapable = policy?.executionBackend === 'taskboard' || policy?.executionBackend === 'contract'
 
   const push = (kind, task, reason, evidence) => {
@@ -3913,6 +4579,9 @@ function buildOverview(projection, options = {}) {
   const now = Number(options.now) || Date.now()
 
   const filter = VIEW_FILTERS.includes(options.filter) ? options.filter : 'attention'
+  // "Exceptions only": from N live agents, watching stops being cheaper than
+  // filtering, so the cockpit defaults to what only a HUMAN can unblock.
+  const exceptionsOnly = options.exceptionsOnly === true
   const query = typeof options.query === 'string' ? options.query.trim().toLowerCase() : ''
   const focus = OVERVIEW_BUCKETS.includes(options.focus) ? options.focus : null
   const project = typeof options.project === 'string' && options.project !== '' ? options.project : null
@@ -3970,6 +4639,9 @@ function buildOverview(projection, options = {}) {
     // views (an explicit "all" or a search still reaches it), as in view.js.
     if (dismissed.has(node.id) && query === '' && filter !== 'all') continue
     if (project !== null && node.projectId !== project) continue
+    // Exceptions only: a session the board can still drive by itself is not shown,
+    // even in the attention view (a search and the selected card still reach it).
+    if (exceptionsOnly && query === '' && !isActionRequired(node)) continue
     if (!matchesHierarchyFilters(node, roles, effectiveFilters, taskStates, reviewAvailable)) continue
     const bucket = buckets.get(node.id) ?? 'other'
     if (focus !== null) {
@@ -4022,7 +4694,7 @@ function buildOverview(projection, options = {}) {
   }
   counts.shown = entries.length
 
-  return { sections, entries, counts, filter, query, focus }
+  return { sections, entries, counts, filter, query, focus, exceptionsOnly }
 }
 
 
@@ -4177,10 +4849,15 @@ function capabilitiesOf(host) {
   return plainObjectOrNull(host?.capabilities)
 }
 
-/** Real pending decisions only: an answered/expired/superseded one is not pending. */
+/**
+ * Real pending decisions only: an answered/expired/superseded one is not pending.
+ *
+ * Reads the versioned decisions contract, so the legacy flat array of an older
+ * host and the v1 object both decode. The previous `Array.isArray(superagent
+ * .decisions)` guess is exactly what kept the inbox permanently empty.
+ */
 function pendingDecisionsOf(superagent) {
-  const list = Array.isArray(superagent?.decisions) ? superagent.decisions : []
-  return list.filter(decision => plainObjectOrNull(decision) !== null && decision.status === 'pending')
+  return pendingDecisionsOfPayload(superagent?.decisions)
 }
 
 function pendingDecisionCountOf(superagent) {
@@ -4196,7 +4873,7 @@ const HOST_STATE_ARRAY_KEYS = ['assignments', 'proposals', 'routeEvents', 'audit
 // GOAL 6 additive fields. They are recognised as a host-state marker but never
 // type-validated here: a partially populated superagent payload must still
 // reach the UI, which guards every field access itself.
-const HOST_STATE_EXTRA_KEYS = ['mandate', 'capabilities', 'superagent', 'dryRun', 'supervision', 'projects', 'models', 'taskboardPublic', 'build']
+const HOST_STATE_EXTRA_KEYS = ['mandate', 'capabilities', 'superagent', 'dryRun', 'supervision', 'projects', 'models', 'taskboardPublic', 'build', 'attention']
 
 /**
  * Is this object a host state frame? The event stream is shared, so a valid
@@ -4354,6 +5031,9 @@ function createBoardStore(ctx, options = {}) {
       // GOAL 6 views, normalized once so every component receives the same
       // null-safe shape (an old host yields null and the UI says so).
       superagent: superagentOf(host),
+      // The operator's attention queue (Lot 5b): a payload the panels read
+      // directly, never recomputed from sessions.
+      attention: plainObjectOrNull(host?.attention),
       mandate: mandateOf(host),
       capabilities: capabilitiesOf(host),
       hostError,
@@ -4472,6 +5152,10 @@ function createBoardStore(ctx, options = {}) {
     unack: sessionId => post('/ack', { sessionId, seen: false }),
     resume: () => post('/resume', {}),
     setMode: mode => post('/mode', { mode }),
+    /** Full policy patch. The host normalises and persists every limit. */
+    setPolicy: policy => post('/policy', { policy: policy ?? {} }),
+    // Lot 11 — start a new token-budget wave (measured history is untouched).
+    resetLoad: () => post('/load/reset', {}),
     stop: () => post('/stop', {}),
     tick: () => post('/tick', {}),
     decide: (proposalId, approve) => post(`/proposals/${encodeURIComponent(proposalId)}/decide`, { approve }),
@@ -4520,6 +5204,8 @@ function createBoardStore(ctx, options = {}) {
     stopSuperagent: () => post('/superagent/stop', {}),
     cycleSuperagent: trigger => post('/superagent/cycle', { trigger: trigger ?? 'manual' }),
     setSuperagentModel: model => post('/superagent/model', model ?? {}),
+    /** Answer several same-scope decisions in ONE gesture (each stays single-use). */
+    answerDecisions: decisions => post('/superagent/decisions/bulk', { decisions: Array.isArray(decisions) ? decisions : [] }),
     /** Exact-route efforts for one model (read-only; no state refresh). */
     modelInfo: (provider, model) => request('POST', '/models/info', { provider, model }),
     probeTaskboard: () => post('/integrations/taskboard/probe', {}),
@@ -4944,6 +5630,42 @@ const DAB_STRINGS = {
     superResume: 'Reprendre le Super Agent',
     superDetailsShort: 'Détails',
     superDetailsOpen: 'Ouvrir le détail du Super Agent',
+    // The exception badge says what needs a HUMAN, never what is running (Lot 5b).
+    superAttentionLabel: 'Ce qui a besoin de vous',
+    // Lot 5 — concurrence configurable, visible et éditable dans l'inspecteur.
+    superSettingsConcurrency: 'Concurrence',
+    superConcurrencyRunning: 'En cours / limite',
+    superConcurrencyGlobal: 'Limite globale',
+    superConcurrencySupervision: 'Limite de supervision',
+    superConcurrencyAgents: 'Agents du Super Agent',
+    superConcurrencyHint: 'Vide = illimité. 0 = gel (aucun lancement). Enregistré dans la policy.',
+    // Lot 11 — la charge réelle remplace le compteur horaire comme levier.
+    superLoadRunning: 'Charge (sessions / plafond)',
+    superLoadBinding: 'Contrainte',
+    superLoadSpent: 'Jetons facturés (vague)',
+    superLoadTokenBudget: 'Pool de jetons',
+    superLoadReset: 'Nouvelle vague',
+    superHourlyGuard: 'Garde-fou horaire (hérité)',
+    superLoadBindingTokens: 'jetons',
+    superLoadBindingHardware: 'matériel',
+    superLoadBindingOperator: 'votre plafond',
+    superLoadBindingNone: 'aucune (illimité)',
+    superLoadHint: 'Vide = aucune limite. La charge combine la machine, le pool de jetons et vos plafonds ; 0 sur un plafond est un arrêt volontaire (préférez Pause).',
+    superLimitUnlimited: 'illimité',
+    superProjectConcurrency: 'Concurrence du projet',
+    // Lot 5b — approbation groupée : chaque accord reste à usage unique.
+    superDecisionsBulkApprove: 'Tout approuver ({n})',
+    superDecisionScopeSame: 'même portée',
+    // Lot 5b — silence par défaut : ne pas déranger, et confiance graduée PROPOSÉE.
+    superSettingsDnd: 'Ne pas déranger',
+    superDndHint: 'Aucune notification, même pour une décision bloquante.',
+    superTrustSuggested: '{project} · {action} : approuvé {n} fois sans incident — passer en auto ?',
+    // Lot 5b — digest par projet (fait vérifié / en cours / bloqué), exportable.
+    superSettingsDigest: 'Digest par projet',
+    superDigestVerified: 'vérifiés',
+    superDigestRunning: 'en cours',
+    superDigestBlocked: 'bloqués',
+    superDigestHint: 'Résumé périodique : aucun message par session.',
     superDecisionsPending: '{n} décisions en attente',
     supervisionStatusStopped: 'Arrêté (observation)',
     supervisionStopNoAction: 'Mode Observation — aucune action tant que vous ne passez pas en Supervisé ou Autonome',
@@ -5445,6 +6167,37 @@ const DAB_STRINGS = {
     superResume: 'Resume the Super Agent',
     superDetailsShort: 'Details',
     superDetailsOpen: 'Open the Super Agent details',
+    superAttentionLabel: 'Needs you',
+    superSettingsConcurrency: 'Concurrency',
+    superConcurrencyRunning: 'Running / limit',
+    superConcurrencyGlobal: 'Global limit',
+    superConcurrencySupervision: 'Supervision limit',
+    superConcurrencyAgents: 'Super Agent agents',
+    superConcurrencyHint: 'Empty = unlimited. 0 = freeze (no launch). Stored in the policy.',
+    // Lot 11 — the real load replaces the hourly counter as the lever.
+    superLoadRunning: 'Load (sessions / ceiling)',
+    superLoadBinding: 'Binding fact',
+    superLoadSpent: 'Billed tokens (wave)',
+    superLoadTokenBudget: 'Token pool',
+    superLoadReset: 'New wave',
+    superHourlyGuard: 'Hourly guard (legacy)',
+    superLoadBindingTokens: 'tokens',
+    superLoadBindingHardware: 'hardware',
+    superLoadBindingOperator: 'your ceiling',
+    superLoadBindingNone: 'none (unlimited)',
+    superLoadHint: 'Empty = no limit. The load combines the machine, the token pool and your own ceilings; 0 on a ceiling is a deliberate stop (prefer Pause).',
+    superLimitUnlimited: 'unlimited',
+    superProjectConcurrency: 'Project concurrency',
+    superDecisionsBulkApprove: 'Approve all ({n})',
+    superDecisionScopeSame: 'same scope',
+    superSettingsDnd: 'Do not disturb',
+    superDndHint: 'No notification at all, not even for a blocking decision.',
+    superTrustSuggested: '{project} · {action}: approved {n} times without incident — switch to auto?',
+    superSettingsDigest: 'Per-project digest',
+    superDigestVerified: 'verified',
+    superDigestRunning: 'running',
+    superDigestBlocked: 'blocked',
+    superDigestHint: 'Periodic summary: never one message per session.',
     superDecisionsPending: '{n} pending decisions',
     supervisionStatusStopped: 'Stopped (observing)',
     supervisionStopNoAction: 'Stop mode — no action possible without switching to Supervised or Autonomous',
@@ -5797,6 +6550,7 @@ const DAB_REASON_TEXT = {
     model_call_budget_exhausted: 'nombre maximal d’appels au modèle atteint',
     integration_unavailable: 'intégration indisponible',
     concurrency_limit: 'nombre maximal d’agents simultanés atteint',
+    load_exhausted: 'charge saturée : la machine ou le pool de jetons ne permet plus de lancer',
     no_candidate_work: 'aucune tâche prête dans le périmètre',
     no_adapter_for_action: 'pas encore pris en charge dans cette version',
     human_only_action: 'réservée à vous : le Super Agent ne l’exécute jamais',
@@ -5854,6 +6608,7 @@ const DAB_REASON_TEXT = {
     model_call_budget_exhausted: 'maximum model calls reached',
     integration_unavailable: 'integration unavailable',
     concurrency_limit: 'maximum concurrent agents reached',
+    load_exhausted: 'load saturated: the machine or the token pool cannot start another session',
     no_candidate_work: 'no ready task in scope',
     no_adapter_for_action: 'not supported yet in this version',
     human_only_action: 'yours only: the Super Agent never executes it',
@@ -6308,6 +7063,45 @@ const DAB_CSS = `
   .dab-band-counters { gap: 8px; }
   .dab-hier-ws-sub { gap: 6px; }
 }
+
+/* ---------- mobile band: one row, <= 64 px collapsed (Lot 6)
+ * The band is a status strip on a phone, not a panel: the title, the AI session
+ * chip and the ONE exception badge. Everything else stays in the opened card, so
+ * a 390x844 screen keeps its vertical space for the board itself. */
+@container dab (max-width: 430px) {
+  .dab-band-head {
+    flex-wrap: nowrap;
+    align-items: center;
+    min-height: 0;
+    /* 40 px mascot + 2*8 px padding + 8 px breathing = 56 px, under the 64 px target. */
+    padding: 8px 30px 8px 10px;
+    gap: 8px;
+  }
+  /* One line of identity only: the subtitle and the duplicated facts are hidden. */
+  .dab-band-head .dab-super-sub,
+  .dab-band-head .dab-super-facts,
+  .dab-band-head .dab-super-state,
+  .dab-band-head .dab-super-layer { display: none; }
+  .dab-band-head .dab-band-mascot .dab-avatar { width: 34px; height: 34px; }
+  .dab-band-head .dab-super-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The AI chip keeps its dot and state, never its reason line. */
+  .dab-band-head .dab-super-ai { min-width: 0; }
+  .dab-band-head .dab-super-ai-reason { display: none; }
+  .dab-band-head .dab-super-ai-name { display: none; }
+  /* A single badge decides whether the operator opens the band at all. */
+  .dab-band-head .dab-attention-badge { display: inline-flex; }
+  .dab-band-head .dab-super-decisions { display: none; }
+  .dab-band-body { padding: 2px 10px 10px; }
+}
+
+/* The exception badge: what needs a HUMAN, one tap away. */
+.dab-attention-badge { display: none; flex: none; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l3, transparent); background: none; color: inherit; font: inherit; font-size: 12px;
+  font-weight: 600; cursor: pointer; }
+.dab-attention-badge[data-severity="blocking"] { border-color: var(--dsw-alias-status-error, currentColor); }
+.dab-attention-badge[data-severity="high"] { border-color: var(--dsw-alias-status-warning, currentColor); }
+.dab-attention-badge:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+.dab-attention-badge .dab-super-decisions-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
 /* =====================================================================
  * RESPONSIVE COCKPIT (GOAL 5)
@@ -7848,10 +8642,11 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
   const session = sa?.session !== null && typeof sa?.session === 'object' ? sa.session : null
   const runtime = sa?.runtime !== null && typeof sa?.runtime === 'object' ? sa.runtime : null
   const plan = sa?.plan !== null && typeof sa?.plan === 'object' ? sa.plan : null
-  const decisions = Array.isArray(sa?.decisions) ? sa.decisions.filter(entry => entry !== null && typeof entry === 'object') : []
+  const decisionsPayload = decodeDecisions(sa?.decisions)
+  const decisions = [...decisionsPayload.pending, ...decisionsPayload.recent]
   const directives = Array.isArray(sa?.directives) ? sa.directives.filter(entry => entry !== null && typeof entry === 'object') : []
   const activity = Array.isArray(sa?.activity) ? sa.activity.filter(entry => entry !== null && typeof entry === 'object') : []
-  const pendingDecisions = decisions.filter(entry => entry.status === 'pending')
+  const pendingDecisions = decisionsPayload.pending
   const model = identity?.model !== null && typeof identity?.model === 'object' ? identity.model : null
   const stopped = context !== null && context !== undefined && context.stopped === true
   const sessionStatus = typeof session?.active === 'boolean' ? session.active : null
@@ -7880,6 +8675,21 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
   const enabledProjects = policyIds.filter(id => policies[id]?.enabled === true).length
   const totalProjects = policyIds.length
   const lastActivity = activity.length > 0 ? activity[activity.length - 1] : null
+  // The ONE autonomy fact the host publishes (global ∩ project ∩ integration).
+  // `identity.level` is only a fallback for an older host, and it is no longer a
+  // second source of truth: the host now derives it too.
+  const autonomy = sa?.autonomy !== null && typeof sa?.autonomy === 'object' && !Array.isArray(sa.autonomy)
+    ? sa.autonomy
+    : (context?.autonomy !== null && typeof context?.autonomy === 'object' ? context.autonomy : null)
+  const level = typeof autonomy?.level === 'string'
+    ? autonomy.level
+    : (typeof identity?.level === 'string' ? identity.level : (typeof mandate?.level === 'string' ? mandate.level : null))
+  // The host's attention queue (Lot 5b). Absent on an older host: the panel says
+  // so instead of inventing a queue. A healthy session is never in it.
+  const attention = sa?.attention !== null && typeof sa?.attention === 'object' && !Array.isArray(sa.attention)
+    ? sa.attention
+    : (context?.attention !== null && typeof context?.attention === 'object' && !Array.isArray(context?.attention) ? context.attention : null)
+  const attentionItems = Array.isArray(attention?.items) ? attention.items : []
   return {
     available: sa !== null,
     identity,
@@ -7897,12 +8707,27 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
       ? `${typeof model.provider === 'string' ? `${model.provider}/` : ''}${model.model}`
       : null,
     fallbackModels: Array.isArray(model?.fallback) ? model.fallback.filter(entry => entry !== null && typeof entry === 'object') : [],
-    level: typeof identity?.level === 'string' ? identity.level : (typeof mandate?.level === 'string' ? mandate.level : null),
+    level,
+    scope: typeof autonomy?.scope === 'string' ? autonomy.scope : (typeof mandate?.scopeMode === 'string' ? mandate.scopeMode : null),
+    autonomy,
+    // What needs a HUMAN, plus the product KPIs. `null` on an older host.
+    attention,
+    attentionItems,
+    attentionCount: attentionItems.length,
+    attentionCostSeconds: typeof attention?.counters?.costSeconds === 'number' ? attention.counters.costSeconds : null,
+    exceptionsOnly: attention?.exceptionMode === true,
+    kpis: attention?.kpis !== null && typeof attention?.kpis === 'object' ? attention.kpis : null,
+    // Graded trust: what the operator approved N times without incident. The UI
+    // may PROPOSE a promotion; nothing is promoted automatically.
+    trust: Array.isArray(attention?.trust) ? attention.trust.filter(entry => entry !== null && typeof entry === 'object') : [],
     enabledProjects,
     totalProjects,
     decisions,
     pendingDecisions,
     pendingCount: pendingDecisions.length,
+    // The host's authoritative counters (they cover the WHOLE inbox, not the
+    // bounded published lists). Null when the payload carries none.
+    decisionsSummary: decisionsPayload.summary,
     pendingApprovals: pendingDecisions.filter(entry => entry.kind === 'approval').length,
     directives: directives.filter(entry => entry.status !== 'revoked'),
     revokedDirectives: directives.filter(entry => entry.status === 'revoked'),
@@ -7983,7 +8808,11 @@ function dabProjectPolicyRows(host, superagent, mandate) {
       enabled,
       selected,
       level: DAB_AUTONOMY_LEVELS.includes(policy.level) ? policy.level : null,
-      effectiveLevel: DAB_AUTONOMY_LEVELS.includes(policy.level) ? policy.level : (DAB_AUTONOMY_LEVELS.includes(mandate?.level) ? mandate.level : 'L0'),
+      // The host publishes the per-project effective value (global ∩ project ∩
+      // integration). Only an older host falls back to recombining it here.
+      effectiveLevel: DAB_AUTONOMY_LEVELS.includes(mandate?.effectiveLevels?.[entry.id])
+        ? mandate.effectiveLevels[entry.id]
+        : (DAB_AUTONOMY_LEVELS.includes(policy.level) ? policy.level : (DAB_AUTONOMY_LEVELS.includes(mandate?.level) ? mandate.level : 'L0')),
       inheritedLevel: DAB_AUTONOMY_LEVELS.includes(mandate?.level) ? mandate.level : 'L0',
       modelInherited: policy.model === null || typeof policy.model !== 'object',
       priority: Number.isFinite(Number(policy.priority)) ? Number(policy.priority) : 5,
@@ -8060,7 +8889,9 @@ function dabDecisionIsPending(decision) {
 }
 
 function dabDecisionGroups(decisions) {
-  const pending = (Array.isArray(decisions) ? decisions : []).filter(dabDecisionIsPending)
+  // Accepts the v1 payload, the legacy flat array, or the flattened list built by
+  // `dabSuperagentFacts`: `decodeDecisions` is tolerant and idempotent.
+  const pending = decodeDecisions(decisions).pending.filter(dabDecisionIsPending)
   return {
     pending,
     approvals: pending.filter(entry => entry.kind === 'approval'),
@@ -8408,7 +9239,7 @@ function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, o
 
 function DabSuperOrchestratorBarImpl({
   workspace, totals, projects, orchestrators: orchestratorList, mode, open, onToggle, onSelect, compact,
-  superagent, mandate, capabilities, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenProjects,
+  superagent, mandate, capabilities, attention, notificationsEnabled, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenAttention, onOpenProjects,
   projectRows, onToggleProject, onSetProjectLevel, onOpenSettings,
 }) {
   const h = React.createElement
@@ -8436,6 +9267,8 @@ function DabSuperOrchestratorBarImpl({
     paused: mandate?.paused === true,
     scopeMode: typeof mandate?.scopeMode === 'string' ? mandate.scopeMode : null,
     requiresConfiguration: mandate?.requiresConfiguration === true,
+    // The published attention queue (Lot 5b): the band badges what needs a human.
+    attention: attention ?? null,
   }
   const stoppedByOperator = stopped === true || superagent?.identity?.status === 'stopped'
   const facts = dabSuperagentFacts(superagent, mandate, context)
@@ -8558,6 +9391,22 @@ function DabSuperOrchestratorBarImpl({
       h('span', { className: 'dab-super-fact dab-super-level' }, h('span', { className: 'dab-super-fact-label' }, dabT('superLevelLabel')), dabLevelBadge(h, facts.level) ?? levelText),
       projectsText === null ? null : h('span', { className: 'dab-super-fact dab-super-enabled' }, projectsText),
       h('span', { className: 'dab-super-fact dab-super-activity', title: activityText }, activityText),
+      facts.attentionCount > 0
+        ? h('button', {
+          type: 'button',
+          className: 'dab-attention-badge',
+          'data-count': String(facts.attentionCount),
+          'data-severity': facts.attentionItems[0]?.severity ?? 'normal',
+          // The badge always counts; the NOTIFICATION flag says whether this entry
+          // may wake the operator at all (high/blocking, notifications on, not DND).
+          'data-notify': notificationsEnabled === true && facts.attentionItems.some(entry => entry.notify === true) ? 'true' : 'false',
+          'aria-label': `${dabT('superAttentionLabel')} : ${facts.attentionCount}`,
+          title: facts.attentionItems[0]?.title ?? dabT('superAttentionLabel'),
+          onClick: onOpenAttention ?? onOpenSuperagent,
+        },
+        h('span', { className: 'dab-super-decisions-dot', 'aria-hidden': 'true' }),
+        String(facts.attentionCount))
+        : null,
       facts.pendingCount > 0
         ? h('button', {
           type: 'button',
@@ -8575,7 +9424,7 @@ function DabSuperOrchestratorBarImpl({
   controls,
 
   open === true && Array.isArray(projectRows) && projectRows.length > 0
-    ? dabSuperProjects(h, { rows: projectRows, busy, onToggleProject, onSetProjectLevel, onOpenProjects: onOpenProjects ?? onOpenSuperagent, onOpenSettings, needsProjects, globalLevel: typeof mandate?.level === 'string' ? mandate.level : facts.level, launchGranted: mandate?.actions?.launch === true })
+    ? dabSuperProjects(h, { rows: projectRows, busy, onToggleProject, onSetProjectLevel, onOpenProjects: onOpenProjects ?? onOpenSuperagent, onOpenSettings, needsProjects, globalLevel: typeof facts.autonomy?.globalLevel === 'string' ? facts.autonomy.globalLevel : (typeof mandate?.level === 'string' ? mandate.level : facts.level), launchGranted: mandate?.actions?.launch === true })
     : null,
 
   // Mini orchestrator avatars: real agents only. A project without a declared
@@ -8622,6 +9471,9 @@ const DabSuperOrchestratorBar = React.memo(DabSuperOrchestratorBarImpl, (a, b) =
   && a.onResume === b.onResume
   && a.onOpenSuperagent === b.onOpenSuperagent
   && a.onOpenDecisions === b.onOpenDecisions
+  && a.onOpenAttention === b.onOpenAttention
+  && a.attention === b.attention
+  && a.notificationsEnabled === b.notificationsEnabled
   && a.onOpenProjects === b.onOpenProjects
   && a.projectRows === b.projectRows
   && a.onToggleProject === b.onToggleProject
@@ -9164,12 +10016,45 @@ function DabAllProjectsConfirm({ confirmText = '', onChange, onConfirm, onCancel
 }
 
 /** Decision inbox: only REAL pending decisions, never an implied answer. */
-function DabSuperagentDecisions({ superagent, filter = 'decisions', onFilter, onAnswer, busy }) {
+function DabSuperagentDecisions({ superagent, filter = 'decisions', onFilter, onAnswer, onAnswerBulk, attention = null, busy }) {
   const h = React.createElement
   const groups = dabDecisionGroups(superagent?.decisions)
   const active = filter === 'approvals' ? 'approvals' : 'decisions'
   const list = active === 'approvals' ? groups.approvals : groups.pending
+  // Grouped approval: approvals that share the SAME project and action are one
+  // decision for the operator, even though each keeps its own single-use grant.
+  const bulkGroups = (() => {
+    const byKey = new Map()
+    for (const decision of groups.approvals) {
+      const key = `${decision.projectId ?? '*'}|${decision.action ?? ''}`
+      const entry = byKey.get(key)
+      if (entry === undefined) byKey.set(key, { key, projectId: decision.projectId ?? null, action: decision.action ?? '', decisions: [decision] })
+      else entry.decisions.push(decision)
+    }
+    return [...byKey.values()].filter(entry => entry.decisions.length > 1)
+  })()
+  const attentionItems = Array.isArray(attention?.items) ? attention.items.slice(0, 3) : []
   return h('div', { className: 'dab-sa-inbox', 'data-filter': active },
+    // What is waiting BEHIND the decision, in one line: enough to decide without
+    // opening the session.
+    attentionItems.length > 0
+      ? h('ul', { className: 'dab-sa-attention', 'aria-label': dabT('superAttentionLabel') },
+        attentionItems.map(entry => h('li', { key: entry.id, className: 'dab-sa-attention-row', 'data-severity': entry.severity },
+          h('span', { className: 'dab-tag' }, entry.severity),
+          h('span', { className: 'dab-sa-attention-title' }, entry.title),
+          h('span', { className: 'dab-muted' }, ` — ${entry.suggestedAction} (${entry.costToResolveSeconds}s)`))))
+      : null,
+    bulkGroups.length > 0
+      ? h('div', { className: 'dab-sa-bulk' },
+        bulkGroups.map(group => h('button', {
+          key: group.key,
+          type: 'button',
+          className: 'dab-btn dab-sa-bulk-approve',
+          'data-count': String(group.decisions.length),
+          disabled: busy === true,
+          onClick: () => onAnswerBulk?.(group.decisions.map(decision => ({ id: decision.id, optionId: 'approve' }))),
+        }, `${dabT('superDecisionsBulkApprove', { n: group.decisions.length })} · ${group.action || dabT('superDecisionScopeSame')}`)))
+      : null,
     h('div', { className: 'dab-sa-inbox-head' },
       h('h3', { className: 'dab-sa-section-title' }, dabT('superDecisions')),
       groups.pending.length > 0
@@ -9236,7 +10121,7 @@ function DabSuperagentDecisions({ superagent, filter = 'decisions', onFilter, on
 }
 
 /** Vue d'ensemble: objective, steps, factual result, capabilities, incidents. */
-function DabSuperagentOverview({ superagent, mandate, capabilities, host, context, workspace, onOpenDetail, onAnswer, decisionFilter, onDecisionFilter, busy }) {
+function DabSuperagentOverview({ superagent, mandate, capabilities, host, context, workspace, onOpenDetail, onAnswer, onAnswerBulk, attention = null, decisionFilter, onDecisionFilter, busy }) {
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
   const plan = facts.plan ?? {}
@@ -9322,13 +10207,14 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
         : h('ul', { className: 'dab-sa-journal' }, journal.shown.map(entry => h('li', { key: `${entry.at}-${entry.kind}` },
           h('span', { className: 'dab-sa-step-time' }, dabSaMoment(entry.at) ?? ''), String(entry.summary ?? entry.kind ?? '?')))),
       dabSaExtraNode(h, journal.extra)),
-    h(DabSuperagentDecisions, { superagent, filter: decisionFilter, onFilter: onDecisionFilter, onAnswer, busy }))
+    h(DabSuperagentDecisions, { superagent, filter: decisionFilter, onFilter: onDecisionFilter, onAnswer, onAnswerBulk, attention, busy }))
 }
 
 /** Projets: real portfolio, per-project policy, scope, Simuler (dry-run). */
 function DabSuperagentProjects({
   superagent, mandate, host, context, dryRun, dryRunBusy, busy,
   onToggleProject, onSetProjectLevel, onSetProjectPriority, onSetProjectModel, onConfirmAllProjects, onDryRun, scopeConfirmOpen,
+  onSetProjectConcurrency,
 }) {
   const h = React.createElement
   const [confirming, setConfirming] = React.useState(false)
@@ -9427,6 +10313,19 @@ function DabSuperagentProjects({
             className: 'dab-input dab-sa-priority', type: 'number', min: 0, max: 9, value: row.priority,
             'aria-label': `${dabT('superProjectPriority')} : ${row.title}`,
             onChange: event => onSetProjectPriority?.(row.id, Number(event?.target?.value)),
+          })),
+        // Per-project concurrency ceiling: one project may saturate without
+        // freezing the others. Empty means "inherit the global ceiling".
+        h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+          h('span', { className: 'dab-sa-field-label' }, dabT('superProjectConcurrency')),
+          h('input', {
+            className: 'dab-input dab-sa-project-concurrency', type: 'number', min: 0, max: 256,
+            value: row.maxConcurrent === null || row.maxConcurrent === undefined ? '' : String(row.maxConcurrent),
+            'aria-label': `${dabT('superProjectConcurrency')} : ${row.title}`,
+            onChange: event => {
+              const raw = event?.target?.value ?? ''
+              onSetProjectConcurrency?.(row.id, raw === '' ? null : Math.max(0, Math.trunc(Number(raw))))
+            },
           }))),
       h('div', { className: 'dab-sa-project-facts' },
         typeof onSetProjectModel === 'function' && modelRoutes.length > 0
@@ -9756,10 +10655,14 @@ function DabSelfTest({ busy, onSelfTest }) {
 function DabSuperagentSettings({
   superagent, mandate, capabilities, host, context, ui, busy, taskboard,
   onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
+  onSetPolicy, onToggleDnd, onResetLoad,
 }) {
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
-  const level = typeof mandate?.level === 'string' ? mandate.level : (facts.level ?? 'L0')
+  // The published global level wins; the mandate is only a legacy fallback.
+  const level = typeof facts.autonomy?.globalLevel === 'string'
+    ? facts.autonomy.globalLevel
+    : (typeof mandate?.level === 'string' ? mandate.level : (facts.level ?? 'L0'))
   // `/state` and the SSE stream publish the catalog under `host.host.models`;
   // `/diagnostics` puts it at the top level. Read both, never assume one.
   const models = dabSaObject(host?.host?.models) ?? dabSaObject(host?.models)
@@ -9793,6 +10696,105 @@ function DabSuperagentSettings({
         type: 'button', className: 'dab-btn dab-sa-reapply-level', disabled: busy === true,
         onClick: () => onSetLevel(level),
       }, dabT('superLevelReapply')) : null),
+    // Concurrency is configuration (Lot 5): the operator edits the SAME limits the
+    // launch gate reads, and the panel shows the exact running/limit pair.
+    dabSaSection(h, 'concurrency', dabT('superSettingsConcurrency'),
+      (() => {
+        const policy = dabSaObject(host?.policy) ?? {}
+        const limits = dabSaObject(host?.budget?.limits) ?? {}
+        const used = dabSaObject(host?.budget?.used) ?? {}
+        const supervision = dabSaObject(policy.supervision) ?? {}
+        const agents = dabSaObject(policy.superagent) ?? {}
+        const providers = Array.isArray(host?.host?.models?.providers) ? host.host.models.providers : (Array.isArray(host?.models?.providers) ? host.models.providers : [])
+        const providerLimits = dabSaObject(policy.providerConcurrency) ?? {}
+        const limitText = value => (value === null || value === undefined ? dabT('superLimitUnlimited') : String(value))
+        const numberField = (className, label, value, onChange) => h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+          h('span', { className: 'dab-sa-field-label' }, label),
+          h('input', {
+            className: `dab-input ${className}`, type: 'number', min: 0, max: 256,
+            value: value === null || value === undefined ? '' : String(value),
+            'aria-label': label,
+            onChange: event => {
+              const raw = event?.target?.value ?? ''
+              // An empty field means UNLIMITED (null), never 0: 0 is a freeze.
+              onChange(raw === '' ? null : Math.max(0, Math.trunc(Number(raw))))
+            },
+          }))
+        // A QUANTITY, not a number of slots: a token pool is not capped at the
+        // concurrency ceiling, so it gets its own field without the 256 bound.
+        const quantityField = (className, label, value, onChange) => h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+          h('span', { className: 'dab-sa-field-label' }, label),
+          h('input', {
+            className: `dab-input ${className}`, type: 'number', min: 0,
+            value: value === null || value === undefined ? '' : String(value),
+            'aria-label': label,
+            onChange: event => {
+              const raw = event?.target?.value ?? ''
+              onChange(raw === '' ? null : Math.max(0, Math.trunc(Number(raw))))
+            },
+          }))
+        return h('div', { className: 'dab-sa-concurrency' },
+          h('dl', { className: 'dab-sa-dl dab-sa-concurrency-running' },
+            h('dt', null, dabT('superConcurrencyRunning')),
+            h('dd', null, `${Number(used.concurrency) || 0} / ${limitText(limits.maxConcurrent)}`)),
+          numberField('dab-sa-max-concurrent', dabT('superConcurrencyGlobal'), policy.maxConcurrent ?? null, value => onSetPolicy?.({ maxConcurrent: value })),
+          numberField('dab-sa-max-delegations', dabT('superConcurrencySupervision'), supervision.maxConcurrentDelegations ?? null, value => onSetPolicy?.({ supervision: { ...supervision, maxConcurrentDelegations: value } })),
+          numberField('dab-sa-max-agents', dabT('superConcurrencyAgents'), agents.maxConcurrentAgents ?? null, value => onSetPolicy?.({ superagent: { ...agents, maxConcurrentAgents: value } })),
+          providers.length === 0
+            ? null
+            : h('div', { className: 'dab-sa-provider-limits' },
+              providers.map(provider => numberField(`dab-sa-provider-${provider.id}`, provider.name ?? provider.id, providerLimits[provider.id] ?? null,
+                value => {
+                  const next = { ...providerLimits }
+                  if (value === null) delete next[provider.id]
+                  else next[provider.id] = value
+                  onSetPolicy?.({ providerConcurrency: next })
+                }))),
+          h('div', { className: 'dab-muted' }, dabT('superConcurrencyHint')),
+          // ---- LOT 11: the REAL-TIME load, published by the host ----
+          // The machine and the token pool decide; the hourly counter is no
+          // longer the lever, so it is shown last and named as the legacy guard.
+          (() => {
+            const load = dabSaObject(host?.load) ?? {}
+            const tokens = dabSaObject(load.tokens) ?? {}
+            const loadPolicy = dabSaObject(policy.load) ?? {}
+            const bindingLabel = {
+              tokens: dabT('superLoadBindingTokens'),
+              hardware: dabT('superLoadBindingHardware'),
+              operator: dabT('superLoadBindingOperator'),
+              none: dabT('superLoadBindingNone'),
+            }[load.binding] ?? dabT('superLoadBindingNone')
+            return h('div', { className: 'dab-sa-load' },
+              h('dl', { className: 'dab-sa-dl dab-sa-load-running' },
+                h('dt', null, dabT('superLoadRunning')),
+                h('dd', null, `${Number(load.running) || 0} / ${limitText(load.ceiling)}`),
+                h('dt', null, dabT('superLoadBinding')),
+                h('dd', { className: 'dab-sa-load-binding' }, bindingLabel),
+                h('dt', null, dabT('superLoadSpent')),
+                h('dd', { className: 'dab-sa-load-tokens' }, `${Number(tokens.spent) || 0}`)),
+              quantityField('dab-sa-token-budget', dabT('superLoadTokenBudget'), tokens.budget ?? loadPolicy.tokenBudget ?? null,
+                value => onSetPolicy?.({ load: { ...loadPolicy, tokenBudget: value } })),
+              h('button', {
+                className: 'dab-btn dab-sa-load-reset',
+                type: 'button',
+                onClick: () => onResetLoad?.(),
+              }, dabT('superLoadReset')),
+              quantityField('dab-sa-hourly-guard', dabT('superHourlyGuard'), supervision.maxDelegationsPerHour ?? null,
+                value => onSetPolicy?.({ supervision: { ...supervision, maxDelegationsPerHour: value } })),
+              h('div', { className: 'dab-muted' }, dabT('superLoadHint')))
+          })())
+      })()),
+    // Project digest: what was verified, what runs, what is blocked, per project.
+    (() => {
+      const digest = facts.attention?.digest
+      const rows = Array.isArray(digest?.projects) ? digest.projects.slice(0, 20) : []
+      if (rows.length === 0) return null
+      return dabSaSection(h, 'digest', dabT('superSettingsDigest'),
+        h('ul', { className: 'dab-sa-digest' }, rows.map(row => h('li', {
+          key: row.projectId, className: 'dab-sa-digest-row', 'data-project-id': row.projectId,
+        }, `${row.projectId} · ${row.verifiedDone} ${dabT('superDigestVerified')} · ${row.running} ${dabT('superDigestRunning')} · ${row.blocked} ${dabT('superDigestBlocked')}`))),
+        h('div', { className: 'dab-muted' }, dabT('superDigestHint')))
+    })(),
     dabSaSection(h, 'budget', dabT('superSettingsBudget'),
       budget === null
         ? dabSaReason(h, 'budget_not_published')
@@ -9813,7 +10815,24 @@ function DabSuperagentSettings({
           'aria-label': dabT('superSettingsNotifications'),
           onChange: event => onToggleNotifications?.(event?.target?.checked === true),
         }),
-        h('span', null, dabT('superNotificationsHint')))),
+        h('span', null, dabT('superNotificationsHint'))),
+      h('label', { className: 'dab-sa-check' },
+        h('input', {
+          type: 'checkbox', className: 'dab-sa-dnd',
+          checked: ui?.doNotDisturb === true,
+          'aria-label': dabT('superSettingsDnd'),
+          onChange: event => onToggleDnd?.(event?.target?.checked === true),
+        }),
+        h('span', null, dabT('superDndHint'))),
+      // A promotion is SUGGESTED, never applied: this proves the request.
+      facts.trust.filter(entry => entry.suggested === true).length === 0
+        ? null
+        : h('ul', { className: 'dab-sa-trust' }, facts.trust.filter(entry => entry.suggested === true).slice(0, 5).map(entry => h('li', {
+          key: `${entry.projectId}|${entry.action}`,
+          className: 'dab-sa-trust-row',
+          'data-action': entry.action,
+          'data-approvals': String(entry.approvals),
+        }, dabT('superTrustSuggested', { project: entry.projectId ?? '*', action: entry.action, n: entry.approvals }))))),
     dabSaSection(h, 'permissions', dabT('superSettingsPermissions'),
       // A refusal that applies to EVERY action (Stop, Observe mode) is said once
       // above the list instead of on each of the 13 rows.
@@ -9883,6 +10902,7 @@ function DabSuperagentInspector(props) {
     onClose, onOpenDetail, onDryRun, onToggleProject, onSetProjectLevel, onSetProjectPriority, onSetProjectModel, onConfirmAllProjects,
     onAddDirective, onRevokeDirective, onAnswerDecision, onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume,
     onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
+    onSetPolicy, onSetProjectConcurrency, onAnswerDecisions, onResetLoad,
   } = props
   const facts = dabSuperagentFacts(superagent, mandate, context)
   const [tab, setTab] = React.useState(typeof initialTab === 'string' ? initialTab : 'overview')
@@ -9956,6 +10976,7 @@ function DabSuperagentInspector(props) {
     ? h(DabSuperagentProjects, {
       superagent, mandate, host, context, dryRun, dryRunBusy, busy,
       onToggleProject, onSetProjectLevel, onSetProjectPriority, onSetProjectModel, onConfirmAllProjects, onDryRun,
+      onSetProjectConcurrency,
     })
     : activeTab === 'directives'
       ? h(DabSuperagentDirectives, { superagent, portfolio, busy, onAdd: onAddDirective, onRevoke: onRevokeDirective })
@@ -9963,10 +10984,12 @@ function DabSuperagentInspector(props) {
         ? h(DabSuperagentSettings, {
           superagent, mandate, capabilities, host, context, ui, busy, taskboard,
           onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
+  onSetPolicy, onToggleDnd, onResetLoad,
         })
         : h(DabSuperagentOverview, {
           superagent, mandate, capabilities, host, context, busy, workspace,
-          onOpenDetail, onAnswer: onAnswerDecision, decisionFilter, onDecisionFilter: setDecisionFilter,
+          onOpenDetail, onAnswer: onAnswerDecision, onAnswerBulk: onAnswerDecisions, attention: host?.attention,
+          decisionFilter, onDecisionFilter: setDecisionFilter,
         })
 
   return h('div', { className: 'dab-insp-overlay dab-sa-inspector', 'data-narrow': narrow === true ? 'true' : 'false' },
@@ -10477,6 +11500,7 @@ function dabReadUi() {
       taskStateFilter: filters.taskState,
       supervisionOpen: typeof parsed.supervisionOpen === 'boolean' ? parsed.supervisionOpen : base.supervisionOpen,
       notifications: typeof parsed.notifications === 'boolean' ? parsed.notifications : base.notifications,
+      doNotDisturb: typeof parsed.doNotDisturb === 'boolean' ? parsed.doNotDisturb : base.doNotDisturb,
     }
   } catch {
     return base
@@ -10634,7 +11658,10 @@ function dabMakePage(store, ctx) {
       filter: ui.filter, query: ui.query, project: ui.project, dismissed: dismissedSet,
       roles: hierarchy.roles, taskStates, taskTitles, filters, focus, selectedId,
       now: nowBucket * 60000 + 60000, aggregates,
-    }), [projection, aggregates, ui.filter, ui.query, ui.project, dismissedSet, hierarchy.roles, taskStates, taskTitles, filters, focus, selectedId, nowBucket])
+      // The host publishes whether the board is big enough for watching to stop
+      // paying off; the grid then defaults to exceptions only.
+      exceptionsOnly: snapshot.attention?.exceptionMode === true,
+    }), [projection, aggregates, ui.filter, ui.query, ui.project, dismissedSet, hierarchy.roles, taskStates, taskTitles, filters, focus, selectedId, nowBucket, snapshot.attention])
 
     // Every width keeps the projects overview: all projects, each foldable.
     const shownProjects = React.useMemo(() => {
@@ -10829,6 +11856,10 @@ function dabMakePage(store, ctx) {
       superagent,
       mandate,
       capabilities,
+      // The published attention queue: the band badges what needs a HUMAN.
+      attention: snapshot.attention,
+      // A notification must be wanted: notifications on AND not muted.
+      notificationsEnabled: ui.notifications !== false && ui.doNotDisturb !== true,
       stopped: superContext.stopped,
       busy,
       onStart: () => act('start', () => startEngineThen(() => store.startSuperagent())),
@@ -10960,11 +11991,17 @@ function dabMakePage(store, ctx) {
         onToggleProject: toggleProject,
         onSetProjectLevel: (projectId, level) => act('project-level', () => store.setProject(projectId, { level })),
         onSetProjectPriority: (projectId, priority) => act('project-priority', () => store.setProject(projectId, { priority })),
+        // Lot 5: the concurrency ceilings the launch gate reads, edited in place.
+        onSetProjectConcurrency: (projectId, maxConcurrent) => act('project-concurrency', () => store.setProject(projectId, { maxConcurrent })),
+        onSetPolicy: policy => act('policy', () => store.setPolicy(policy)),
+        onResetLoad: () => act('load-reset', () => store.resetLoad()),
         onSetProjectModel: (projectId, model) => act('project-model', () => store.setProject(projectId, { model })),
         onConfirmAllProjects: confirm => act('scope', () => store.setScope('all', undefined, confirm)),
         onAddDirective: input => act('directive', () => store.addDirective(input)),
         onRevokeDirective: id => act('revoke', () => store.revokeDirective(id)),
         onAnswerDecision: (id, optionId) => act('decision', () => store.answerDecision(id, optionId)),
+        // Lot 5b: one gesture for same-scope approvals; each grant stays single-use.
+        onAnswerDecisions: decisions => act('decisions-bulk', () => store.answerDecisions(decisions)),
         onSetLevel: level => act('level', () => store.setLevel(level)),
         onSetModel: model => actRef.current('model', () => store.setSuperagentModel(model)),
         onModelInfo: (provider, model) => store.modelInfo(provider, model),
@@ -10974,6 +12011,7 @@ function dabMakePage(store, ctx) {
         onSetAction: (action, enabled) => act('action', () => store.setAction(action, enabled)),
         onSetActionMode: (action, mode) => act('action', () => store.setActionMode(action, mode)),
         onToggleNotifications: value => setUi({ notifications: value === true }),
+        onToggleDnd: value => setUi({ doNotDisturb: value === true }),
         onStop: () => act('stop', async () => {
           const executions = await store.stop()
           const session = await store.stopSuperagent()

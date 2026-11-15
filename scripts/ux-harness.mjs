@@ -18,7 +18,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = resolve(process.argv[2] ?? join(ROOT, '.ux-harness'))
 
 const MODULES = [
-  'src/contracts/model.js', 'src/contracts/agent-roles.js', 'src/supervisor/projection.js',
+  'src/contracts/concurrency.js', 'src/contracts/model.js', 'src/contracts/decisions-schema.js', 'src/contracts/agent-roles.js', 'src/supervisor/projection.js',
   'src/supervisor/super-orchestrator.js', 'src/board/view.js', 'src/board/hierarchy.js',
   'src/board/overview.js', 'src/board/interaction.js', 'src/client/ui/strings.js',
   'src/client/ui/styles.js', 'src/client/ui/select.js', 'src/client/ui/agent-bots-assets.js', 'src/client/ui/avatar.js',

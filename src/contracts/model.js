@@ -10,6 +10,10 @@
  * @module dsh-agent-board/contracts/model
  */
 
+import {
+  normalizeConcurrencyLimit, normalizeHardwareFacts, normalizeHourlyRate, normalizeProviderConcurrency, normalizeTokenPool,
+} from './concurrency.js'
+
 export const SCHEMA_VERSION = 1
 
 /**
@@ -101,14 +105,34 @@ export const SUPERVISION_DEFAULT = Object.freeze({
   enabled: true,
   emblem: 'crown',
   // Board-launched assignments in flight (starting/running/recovering).
+  // `null` means no ceiling of its own; `0` is a real freeze (see
+  // `contracts/concurrency.js`), which the operator UI never lets you type.
   maxConcurrentDelegations: 2,
-  // Real delegation starts inside the sliding hour.
+  // Real delegation starts inside the sliding hour. Superseded by the load model
+  // (Lot 11) and kept only as an advanced safety valve; `null` = no rate limit.
   maxDelegationsPerHour: 6,
   // A delegated launch may not delegate again (depth 0 = a root delegation).
   maxDelegationDepth: 1,
   // A subtask in another project/workspace is a cross-project delegation.
   allowCrossProjectDelegation: false,
 })
+
+/**
+ * The real-time load slice (Lot 11).
+ *
+ * `tokenBudget` is the size of the pool the operator is willing to spend on the
+ * current work wave (`null` = no pool, nothing binds on money). `tokensPerTurn`
+ * is the price of one turn used to translate the pool into a session count:
+ * `null` means "measure it on this install, else use the documented fallback".
+ */
+export const LOAD_DEFAULT = Object.freeze({
+  tokenBudget: null,
+  tokensPerTurn: null,
+  hardware: null,
+})
+
+/** Journal marker of the load model migration, stored outside the policy. */
+export const LOAD_MODEL_VERSION = 1
 
 /** Default limits. Every one is configurable through the board API. */
 export const DEFAULT_POLICY = Object.freeze({
@@ -158,6 +182,19 @@ export const DEFAULT_POLICY = Object.freeze({
   allowUnverifiedHandoff: false,
   // Super Orchestrator supervision layer (pure policy; see SUPERVISION_DEFAULT).
   supervision: SUPERVISION_DEFAULT,
+  // Per-provider (or per provider/model) ceilings. Empty = no provider ceiling:
+  // the global concurrency and the provider's own rate limits still apply.
+  providerConcurrency: {},
+  // Super Agent runtime budget. These were literals in the host; they are policy
+  // now, persisted and validated like every other limit. Concurrency `null` =
+  // unlimited, `0` = freeze; the hourly figures are rates (0 = no call at all).
+  superagent: Object.freeze({
+    maxConcurrentAgents: 2,
+    cyclesPerHour: 6,
+    modelCallsPerHour: 12,
+  }),
+  // Real-time load slice (Lot 11): the token pool and the price of a turn.
+  load: LOAD_DEFAULT,
 })
 
 const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
@@ -165,7 +202,9 @@ const EXECUTION_BACKENDS = Object.freeze(['board', 'taskboard', 'contract'])
 
 export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
   const mode = isMode(input.mode) ? input.mode : fallback.mode
-  const maxConcurrent = clampInt(input.maxConcurrent, 0, 8, fallback.maxConcurrent)
+  // 0/`null` = unlimited. The hard ceiling only catches a typing mistake, and the
+  // default stays 2 so an upgrade changes nothing.
+  const maxConcurrent = normalizeConcurrencyLimit(input.maxConcurrent, fallback.maxConcurrent)
   const maxSwitches = clampInt(input.maxSwitches, 0, 5, fallback.maxSwitches)
   return {
     mode,
@@ -207,6 +246,95 @@ export function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     // Backward compatible: a persisted state.json written before the
     // supervision layer has no `supervision` key and receives the defaults.
     supervision: normalizeSupervision(input.supervision, fallback.supervision ?? SUPERVISION_DEFAULT),
+    providerConcurrency: normalizeProviderConcurrency(input.providerConcurrency ?? fallback.providerConcurrency),
+    superagent: normalizeSuperagentBudget(input.superagent, fallback.superagent ?? DEFAULT_POLICY.superagent),
+    load: normalizeLoad(input.load, fallback.load ?? LOAD_DEFAULT),
+  }
+}
+
+/**
+ * Normalize the load slice: a pool in tokens (`null` = no pool) and the price of
+ * one turn (`null` = measure it, else the documented fallback).
+ *
+ * A pool is never invented and never rounded up: `0` is a spent pool, a negative
+ * or unreadable value falls back to "no pool".
+ */
+export function normalizeLoad(input, fallback = LOAD_DEFAULT) {
+  const source = input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}
+  const previous = fallback !== null && typeof fallback === 'object' && !Array.isArray(fallback) ? fallback : LOAD_DEFAULT
+  return {
+    tokenBudget: normalizeTokenPool(source.tokenBudget, normalizeTokenPool(previous.tokenBudget, null)),
+    tokensPerTurn: normalizeTokenPool(source.tokensPerTurn, normalizeTokenPool(previous.tokensPerTurn, null)),
+    // `null` = measure the real machine; an explicit pair overrides the noisy
+    // `freemem()` reading and makes the admission testable without a box.
+    hardware: normalizeHardwareFacts(
+      source.hardware === undefined ? previous.hardware : source.hardware,
+    ),
+  }
+}
+
+/**
+ * Lift the two legacy ceilings that used to throttle the product, ONCE.
+ *
+ * A document written by 0.1.0 carries the documented defaults (2 concurrent and
+ * 6 starts per hour). They are replaced by `null` — "no ceiling of its own", the
+ * load model decides — while a value that is NOT the old default is preserved:
+ * an operator who typed 20 meant 20. The old values stay readable in the audit
+ * entry, and the hourly field remains an active advanced safety valve.
+ *
+ * @param {object} policy a normalized policy
+ * @param {{at?: number}} [options]
+ * @returns {{policy: object, migrated: boolean, from: {maxConcurrentDelegations: number|null, maxDelegationsPerHour: number|null}}}
+ */
+export function migratePolicyToLoadModel(policy, { at = null } = {}) {
+  const source = policy !== null && typeof policy === 'object' && !Array.isArray(policy) ? policy : {}
+  const supervision = source.supervision !== null && typeof source.supervision === 'object' ? source.supervision : {}
+  const lift = (value, legacyDefault) => {
+    // `Number(null)` is 0: an ALREADY lifted ceiling stays `null` instead of
+    // turning into a zero the operator never set.
+    if (value === null || value === undefined) return null
+    const number = Number(value)
+    if (!Number.isFinite(number)) return null
+    return number === legacyDefault ? null : number
+  }
+  const readCeiling = value => (value === null || value === undefined ? null : (Number.isFinite(Number(value)) ? Number(value) : null))
+  const from = {
+    // `Number(null)` is 0: an already-lifted ceiling must be reported as `null`,
+    // never as a zero that never existed.
+    maxConcurrentDelegations: readCeiling(supervision.maxConcurrentDelegations),
+    maxDelegationsPerHour: readCeiling(supervision.maxDelegationsPerHour),
+  }
+  const next = {
+    ...source,
+    supervision: {
+      ...supervision,
+      maxConcurrentDelegations: lift(supervision.maxConcurrentDelegations, SUPERVISION_DEFAULT.maxConcurrentDelegations),
+      maxDelegationsPerHour: lift(supervision.maxDelegationsPerHour, SUPERVISION_DEFAULT.maxDelegationsPerHour),
+    },
+  }
+  const migrated = next.supervision.maxConcurrentDelegations !== from.maxConcurrentDelegations
+    || next.supervision.maxDelegationsPerHour !== from.maxDelegationsPerHour
+  return { policy: migrated ? next : source, migrated, from, ...(Number.isFinite(Number(at)) ? { at: Number(at) } : {}) }
+}
+
+/**
+ * The Super Agent's own runtime budget, configurable through the policy.
+ *
+ * These were three literals in the host (`maxConcurrentAgents: 2`,
+ * `cyclesPerHour: 6`, `modelCallsPerHour: 12`), so an operator running dozens of
+ * projects could not let the agent keep up. 0 means unlimited for all three.
+ */
+export function normalizeSuperagentBudget(input, fallback = DEFAULT_POLICY.superagent) {
+  const source = input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}
+  const previous = fallback !== null && typeof fallback === 'object' ? fallback : DEFAULT_POLICY.superagent
+  return {
+    maxConcurrentAgents: normalizeConcurrencyLimit(source.maxConcurrentAgents, previous.maxConcurrentAgents),
+    // Hourly ceilings are RATE limits, not concurrency: they do not belong under
+    // the concurrency hard ceiling (fifty sessions legitimately exceed 256 calls).
+    // `null` = no rate limit, which is the default since the load model (Lot 11);
+    // an absent value still inherits the previous layer.
+    cyclesPerHour: normalizeHourlyRate(source.cyclesPerHour === undefined ? previous.cyclesPerHour : source.cyclesPerHour, null, 100_000),
+    modelCallsPerHour: normalizeHourlyRate(source.modelCallsPerHour === undefined ? previous.modelCallsPerHour : source.modelCallsPerHour, null, 100_000),
   }
 }
 
@@ -228,8 +356,13 @@ export function normalizeSupervision(input, fallback = SUPERVISION_DEFAULT) {
   return {
     enabled: source.enabled === undefined ? previous.enabled !== false : source.enabled === true,
     emblem: EMBLEMS.includes(source.emblem) ? source.emblem : (EMBLEMS.includes(previous.emblem) ? previous.emblem : SUPERVISION_DEFAULT.emblem),
-    maxConcurrentDelegations: clampInt(source.maxConcurrentDelegations, 0, 16, previous.maxConcurrentDelegations ?? SUPERVISION_DEFAULT.maxConcurrentDelegations),
-    maxDelegationsPerHour: clampInt(source.maxDelegationsPerHour, 0, 200, previous.maxDelegationsPerHour ?? SUPERVISION_DEFAULT.maxDelegationsPerHour),
+    maxConcurrentDelegations: normalizeConcurrencyLimit(source.maxConcurrentDelegations, previous.maxConcurrentDelegations ?? SUPERVISION_DEFAULT.maxConcurrentDelegations),
+    // An ABSENT value keeps the previous layer; an EXPLICIT `null` means "no rate
+    // limit", which is what the Lot 11 migration writes on purpose.
+    maxDelegationsPerHour: normalizeHourlyRate(
+      source.maxDelegationsPerHour === undefined ? previous.maxDelegationsPerHour : source.maxDelegationsPerHour,
+      null,
+    ),
     maxDelegationDepth: clampInt(source.maxDelegationDepth, 0, 8, previous.maxDelegationDepth ?? SUPERVISION_DEFAULT.maxDelegationDepth),
     allowCrossProjectDelegation: source.allowCrossProjectDelegation === undefined
       ? previous.allowCrossProjectDelegation === true

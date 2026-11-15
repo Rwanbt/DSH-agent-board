@@ -25,7 +25,8 @@ import { NOW, photoScenario, largeScenario } from './fixtures/sessions.js'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 const MODULES = [
-  'src/contracts/model.js',
+  'src/contracts/concurrency.js', 'src/contracts/model.js',
+  'src/contracts/decisions-schema.js',
   'src/contracts/agent-roles.js',
   'src/supervisor/projection.js',
   'src/supervisor/super-orchestrator.js',
@@ -653,4 +654,99 @@ test('the responsive contract documents every width the mockup targets', async (
   for (const width of ['1920', '1366', '1024', '768', '720', '600', '430', '390', '360', '320']) assert.match(source, new RegExp(width))
   assert.match(source, /bottom-left/)
   assert.match(source, /in_review/)
+})
+
+// ------------------------------------------------------- effective autonomy
+test('the banner shows the PUBLISHED effective level, not a stale identity copy', () => {
+  const projection = projectionFixture()
+  const { hierarchy } = cockpitModel(projection)
+  // The host now publishes the effective value; the stored identity level is a
+  // stale L0 (what `/mandate/level` used to leave behind).
+  const superagent = {
+    identity: { level: 'L0', status: 'idle', model: { provider: 'deepseek', model: 'v4' } },
+    autonomy: { level: 'L3', scope: 'selected', globalLevel: 'L3', projectLevel: 'L3', integrationCeiling: 'L4', projectEnabled: true },
+    session: { active: false, sessionId: null },
+    decisions: [],
+    directives: [],
+    activity: [],
+    budget: {},
+  }
+  const mandate = {
+    scopeMode: 'selected', selectedWorkspaces: ['ws:w-ravum'], level: 'L3', paused: false,
+    projects: { 'ws:w-ravum': { enabled: true, level: null } },
+    effectiveLevels: { 'ws:w-ravum': 'L3' },
+    autonomy: superagent.autonomy,
+  }
+  const facts = cockpit.dabSuperagentFacts(superagent, mandate, {})
+  assert.equal(facts.level, 'L3', 'the effective level wins over the stored identity level')
+  assert.equal(facts.scope, 'selected')
+
+  const tree = render(cockpit.DabSuperOrchestratorBar({
+    workspace: hierarchy.workspace, totals: hierarchy.totals, projects: hierarchy.projects, orchestrators: hierarchy.orchestrators,
+    mode: 'supervised', open: true, onToggle: () => {}, onSelect: () => {}, compact: false,
+    superagent, mandate, capabilities: null, stopped: false, busy: false,
+    onStart: () => {}, onPause: () => {}, onStop: () => {}, onResume: () => {},
+  }))
+  assert.equal(byClass(tree, 'dab-level')[0].props['data-level'], 'L3')
+
+  // An older host publishes no autonomy object: the legacy fields still render.
+  const legacyFacts = cockpit.dabSuperagentFacts({ identity: { level: 'L1' }, decisions: [], directives: [], activity: [] }, { level: 'L1', projects: {} }, {})
+  assert.equal(legacyFacts.level, 'L1')
+  assert.equal(legacyFacts.scope, null)
+
+  // A project row uses the published per-project value when the host provides it.
+  const rows = cockpit.dabProjectPolicyRows(
+    { workspaces: [{ id: 'ws:w-ravum', title: 'Ravum' }] },
+    { identity: { model: null } },
+    { ...mandate, level: 'L3', effectiveLevels: { 'ws:w-ravum': 'L1' }, projects: { 'ws:w-ravum': { enabled: true, level: 'L1' } } },
+  )
+  assert.equal(rows[0].effectiveLevel, 'L1')
+})
+
+// ---------------------------------------------------- mobile band (Lot 6)
+test('mobile band: one row, one exception badge, <= 64 px collapsed', () => {
+  const projection = projectionFixture()
+  const { hierarchy } = cockpitModel(projection)
+  const attention = {
+    items: [{ id: 'att-1', severity: 'blocking', reason: 'decision_pending', projectId: 'ws:w-ravum', title: 'Approve the launch', costToResolveSeconds: 30, ageMs: 1_000, occurrences: 1, suggestedAction: 'Approve or reject.' }],
+    counters: { total: 1, blocking: 1, high: 0, notify: 1, costSeconds: 30 },
+    exceptionMode: true,
+    kpis: { interventionsPerHour: 2, medianTimeToDecisionMs: 25_000, sessionsPerOperator: 50, itemsBlockedOnHuman: 1 },
+  }
+  const superagent = { identity: { level: 'L3', status: 'idle', model: { provider: 'deepseek', model: 'v4' } }, decisions: [], directives: [], activity: [], budget: {}, attention }
+  const mandate = { scopeMode: 'selected', selectedWorkspaces: ['ws:w-ravum'], level: 'L3', paused: false, projects: { 'ws:w-ravum': { enabled: true, level: null } }, effectiveLevels: {} }
+  let opened = 0
+  const tree = render(cockpit.DabSuperOrchestratorBar({
+    workspace: hierarchy.workspace, totals: hierarchy.totals, projects: hierarchy.projects, orchestrators: hierarchy.orchestrators,
+    mode: 'supervised', open: false, onToggle: () => {}, onSelect: () => {}, compact: true,
+    superagent, mandate, capabilities: null, attention, stopped: false, busy: false,
+    onStart: () => {}, onPause: () => {}, onStop: () => {}, onResume: () => {}, onOpenAttention: () => { opened += 1 },
+  }))
+  // The badge is the ONLY thing the compact band adds: one tap, with the count.
+  const badge = byClass(tree, 'dab-attention-badge')
+  assert.equal(badge.length, 1)
+  assert.equal(badge[0].type, 'button')
+  assert.equal(badge[0].props['data-count'], '1')
+  assert.equal(badge[0].props['data-severity'], 'blocking')
+  badge[0].props.onClick()
+  assert.equal(opened, 1)
+  // No badge without a real pending exception.
+  const calm = render(cockpit.DabSuperOrchestratorBar({
+    workspace: hierarchy.workspace, totals: hierarchy.totals, projects: hierarchy.projects, orchestrators: hierarchy.orchestrators,
+    mode: 'supervised', open: false, onToggle: () => {}, onSelect: () => {}, compact: true,
+    superagent: { ...superagent, attention: { items: [], counters: { total: 0 }, exceptionMode: false } },
+    mandate, capabilities: null, stopped: false, busy: false,
+    onStart: () => {}, onPause: () => {}, onStop: () => {}, onResume: () => {}, onOpenAttention: () => {},
+  }))
+  assert.equal(byClass(calm, 'dab-attention-badge').length, 0, 'a healthy board shows no badge')
+
+  // The CSS contract: at <= 430 px the head is a single 56 px row and the badge is
+  // the only counter left. The pixel height itself is NOT measured here (no
+  // browser in this suite) — that is the documented UNVERIFIED visual step.
+  const css = cockpit.DAB_CSS
+  const mobile = css.slice(css.indexOf('@container dab (max-width: 430px)'))
+  assert.match(mobile, /\.dab-band-head \{[^}]*flex-wrap: nowrap/)
+  assert.match(mobile, /padding: 8px 30px 8px 10px/)
+  assert.match(mobile, /\.dab-band-head \.dab-super-sub,[\s\S]*?display: none/)
+  assert.match(mobile, /\.dab-attention-badge \{ display: inline-flex; \}/)
 })

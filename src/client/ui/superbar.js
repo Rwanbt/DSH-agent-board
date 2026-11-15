@@ -92,7 +92,7 @@ function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, o
 
 function DabSuperOrchestratorBarImpl({
   workspace, totals, projects, orchestrators: orchestratorList, mode, open, onToggle, onSelect, compact,
-  superagent, mandate, capabilities, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenProjects,
+  superagent, mandate, capabilities, attention, notificationsEnabled, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenAttention, onOpenProjects,
   projectRows, onToggleProject, onSetProjectLevel, onOpenSettings,
 }) {
   const h = React.createElement
@@ -120,6 +120,8 @@ function DabSuperOrchestratorBarImpl({
     paused: mandate?.paused === true,
     scopeMode: typeof mandate?.scopeMode === 'string' ? mandate.scopeMode : null,
     requiresConfiguration: mandate?.requiresConfiguration === true,
+    // The published attention queue (Lot 5b): the band badges what needs a human.
+    attention: attention ?? null,
   }
   const stoppedByOperator = stopped === true || superagent?.identity?.status === 'stopped'
   const facts = dabSuperagentFacts(superagent, mandate, context)
@@ -242,6 +244,22 @@ function DabSuperOrchestratorBarImpl({
       h('span', { className: 'dab-super-fact dab-super-level' }, h('span', { className: 'dab-super-fact-label' }, dabT('superLevelLabel')), dabLevelBadge(h, facts.level) ?? levelText),
       projectsText === null ? null : h('span', { className: 'dab-super-fact dab-super-enabled' }, projectsText),
       h('span', { className: 'dab-super-fact dab-super-activity', title: activityText }, activityText),
+      facts.attentionCount > 0
+        ? h('button', {
+          type: 'button',
+          className: 'dab-attention-badge',
+          'data-count': String(facts.attentionCount),
+          'data-severity': facts.attentionItems[0]?.severity ?? 'normal',
+          // The badge always counts; the NOTIFICATION flag says whether this entry
+          // may wake the operator at all (high/blocking, notifications on, not DND).
+          'data-notify': notificationsEnabled === true && facts.attentionItems.some(entry => entry.notify === true) ? 'true' : 'false',
+          'aria-label': `${dabT('superAttentionLabel')} : ${facts.attentionCount}`,
+          title: facts.attentionItems[0]?.title ?? dabT('superAttentionLabel'),
+          onClick: onOpenAttention ?? onOpenSuperagent,
+        },
+        h('span', { className: 'dab-super-decisions-dot', 'aria-hidden': 'true' }),
+        String(facts.attentionCount))
+        : null,
       facts.pendingCount > 0
         ? h('button', {
           type: 'button',
@@ -259,7 +277,7 @@ function DabSuperOrchestratorBarImpl({
   controls,
 
   open === true && Array.isArray(projectRows) && projectRows.length > 0
-    ? dabSuperProjects(h, { rows: projectRows, busy, onToggleProject, onSetProjectLevel, onOpenProjects: onOpenProjects ?? onOpenSuperagent, onOpenSettings, needsProjects, globalLevel: typeof mandate?.level === 'string' ? mandate.level : facts.level, launchGranted: mandate?.actions?.launch === true })
+    ? dabSuperProjects(h, { rows: projectRows, busy, onToggleProject, onSetProjectLevel, onOpenProjects: onOpenProjects ?? onOpenSuperagent, onOpenSettings, needsProjects, globalLevel: typeof facts.autonomy?.globalLevel === 'string' ? facts.autonomy.globalLevel : (typeof mandate?.level === 'string' ? mandate.level : facts.level), launchGranted: mandate?.actions?.launch === true })
     : null,
 
   // Mini orchestrator avatars: real agents only. A project without a declared
@@ -306,6 +324,9 @@ const DabSuperOrchestratorBar = React.memo(DabSuperOrchestratorBarImpl, (a, b) =
   && a.onResume === b.onResume
   && a.onOpenSuperagent === b.onOpenSuperagent
   && a.onOpenDecisions === b.onOpenDecisions
+  && a.onOpenAttention === b.onOpenAttention
+  && a.attention === b.attention
+  && a.notificationsEnabled === b.notificationsEnabled
   && a.onOpenProjects === b.onOpenProjects
   && a.projectRows === b.projectRows
   && a.onToggleProject === b.onToggleProject

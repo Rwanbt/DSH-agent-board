@@ -167,6 +167,22 @@ export function ensureAssignment(assignments, draft) {
     endedAt: null,
     error: null,
     checkpoint: null,
+    // ------------------------------------------------ turn end is not work done
+    // `turnFinished`/`workVerified` are two DIFFERENT facts: a turn ending is
+    // observable, a verified result is proven. `outcome` stays the raw turn kind
+    // for the audit trail; `outcomeKind` is the host's verdict.
+    turnFinished: false,
+    workVerified: false,
+    outcomeKind: null,
+    continuations: 0,
+    // Launch-time baselines used to PROVE a change happened during the attempt.
+    // Null means "no baseline was captured", which never counts as evidence.
+    startHead: typeof draft.startHead === 'string' && draft.startHead !== '' ? draft.startHead : null,
+    startCardStatus: typeof draft.startCardStatus === 'string' && draft.startCardStatus !== '' ? draft.startCardStatus : null,
+    evidence: null,
+    reopenedAt: null,
+    reopenReason: null,
+    needsHuman: false,
   }
   return { created: true, assignment }
 }

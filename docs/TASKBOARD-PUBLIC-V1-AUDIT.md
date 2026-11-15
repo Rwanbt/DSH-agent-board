@@ -23,7 +23,7 @@ Nothing below claims a live authenticated success that was not observed.
 | Agent Board repo | `D:\App\DSH-agent-board`, branch `feat/agent-board-superagent` |
 | Task Board repo | `D:\App\dsh-taskboard`, branch `feat/universal-sync`, HEAD `e6aaece` |
 | Task Board version | `0.12.0` (`package.json`) |
-| Installed plugin link | `C:\Users\barat\.dsh\profiles\desktop\node_modules\dsh-taskboard` → `D:\App\dsh-taskboard` |
+| Installed plugin link | `C:\Users\<user>\.dsh\profiles\desktop\node_modules\dsh-taskboard` → `D:\App\dsh-taskboard` |
 | Running GUI origin | `http://127.0.0.1:62124` (PID 27792) |
 | Public API base | `/dsh-taskboard/public/v1` |
 

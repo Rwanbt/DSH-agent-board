@@ -1,0 +1,64 @@
+# CI proves the same three invariants the repository promises its users:
+#
+#   1. `npm run check` — the host entry point and the generated client bundle
+#      parse, and the whole `node --test` suite passes. Zero runtime
+#      dependencies, so nothing has to be installed for it to run.
+#   2. `src/client.js` is generated from `src/client/**` by
+#      `scripts/build-client.mjs`, never hand-edited: the bundle is rebuilt from
+#      scratch and the tree must stay byte-identical.
+#   3. the tree is committed cleanly: `git diff --check` rejects trailing
+#      whitespace and conflict markers left behind by an edit or a build.
+#
+# The job is read-only and cancellation-friendly: a superseded run on the same
+# ref is cancelled instead of queueing two full suites.
+name: ci
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          # 22 is the concrete LTS value; it tracks `engines.node: ">=22"` in
+          # package.json. Keep the two in sync when the floor moves.
+          node-version: 22
+
+      - name: install (only when a lockfile is committed)
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            echo "no lockfile: no install needed (zero dependencies)"
+          fi
+
+      - name: check (syntax + full test suite)
+        run: npm run check
+
+      # The bundle must be built from src/, never hand-edited. Rebuilding and
+      # diffing makes any drift between the modules and the shipped artifact a
+      # hard failure instead of a review miss.
+      - name: client bundle is generated from src/
+        run: |
+          npm run client
+          git diff --exit-code src/client.js
+
+      - name: no whitespace errors in the tree
+        run: git diff --check

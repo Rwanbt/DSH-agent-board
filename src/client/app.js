@@ -80,6 +80,7 @@ function dabReadUi() {
       taskStateFilter: filters.taskState,
       supervisionOpen: typeof parsed.supervisionOpen === 'boolean' ? parsed.supervisionOpen : base.supervisionOpen,
       notifications: typeof parsed.notifications === 'boolean' ? parsed.notifications : base.notifications,
+      doNotDisturb: typeof parsed.doNotDisturb === 'boolean' ? parsed.doNotDisturb : base.doNotDisturb,
     }
   } catch {
     return base
@@ -237,7 +238,10 @@ function dabMakePage(store, ctx) {
       filter: ui.filter, query: ui.query, project: ui.project, dismissed: dismissedSet,
       roles: hierarchy.roles, taskStates, taskTitles, filters, focus, selectedId,
       now: nowBucket * 60000 + 60000, aggregates,
-    }), [projection, aggregates, ui.filter, ui.query, ui.project, dismissedSet, hierarchy.roles, taskStates, taskTitles, filters, focus, selectedId, nowBucket])
+      // The host publishes whether the board is big enough for watching to stop
+      // paying off; the grid then defaults to exceptions only.
+      exceptionsOnly: snapshot.attention?.exceptionMode === true,
+    }), [projection, aggregates, ui.filter, ui.query, ui.project, dismissedSet, hierarchy.roles, taskStates, taskTitles, filters, focus, selectedId, nowBucket, snapshot.attention])
 
     // Every width keeps the projects overview: all projects, each foldable.
     const shownProjects = React.useMemo(() => {
@@ -432,6 +436,10 @@ function dabMakePage(store, ctx) {
       superagent,
       mandate,
       capabilities,
+      // The published attention queue: the band badges what needs a HUMAN.
+      attention: snapshot.attention,
+      // A notification must be wanted: notifications on AND not muted.
+      notificationsEnabled: ui.notifications !== false && ui.doNotDisturb !== true,
       stopped: superContext.stopped,
       busy,
       onStart: () => act('start', () => startEngineThen(() => store.startSuperagent())),
@@ -563,11 +571,17 @@ function dabMakePage(store, ctx) {
         onToggleProject: toggleProject,
         onSetProjectLevel: (projectId, level) => act('project-level', () => store.setProject(projectId, { level })),
         onSetProjectPriority: (projectId, priority) => act('project-priority', () => store.setProject(projectId, { priority })),
+        // Lot 5: the concurrency ceilings the launch gate reads, edited in place.
+        onSetProjectConcurrency: (projectId, maxConcurrent) => act('project-concurrency', () => store.setProject(projectId, { maxConcurrent })),
+        onSetPolicy: policy => act('policy', () => store.setPolicy(policy)),
+        onResetLoad: () => act('load-reset', () => store.resetLoad()),
         onSetProjectModel: (projectId, model) => act('project-model', () => store.setProject(projectId, { model })),
         onConfirmAllProjects: confirm => act('scope', () => store.setScope('all', undefined, confirm)),
         onAddDirective: input => act('directive', () => store.addDirective(input)),
         onRevokeDirective: id => act('revoke', () => store.revokeDirective(id)),
         onAnswerDecision: (id, optionId) => act('decision', () => store.answerDecision(id, optionId)),
+        // Lot 5b: one gesture for same-scope approvals; each grant stays single-use.
+        onAnswerDecisions: decisions => act('decisions-bulk', () => store.answerDecisions(decisions)),
         onSetLevel: level => act('level', () => store.setLevel(level)),
         onSetModel: model => actRef.current('model', () => store.setSuperagentModel(model)),
         onModelInfo: (provider, model) => store.modelInfo(provider, model),
@@ -577,6 +591,7 @@ function dabMakePage(store, ctx) {
         onSetAction: (action, enabled) => act('action', () => store.setAction(action, enabled)),
         onSetActionMode: (action, mode) => act('action', () => store.setActionMode(action, mode)),
         onToggleNotifications: value => setUi({ notifications: value === true }),
+        onToggleDnd: value => setUi({ doNotDisturb: value === true }),
         onStop: () => act('stop', async () => {
           const executions = await store.stop()
           const session = await store.stopSuperagent()

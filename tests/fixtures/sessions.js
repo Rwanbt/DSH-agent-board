@@ -19,7 +19,7 @@ export function row(id, extra = {}) {
     running: false,
     blank: false,
     updatedAt: NOW - 30 * HOUR,
-    cwd: 'C:\\Users\\me\\default-workspace',
+    cwd: 'C:\\Users\\<user>\\default-workspace',
     projectionValues: {
       modelSelection: { lastUsed: { provider: 'opencode-go', model: 'deepseek-v4.1-flash' }, next: null },
       turnOutline: [{ turn: 1, prompt: 'p', response: `Answer of ${id}.\nAll tests pass.` }],
@@ -84,7 +84,7 @@ export function photoScenario() {
     hostState: { turnEnd, acks: {}, previews: {}, assignments: [] },
     workspaces: {
       items: [
-        { workspaceId: 'w-dw', title: 'default-workspace', path: 'C:\\Users\\me\\default-workspace', sessionIds: ids.filter(id => id.startsWith('old-') || id.startsWith('unread-') || ['dw-live', 'asking', 'failed-new'].includes(id)) },
+        { workspaceId: 'w-dw', title: 'default-workspace', path: 'C:\\Users\\<user>\\default-workspace', sessionIds: ids.filter(id => id.startsWith('old-') || id.startsWith('unread-') || ['dw-live', 'asking', 'failed-new'].includes(id)) },
         { workspaceId: 'w-ravum', title: 'Ravum', path: 'D:\\App\\Ravum', sessionIds: ['ravum-goal'] },
         { workspaceId: 'w-gone', title: 'Deleted', path: 'Z:\\does-not-exist', sessionIds: ['not-a-session'] },
       ],

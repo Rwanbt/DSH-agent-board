@@ -90,7 +90,10 @@ dans les limites de votre mandat, exécute.
   agent IA) qui agrège des faits réels projet/agent/tâche, expose les blocages et
   dépendances inter-projets, propose (sans jamais appliquer) des réaffectations,
   et encadre les délégations du board avec des limites de
-  concurrence/heure/profondeur/cycle. Les vues `Projets` et `Hiérarchie`
+  concurrence/profondeur, puis n'admet un lancement qu'en fonction de la charge
+  réelle : ce que la machine peut porter et ce que votre pool de jetons restant
+  peut payer, la contrainte qui mord étant publiée (voir
+  `docs/adr/0003-load-in-real-time.md`). Les vues `Projets` et `Hiérarchie`
   conservent les filtres rôle/statut/état de tâche.
 - **Cartes et branches** — sessions issues du snapshot natif `sessions.list`,
   sous-agents depuis la projection `subagentCatalog` et/ou `parentId`, regroupés
@@ -499,3 +502,37 @@ affirmation.
 ## Licence
 
 MIT — voir [LICENSE](LICENSE) et [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Ce que change la 0.2.0 pour l'opérateur
+
+- **La concurrence devient de la configuration.** `policy.maxConcurrent`,
+  `policy.supervision.maxConcurrentDelegations`, `policy.superagent.*`,
+  `mandate.projects[id].maxConcurrent` et `policy.providerConcurrency` sont
+  configurables. `null` signifie ILLIMITÉ, `0` garde son sens de gel, et les défauts
+  ne bougent pas (2 / 2 / 6 / 12) : une mise à jour ne change rien en silence. Le
+  verrou est l'arbre de travail : des worktrees distincts tournent en parallèle, un
+  répertoire partagé sérialise, et une limite de provider MET EN FILE au lieu
+  d'échouer.
+- **L'inbox des décisions est enfin visible.** Les décisions sont publiées selon un
+  contrat versionné `{schemaVersion, pending, recent, summary}` ; le panneau les
+  compte et les affiche, un ancien host reste lisible, une approbation reste à usage
+  unique, et une réponse groupée traite plusieurs questions de même portée en un
+  geste.
+- **Une fin de tour n'est pas du travail terminé.** Un tour ne passe `done` qu'avec
+  une preuve (un nouveau commit, un rapport `{status:"done", summary,
+  testsRun|commit}` validé, ou une carte réellement déplacée par l'agent). Un tour
+  tronqué (`max-tokens`) est repris jusqu'à 3 fois, puis escaladé vers la file
+  d'attention ; `cancelled`, `error` et les fins inconnues ne valent jamais `done`.
+  `POST /api/v2/assignments/:id/reopen` remet un item dans le pool.
+- **Un seul opérateur, beaucoup de sessions.** La file d'attention agrège ce qui
+  exige un HUMAIN (décisions, travail non vérifié, blocages permission/arbre/
+  budget), dédupliqué par cause racine et trié par ce qu'il débloque ; une session
+  saine ne produit aucune entrée. Les KPI (`interventionsPerHour`,
+  `medianTimeToDecisionMs`, `sessionsPerOperator`, `itemsBlockedOnHuman`) sont
+  publiés dans `/state`.
+- **Un seul niveau d'autonomie effectif.** `/mandate/level` met désormais à jour ce
+  que tous les panneaux affichent, parce que l'hôte publie la valeur calculée
+  (`autonomy`) au lieu de trois copies qui pouvaient diverger.
+
+Voir `CHANGELOG.md`, `docs/RELEASE-CHECKLIST.md`, `docs/adr/0001-*`,
+`docs/adr/0002-*` et l'addendum 0.2.0 de `docs/LIMITATIONS.md`.
