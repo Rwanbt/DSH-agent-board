@@ -227,7 +227,7 @@ une intégration du host *avec un faux host*.
    (`host-integration.test.js:177,239,275,299`). Si `DSH_HOME` était **non
    défini** au départ (`previousHome === undefined`), Node convertit
    l'affectation en la chaîne `"undefined"`. Ici `DSH_HOME` vaut
-   `C:\Users\barat\.dsh` (donc la restauration est correcte), mais sur une autre
+   `C:\Users\<user>\.dsh` (donc la restauration est correcte), mais sur une autre
    machine le dernier test laisserait `DSH_HOME="undefined"`. Sans conséquence
    inter-fichiers (Node lance chaque fichier dans son propre process), mais
    c'est une hygiène fragile et un piège de portabilité.
@@ -252,16 +252,16 @@ moyen** sur CI chargée, concentré sur les points ci-dessus.
 |---|---|
 | `Get-Command dsh` | **rien** (introuvable) |
 | `where.exe dsh` | « impossible de trouver des fichiers pour le(s) modèle(s) spécifié(s) » |
-| `& "C:\Users\barat\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" --version` | `0.2.2-rc.1` |
+| `& "C:\Users\<user>\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" --version` | `0.2.2-rc.1` |
 | `dsh.cmd --help` | `--profile <name>`, `--from-default-profile`, `--patch`, `--dump-config` ; texte : « the profile under `$DSH_HOME/profiles` to boot » |
 | `dsh.cmd web --help` | `--host`, `--no-open`, `--port <port>` (**0 = port libre**), `--public-url`, `--tls-*` |
-| `dsh.cmd --profile web --dump-config` | 46 946 caractères ; chemins sous `C:\Users\barat\.dsh\profiles\web` ; webserver `port: ... ?? 3080` ; mobile `listenPort: 3443` |
+| `dsh.cmd --profile web --dump-config` | 46 946 caractères ; chemins sous `C:\Users\<user>\.dsh\profiles\web` ; webserver `port: ... ?? 3080` ; mobile `listenPort: 3443` |
 | `dsh.cmd plugin --help` | « manage a profile's plugins by forwarding the remaining arguments to pnpm » ; profil « initialized on first use » |
-| `Get-ChildItem C:\Users\barat\.dsh\profiles` | `desktop`, `web` — **aucun profil isolé/test existant** |
+| `Get-ChildItem C:\Users\<user>\.dsh\profiles` | `desktop`, `web` — **aucun profil isolé/test existant** |
 | Taille des profils | `desktop` : **237,6 Mo / 5 456 fichiers** ; `web` : **0,0 Mo / 12 fichiers** |
 | `desktop/package.json` | bundles : base, web-app, agent-team, forge, plugin-market, inspector, cot-translation, claude-code, quota, mobile, anthropic, **dsh-taskboard**, **dsh-agent-board** |
 | `web/package.json` | bundles : base, web-app, `dsh-mobile` uniquement — **ni Agent Board ni Task Board** |
-| `$env:DSH_HOME` | `C:\Users\barat\.dsh` |
+| `$env:DSH_HOME` | `C:\Users\<user>\.dsh` |
 | `Get-NetTCPConnection -State Listen` (62337/3080/3443) | **127.0.0.1:62337, PID 2096** (l'instance desktop vivante) ; 3080 et 3443 libres |
 | `Get-Command ollama` | présent (`...\Programs\Ollama\ollama.exe`) ; process **non lancé**, `http://127.0.0.1:11434` **refusé** |
 | `dsh --profile web --dump-config-schema` | 958 550 caractères ; schéma provider avec **`baseURL` configurable** par provider et protocoles `openai-completions`/`openai-responses` |
@@ -304,7 +304,7 @@ Ce qui existe et rend l'E2E réalisable sans toucher au profil réel :
 
 1. Créer `D:\App\dsh-e2e-home` (hors dépôt) et l'utiliser comme `DSH_HOME`.
 2. Bootstrap du profil **sans le monter** : `dsh --profile e2e --from-default-profile web --dump-config` (crée le profil depuis le template embarqué puis sort), ou première utilisation de `dsh plugin --profile e2e …` qui initialise le profil.
-3. `dsh plugin --profile e2e add link:D:/App/DSH-agent-board link:C:/Users/barat/Documents/deepseek-harness/default-workspace/dsh-taskboard`.
+3. `dsh plugin --profile e2e add link:D:/App/DSH-agent-board link:C:/Users/<user>/Documents/deepseek-harness/default-workspace/dsh-taskboard`.
 4. Ajouter `dsh-agent-board` et `dsh-taskboard` dans `dsh.profile.bundles` du
    `package.json` du profil `e2e`.
 5. Configurer le provider sur `baseURL: http://127.0.0.1:<port-factice>` (serveur
@@ -330,7 +330,7 @@ dans un `DSH_HOME` neuf** — d'où l'obligation soit d'un provider factice
 |---|---|
 | `node --test tests/` | Portable (Node ≥ 22, `engines` du `package.json`). Un fichier de test par process, chemins résolus par Node |
 | `npm run check` | `node --check a && node --check b && node --test tests/` : `&&` est interprété par npm (cmd.exe sous Windows, sh sous Linux) → portable. Ne vérifie que 2 fichiers sur 25, mais tous les modules testés sont importés donc un syntax error échouerait |
-| Chemins de fixtures | Fenêtrés (`D:\App\...`, `C:\Users\me\...`) mais traités comme **chaînes** ; `normalizePath()` gère `\` et `/`. Sur Linux les mêmes assertions passent, mais la sémantique testée (insensibilité à la casse, séparateurs) est celle de Windows |
+| Chemins de fixtures | Fenêtrés (`D:\App\...`, `C:\Users\<user>\...`) mais traités comme **chaînes** ; `normalizePath()` gère `\` et `/`. Sur Linux les mêmes assertions passent, mais la sémantique testée (insensibilité à la casse, séparateurs) est celle de Windows |
 | `scripts/smoke-host.mjs` | Shebang `#!/usr/bin/env node` (POSIX) mais toujours invoqué via `node scripts/smoke-host.mjs` (`npm run smoke`) → sans effet sous Windows ; aucun `chmod`, aucun `sh -c` |
 | Divers | `tmpdir()`, `join`, `rm(...,{maxRetries})`, `new URL(..., import.meta.url)` : portables. Aucun `/tmp`, aucun `chmod`, aucune commande shell externe (sauf `git` via `execFile` dans le code, non exercé) |
 | Node | `structuredClone` (17+), `performance.now` global, `Array.prototype.at` : OK ≥ 22 |

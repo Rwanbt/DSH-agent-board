@@ -96,7 +96,7 @@ Le rouge `board-not-idempotent:projects/ravum-flow/BOARD.md` venait d’une proj
 
 ### 3. État du host au moment du contrôle
 
-PID 1264 (GUI) démarré le 13/11/2026 à 16:37:39 ; `src/host/index.js` modifié à 20:00:19 : le host en cours d’exécution n’a pas chargé la Suite 2. Le plugin du profil est un lien symbolique `C:\Users\barat\.dsh\profiles\desktop\node_modules\dsh-agent-board` → `D:\App\DSH-agent-board`, donc un redémarrage charge bien le nouveau code hôte, et le bundle client servi après rechargement est celui du dépôt (SHA-256 identiques). La recette live reste à exécuter par l’opérateur (redémarrage + 4 étapes ci-dessus).
+PID 1264 (GUI) démarré le 13/11/2026 à 16:37:39 ; `src/host/index.js` modifié à 20:00:19 : le host en cours d’exécution n’a pas chargé la Suite 2. Le plugin du profil est un lien symbolique `C:\Users\<user>\.dsh\profiles\desktop\node_modules\dsh-agent-board` → `D:\App\DSH-agent-board`, donc un redémarrage charge bien le nouveau code hôte, et le bundle client servi après rechargement est celui du dépôt (SHA-256 identiques). La recette live reste à exécuter par l’opérateur (redémarrage + 4 étapes ci-dessus).
 
 ## Décision du 15/11/2026 — le prompt d’exécution est un champ propriétaire
 

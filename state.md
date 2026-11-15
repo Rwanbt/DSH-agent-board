@@ -77,16 +77,15 @@ questions. It is updated as lots land; it is not a product document.
    - The bundle duplicates `normalizePolicy`/`normalizeSupervision` verbatim:
      `src/client.js:111-238` vs `src/contracts/model.js:100-238`.
 
-6. **Personal traces.** `git grep -i -E 'barat|C:\\Users|/home/'` matches:
+6. **Personal traces (Lot 7 — CLOSED).** The real account name was found in
    `docs/GOAL2-DELIVERY.md`, `docs/TASKBOARD-PUBLIC-V1-AUDIT.md`,
    `docs/audit/C-failover-integrations.md`, `docs/audit/D-tests-coverage.md`,
    `docs/audit/PERMISSIONS-AUTONOMY-FIXES-2026-11-13.md`,
    `docs/e2e/GOAL3-E2E-2026-11-10.json`, `docs/e2e/GOAL3-E2E-2026-11-12.json`,
-   `docs/e2e/GOAL3-E2E.md`, `scripts/e2e/run-e2e.mjs`.
-   Two extra files carry a `/home/` or `C:\Users\` path that is a **generic
-   placeholder**, not a real trace: `tests/fixtures/sessions.js:22,87`
-   (`C:\Users\me\default-workspace`). They are normalised to
-   `C:\Users\<user>\…` so the Lot 7 guard can stay strict.
+   `docs/e2e/GOAL3-E2E.md`, `scripts/e2e/run-e2e.mjs`, plus a generic placeholder
+   home in `tests/fixtures/sessions.js`. Every account name is now the `<user>`
+   placeholder (the technical chain is preserved), and
+   `tests/no-personal-traces.test.js` fails if one comes back.
 
 7. **No `.github/`** directory exists → zero CI, as stated in the goal.
 

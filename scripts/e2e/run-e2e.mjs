@@ -53,7 +53,7 @@ import { startFakeTaskBoard } from './fake-taskboard-server.mjs'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..')
 const DSH_CLI = process.platform === 'win32'
-  ? 'C:\\Users\\barat\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd'
+  ? 'C:\\Users\\<user>\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd'
   : 'dsh'
 const PROFILE = 'e2e'
 const BOARD_API = '/dsh-agent-board/api/v2'
@@ -119,7 +119,7 @@ let serverOutput = ''
  * Build a single cmd.exe command line. The DSH CLI is a `.cmd` shim living under
  * a path with spaces, so the executable MUST be quoted: passing it as argv to
  * `spawn(..., { shell: true })` splits at the first space and fails with
- * "'C:\Users\...\DeepSeek' is not recognized".
+ * "'C:\Users\<user>\...\DeepSeek' is not recognized".
  */
 function commandLineOf(command, commandArgs) {
   const quote = value => {

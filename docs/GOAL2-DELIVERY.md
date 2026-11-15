@@ -41,7 +41,7 @@ $env:DSH_HOME = 'D:\App\dsh-e2e-home'
 # 1. amorcer un profil dédié sans toucher au profil réel
 dsh --profile e2e --from-default-profile web --dump-config | Out-Null
 # 2. brancher les plugins locaux (aucune dépendance externe)
-dsh plugin --profile e2e add link:D:/App/DSH-agent-board link:C:/Users/barat/Documents/deepseek-harness/default-workspace/dsh-taskboard
+dsh plugin --profile e2e add link:D:/App/DSH-agent-board link:C:/Users/<user>/Documents/deepseek-harness/default-workspace/dsh-taskboard
 # 3. configurer un provider OpenAI-compatible FACTICE (baseURL local, clé bidon)
 #    + une routeChain explicite dans le patch du profil
 # 4. démarrer sur un port libre, sans ouvrir de navigateur

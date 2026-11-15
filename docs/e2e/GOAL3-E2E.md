@@ -3,8 +3,8 @@
 - Date: 2026-11-12
 - Started: 2026-11-12T12:10:04.558Z
 - Verdict: **PASS** (34/34 assertions passed, 4 scenario(s) executed)
-- DSH CLI: `C:\Users\barat\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd` (0.2.2-rc.2)
-- Disposable `DSH_HOME`: `C:\Users\barat\AppData\Local\Temp\dsh-e2e-home-goal3`
+- DSH CLI: `C:\Users\<user>\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd` (0.2.2-rc.2)
+- Disposable `DSH_HOME`: `C:\Users\<user>\AppData\Local\Temp\dsh-e2e-home-goal3`
 - Profile: `e2e` (created from the shipped `web` template, plugin installed with `link:D:/App/DSH-agent-board`)
 - Model provider: **simulated** OpenAI-compatible server on `127.0.0.1` (port 51669 primary, 51670 backup)
 - Task Board: **simulated** ledger on `127.0.0.1:51671` — every response carries `x-simulated-taskboard: true`
@@ -13,10 +13,10 @@
 ## Commands actually run
 
 ```powershell
-$env:DSH_HOME = 'C:\Users\barat\AppData\Local\Temp\dsh-e2e-home-goal3'
-& 'C:\Users\barat\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd' --profile e2e --from-default-profile web --dump-config
-& 'C:\Users\barat\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd' plugin --profile e2e add link:D:/App/DSH-agent-board
-& 'C:\Users\barat\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd' --profile e2e --port 0 --no-open   # prints dsh web: http://127.0.0.1:<port>/?token=…
+$env:DSH_HOME = 'C:\Users\<user>\AppData\Local\Temp\dsh-e2e-home-goal3'
+& 'C:\Users\<user>\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd' --profile e2e --from-default-profile web --dump-config
+& 'C:\Users\<user>\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd' plugin --profile e2e add link:D:/App/DSH-agent-board
+& 'C:\Users\<user>\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd' --profile e2e --port 0 --no-open   # prints dsh web: http://127.0.0.1:<port>/?token=…
 ```
 
 The orchestrator then exchanged the launch token for the signed session cookie and used the board API:
@@ -172,7 +172,7 @@ The Agent Board panel in the isolated instance (same client bundle as the produc
 {
   "portClosed": true,
   "serversClosed": true,
-  "homeRemoved": "C:\\Users\\barat\\AppData\\Local\\Temp\\dsh-e2e-home-goal3",
+  "homeRemoved": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsh-e2e-home-goal3",
   "screenshots": [
     "goal3-ux-1366x768-dark-card-preview.png",
     "goal3-ux-1366x768-dark.png",

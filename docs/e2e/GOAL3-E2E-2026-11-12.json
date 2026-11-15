@@ -6,9 +6,9 @@
     "platform": "win32",
     "release": "v26.13.0",
     "repoRoot": "D:\\App\\DSH-agent-board",
-    "dshCli": "C:\\Users\\barat\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
+    "dshCli": "C:\\Users\\<user>\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
     "dshVersion": "0.2.2-rc.2",
-    "home": "C:\\Users\\barat\\AppData\\Local\\Temp\\dsh-e2e-home-goal3",
+    "home": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsh-e2e-home-goal3",
     "profile": "e2e",
     "credentialPolicy": "no real credential: DSH_E2E_FAKE_KEY carries an invented value generated for this run"
   },
@@ -51,7 +51,7 @@
         "ms": 17,
         "authorizationPresent": true,
         "promptHasTask": false,
-        "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\barat\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project\". Curren"
+        "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\<user>\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project\". Curren"
       },
       {
         "seq": 2,
@@ -64,7 +64,7 @@
         "ms": 0,
         "authorizationPresent": true,
         "promptHasTask": false,
-        "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\barat\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project\". Curren"
+        "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\<user>\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project\". Curren"
       },
       {
         "seq": 3,
@@ -77,7 +77,7 @@
         "ms": 20,
         "authorizationPresent": true,
         "promptHasTask": false,
-        "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\barat\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project\". Curren"
+        "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\<user>\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project\". Curren"
       },
       {
         "seq": 4,
@@ -90,7 +90,7 @@
         "ms": 16,
         "authorizationPresent": true,
         "promptHasTask": false,
-        "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\barat\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project-b\". Curr"
+        "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\<user>\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project-b\". Curr"
       }
     ],
     "backupRequests": [
@@ -105,19 +105,19 @@
         "ms": 51,
         "authorizationPresent": true,
         "promptHasTask": false,
-        "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\barat\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project\". Curren"
+        "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\<user>\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project\". Curren"
       }
     ]
   },
   "host": {
-    "home": "C:\\Users\\barat\\AppData\\Local\\Temp\\dsh-e2e-home-goal3",
+    "home": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsh-e2e-home-goal3",
     "seededLegacyState": {
       "schemaVersion": 1,
-      "path": "C:\\Users\\barat\\AppData\\Local\\Temp\\dsh-e2e-home-goal3\\agent-board\\state.json"
+      "path": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsh-e2e-home-goal3\\agent-board\\state.json"
     },
     "workspace": {
       "id": "ws-e2e-1",
-      "path": "C:\\Users\\barat\\AppData\\Local\\Temp\\dsh-e2e-home-goal3\\project",
+      "path": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsh-e2e-home-goal3\\project",
       "seededStore": "storages/workspace.json",
       "extraProjects": [
         "ws-e2e-2",
@@ -125,7 +125,7 @@
       ]
     },
     "profile": {
-      "path": "C:\\Users\\barat\\AppData\\Local\\Temp\\dsh-e2e-home-goal3\\profiles\\e2e",
+      "path": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsh-e2e-home-goal3\\profiles\\e2e",
       "pluginManifest": {
         "name": "dsh-profile-e2e",
         "private": true,
@@ -143,8 +143,8 @@
         }
       }
     },
-    "patchPath": "C:\\Users\\barat\\AppData\\Local\\Temp\\dsh-e2e-home-goal3\\profiles\\e2e\\cordis.patch.yml",
-    "patch": "C:\\Users\\barat\\AppData\\Local\\Temp\\dsh-e2e-home-goal3\\profiles\\e2e\\cordis.patch.yml",
+    "patchPath": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsh-e2e-home-goal3\\profiles\\e2e\\cordis.patch.yml",
+    "patch": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsh-e2e-home-goal3\\profiles\\e2e\\cordis.patch.yml",
     "origin": "http://127.0.0.1:51672",
     "port": 51672,
     "startupUrlRedacted": "http://127.0.0.1:51672/?token=[redacted]",
@@ -155,7 +155,7 @@
       ]
     },
     "pid": 14800,
-    "cwd": "C:\\Users\\barat\\AppData\\Local\\Temp\\dsh-e2e-home-goal3\\project",
+    "cwd": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsh-e2e-home-goal3\\project",
     "stateAtBoot": {
       "mode": "off",
       "instance": {
@@ -749,7 +749,7 @@
             "ms": 17,
             "authorizationPresent": true,
             "promptHasTask": false,
-            "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\barat\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project\". Curren"
+            "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\<user>\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project\". Curren"
           }
         ],
         "backupRequests": [],
@@ -1017,7 +1017,7 @@
             "ms": 0,
             "authorizationPresent": true,
             "promptHasTask": false,
-            "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\barat\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project\". Curren"
+            "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\<user>\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project\". Curren"
           }
         ],
         "backupRequests": [
@@ -1032,7 +1032,7 @@
             "ms": 51,
             "authorizationPresent": true,
             "promptHasTask": false,
-            "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\barat\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project\". Curren"
+            "promptPreview": "<system-reminder> The following information describes your current session: Current working directory: \"C:\\\\Users\\\\<user>\\\\AppData\\\\Local\\\\Temp\\\\dsh-e2e-home-goal3\\\\project\". Curren"
           }
         ],
         "simulatedBoardCalls": [
@@ -1860,7 +1860,7 @@
   "cleanup": {
     "portClosed": true,
     "serversClosed": true,
-    "homeRemoved": "C:\\Users\\barat\\AppData\\Local\\Temp\\dsh-e2e-home-goal3",
+    "homeRemoved": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsh-e2e-home-goal3",
     "screenshots": [
       "goal3-ux-1366x768-dark-card-preview.png",
       "goal3-ux-1366x768-dark.png",

@@ -6,7 +6,7 @@
     "platform": "win32",
     "release": "v26.13.0",
     "repoRoot": "D:\\App\\DSH-agent-board",
-    "dshCli": "C:\\Users\\barat\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
+    "dshCli": "C:\\Users\\<user>\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
     "dshVersion": "0.2.2-rc.1",
     "home": "D:\\App\\dsh-e2e-home-goal3",
     "profile": "e2e",
@@ -1518,7 +1518,7 @@
       {
         "step": "install link plugin",
         "code": 0,
-        "stdoutTail": "[WARN] The store at C:\\Users\\barat\\AppData\\Local\\pnpm\\store\\v11 is not used because packages cannot be hard linked from it into this project. Using the store at D:\\.pnpm-store\\v11 instead. Set storeDir to choose the store.\nAlready up to date\n\ndependencies:\n+ dsh-agent-board 0.1.0 <- ..\\..\\..\\DSH-agent-board\n\nDone in 354ms using pnpm v11.28.5\n",
+        "stdoutTail": "[WARN] The store at C:\\Users\\<user>\\AppData\\Local\\pnpm\\store\\v11 is not used because packages cannot be hard linked from it into this project. Using the store at D:\\.pnpm-store\\v11 instead. Set storeDir to choose the store.\nAlready up to date\n\ndependencies:\n+ dsh-agent-board 0.1.0 <- ..\\..\\..\\DSH-agent-board\n\nDone in 354ms using pnpm v11.28.5\n",
         "stderrTail": ""
       }
     ],
