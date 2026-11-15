@@ -17,6 +17,7 @@
 
 import { buildProjection, modelHistoryOf, resolveNodeModel, trackModelChange } from '../supervisor/projection.js'
 import { aggregateSubtrees } from '../board/view.js'
+import { pendingDecisionsOfPayload } from '../contracts/decisions-schema.js'
 
 export function emptyHostState() {
   return {
@@ -69,10 +70,15 @@ export function capabilitiesOf(host) {
   return plainObjectOrNull(host?.capabilities)
 }
 
-/** Real pending decisions only: an answered/expired/superseded one is not pending. */
+/**
+ * Real pending decisions only: an answered/expired/superseded one is not pending.
+ *
+ * Reads the versioned decisions contract, so the legacy flat array of an older
+ * host and the v1 object both decode. The previous `Array.isArray(superagent
+ * .decisions)` guess is exactly what kept the inbox permanently empty.
+ */
 export function pendingDecisionsOf(superagent) {
-  const list = Array.isArray(superagent?.decisions) ? superagent.decisions : []
-  return list.filter(decision => plainObjectOrNull(decision) !== null && decision.status === 'pending')
+  return pendingDecisionsOfPayload(superagent?.decisions)
 }
 
 export function pendingDecisionCountOf(superagent) {

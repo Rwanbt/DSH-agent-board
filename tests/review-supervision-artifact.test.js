@@ -15,6 +15,7 @@ import { readFile } from 'node:fs/promises'
 const ROOT = new URL('../', import.meta.url)
 const PARTS = [
   'src/contracts/model.js',
+  'src/contracts/decisions-schema.js',
   'src/contracts/agent-roles.js',
   'src/supervisor/projection.js',
   'src/supervisor/super-orchestrator.js',

@@ -492,10 +492,11 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
   const session = sa?.session !== null && typeof sa?.session === 'object' ? sa.session : null
   const runtime = sa?.runtime !== null && typeof sa?.runtime === 'object' ? sa.runtime : null
   const plan = sa?.plan !== null && typeof sa?.plan === 'object' ? sa.plan : null
-  const decisions = Array.isArray(sa?.decisions) ? sa.decisions.filter(entry => entry !== null && typeof entry === 'object') : []
+  const decisionsPayload = decodeDecisions(sa?.decisions)
+  const decisions = [...decisionsPayload.pending, ...decisionsPayload.recent]
   const directives = Array.isArray(sa?.directives) ? sa.directives.filter(entry => entry !== null && typeof entry === 'object') : []
   const activity = Array.isArray(sa?.activity) ? sa.activity.filter(entry => entry !== null && typeof entry === 'object') : []
-  const pendingDecisions = decisions.filter(entry => entry.status === 'pending')
+  const pendingDecisions = decisionsPayload.pending
   const model = identity?.model !== null && typeof identity?.model === 'object' ? identity.model : null
   const stopped = context !== null && context !== undefined && context.stopped === true
   const sessionStatus = typeof session?.active === 'boolean' ? session.active : null
@@ -547,6 +548,9 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
     decisions,
     pendingDecisions,
     pendingCount: pendingDecisions.length,
+    // The host's authoritative counters (they cover the WHOLE inbox, not the
+    // bounded published lists). Null when the payload carries none.
+    decisionsSummary: decisionsPayload.summary,
     pendingApprovals: pendingDecisions.filter(entry => entry.kind === 'approval').length,
     directives: directives.filter(entry => entry.status !== 'revoked'),
     revokedDirectives: directives.filter(entry => entry.status === 'revoked'),
@@ -704,7 +708,9 @@ function dabDecisionIsPending(decision) {
 }
 
 function dabDecisionGroups(decisions) {
-  const pending = (Array.isArray(decisions) ? decisions : []).filter(dabDecisionIsPending)
+  // Accepts the v1 payload, the legacy flat array, or the flattened list built by
+  // `dabSuperagentFacts`: `decodeDecisions` is tolerant and idempotent.
+  const pending = decodeDecisions(decisions).pending.filter(dabDecisionIsPending)
   return {
     pending,
     approvals: pending.filter(entry => entry.kind === 'approval'),
