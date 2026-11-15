@@ -1107,6 +1107,7 @@ test('settings explain level profiles and let an existing L4 reapply permissions
 // ------------------------------------------- concurrency settings (Lot 5 UI)
 test('the inspector edits the SAME concurrency limits the launch gate reads', () => {
   const patches = []
+  const resets = []
   const host = {
     ...makeHost(),
     policy: { maxConcurrent: null, supervision: { maxConcurrentDelegations: 4, enabled: true }, superagent: { maxConcurrentAgents: 6 }, providerConcurrency: { deepseek: 3 } },
@@ -1132,6 +1133,35 @@ test('the inspector edits the SAME concurrency limits the launch gate reads', ()
   byClass(tree, 'dab-sa-provider-deepseek')[0].props.onChange({ target: { value: '' } })
   assert.deepEqual(patches[4].providerConcurrency, {})
 
+  // ---- LOT 11: the real-time load, published by the host, is editable here ----
+  const loadTree = render(cockpit.DabSuperagentSettings({
+    superagent: makeInactiveSuperagent(), mandate: makeMandate(), ui: {}, taskboard: makeHost().taskboardPublic, context: {},
+    host: {
+      ...host,
+      load: {
+        ceiling: 6, binding: 'tokens', blocked: false, running: 4,
+        reasons: [], waveStartedAt: 1,
+        tokens: { budget: 900_000, spent: 180_000, measured: 60_000, measurable: true, perTurn: 60_000, sessions: [] },
+        hardware: { parallelism: 16, freeBytes: 8 * 1024 ** 3, ceiling: 128 },
+      },
+    },
+    onSetPolicy: patch => { patches.push(patch); return { ok: true } },
+    onResetLoad: () => resets.push('reset'),
+  }))
+  assert.match(textOf(byClass(loadTree, 'dab-sa-load-running')[0]), /4 \/ 6/)
+  assert.match(textOf(byClass(loadTree, 'dab-sa-load-binding')[0]), /token/i, 'the binding fact is named, not hidden')
+  const budgetInput = byClass(loadTree, 'dab-sa-token-budget')[0]
+  assert.equal(budgetInput.props.value, '900000')
+  budgetInput.props.onChange({ target: { value: '' } })
+  assert.deepEqual(patches.at(-1).load.tokenBudget, null, 'no pool is a real choice')
+  byClass(loadTree, 'dab-sa-load-reset')[0].props.onClick()
+  assert.deepEqual(resets, ['reset'])
+  // The hourly counter is no longer the lever: it is an ADVANCED guard, labelled
+  // as legacy, and it can express "no rate limit" with an empty field.
+  const hourly = byClass(loadTree, 'dab-sa-hourly-guard')[0]
+  assert.equal(hourly.props.value, '', 'unlimited by default since the load model')
+  hourly.props.onChange({ target: { value: '20' } })
+  assert.equal(patches.at(-1).supervision.maxDelegationsPerHour, 20)
   // The per-project ceiling lives on the project row and inherits when empty.
   const projectPatches = []
   const projects = render(cockpit.DabSuperagentProjects({

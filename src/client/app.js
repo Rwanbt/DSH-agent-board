@@ -574,6 +574,7 @@ function dabMakePage(store, ctx) {
         // Lot 5: the concurrency ceilings the launch gate reads, edited in place.
         onSetProjectConcurrency: (projectId, maxConcurrent) => act('project-concurrency', () => store.setProject(projectId, { maxConcurrent })),
         onSetPolicy: policy => act('policy', () => store.setPolicy(policy)),
+        onResetLoad: () => act('load-reset', () => store.resetLoad()),
         onSetProjectModel: (projectId, model) => act('project-model', () => store.setProject(projectId, { model })),
         onConfirmAllProjects: confirm => act('scope', () => store.setScope('all', undefined, confirm)),
         onAddDirective: input => act('directive', () => store.addDirective(input)),

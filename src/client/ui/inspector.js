@@ -818,7 +818,7 @@ function DabSelfTest({ busy, onSelfTest }) {
 function DabSuperagentSettings({
   superagent, mandate, capabilities, host, context, ui, busy, taskboard,
   onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
-  onSetPolicy, onToggleDnd,
+  onSetPolicy, onToggleDnd, onResetLoad,
 }) {
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
@@ -883,6 +883,19 @@ function DabSuperagentSettings({
               onChange(raw === '' ? null : Math.max(0, Math.trunc(Number(raw))))
             },
           }))
+        // A QUANTITY, not a number of slots: a token pool is not capped at the
+        // concurrency ceiling, so it gets its own field without the 256 bound.
+        const quantityField = (className, label, value, onChange) => h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+          h('span', { className: 'dab-sa-field-label' }, label),
+          h('input', {
+            className: `dab-input ${className}`, type: 'number', min: 0,
+            value: value === null || value === undefined ? '' : String(value),
+            'aria-label': label,
+            onChange: event => {
+              const raw = event?.target?.value ?? ''
+              onChange(raw === '' ? null : Math.max(0, Math.trunc(Number(raw))))
+            },
+          }))
         return h('div', { className: 'dab-sa-concurrency' },
           h('dl', { className: 'dab-sa-dl dab-sa-concurrency-running' },
             h('dt', null, dabT('superConcurrencyRunning')),
@@ -900,7 +913,39 @@ function DabSuperagentSettings({
                   else next[provider.id] = value
                   onSetPolicy?.({ providerConcurrency: next })
                 }))),
-          h('div', { className: 'dab-muted' }, dabT('superConcurrencyHint')))
+          h('div', { className: 'dab-muted' }, dabT('superConcurrencyHint')),
+          // ---- LOT 11: the REAL-TIME load, published by the host ----
+          // The machine and the token pool decide; the hourly counter is no
+          // longer the lever, so it is shown last and named as the legacy guard.
+          (() => {
+            const load = dabSaObject(host?.load) ?? {}
+            const tokens = dabSaObject(load.tokens) ?? {}
+            const loadPolicy = dabSaObject(policy.load) ?? {}
+            const bindingLabel = {
+              tokens: dabT('superLoadBindingTokens'),
+              hardware: dabT('superLoadBindingHardware'),
+              operator: dabT('superLoadBindingOperator'),
+              none: dabT('superLoadBindingNone'),
+            }[load.binding] ?? dabT('superLoadBindingNone')
+            return h('div', { className: 'dab-sa-load' },
+              h('dl', { className: 'dab-sa-dl dab-sa-load-running' },
+                h('dt', null, dabT('superLoadRunning')),
+                h('dd', null, `${Number(load.running) || 0} / ${limitText(load.ceiling)}`),
+                h('dt', null, dabT('superLoadBinding')),
+                h('dd', { className: 'dab-sa-load-binding' }, bindingLabel),
+                h('dt', null, dabT('superLoadSpent')),
+                h('dd', { className: 'dab-sa-load-tokens' }, `${Number(tokens.spent) || 0}`)),
+              quantityField('dab-sa-token-budget', dabT('superLoadTokenBudget'), tokens.budget ?? loadPolicy.tokenBudget ?? null,
+                value => onSetPolicy?.({ load: { ...loadPolicy, tokenBudget: value } })),
+              h('button', {
+                className: 'dab-btn dab-sa-load-reset',
+                type: 'button',
+                onClick: () => onResetLoad?.(),
+              }, dabT('superLoadReset')),
+              quantityField('dab-sa-hourly-guard', dabT('superHourlyGuard'), supervision.maxDelegationsPerHour ?? null,
+                value => onSetPolicy?.({ supervision: { ...supervision, maxDelegationsPerHour: value } })),
+              h('div', { className: 'dab-muted' }, dabT('superLoadHint')))
+          })())
       })()),
     // Project digest: what was verified, what runs, what is blocked, per project.
     (() => {
@@ -1020,7 +1065,7 @@ function DabSuperagentInspector(props) {
     onClose, onOpenDetail, onDryRun, onToggleProject, onSetProjectLevel, onSetProjectPriority, onSetProjectModel, onConfirmAllProjects,
     onAddDirective, onRevokeDirective, onAnswerDecision, onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume,
     onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
-    onSetPolicy, onSetProjectConcurrency, onAnswerDecisions,
+    onSetPolicy, onSetProjectConcurrency, onAnswerDecisions, onResetLoad,
   } = props
   const facts = dabSuperagentFacts(superagent, mandate, context)
   const [tab, setTab] = React.useState(typeof initialTab === 'string' ? initialTab : 'overview')
@@ -1102,7 +1147,7 @@ function DabSuperagentInspector(props) {
         ? h(DabSuperagentSettings, {
           superagent, mandate, capabilities, host, context, ui, busy, taskboard,
           onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
-  onSetPolicy,
+  onSetPolicy, onToggleDnd, onResetLoad,
         })
         : h(DabSuperagentOverview, {
           superagent, mandate, capabilities, host, context, busy, workspace,

@@ -5148,6 +5148,8 @@ function createBoardStore(ctx, options = {}) {
     setMode: mode => post('/mode', { mode }),
     /** Full policy patch. The host normalises and persists every limit. */
     setPolicy: policy => post('/policy', { policy: policy ?? {} }),
+    // Lot 11 — start a new token-budget wave (measured history is untouched).
+    resetLoad: () => post('/load/reset', {}),
     stop: () => post('/stop', {}),
     tick: () => post('/tick', {}),
     decide: (proposalId, approve) => post(`/proposals/${encodeURIComponent(proposalId)}/decide`, { approve }),
@@ -5631,6 +5633,18 @@ const DAB_STRINGS = {
     superConcurrencySupervision: 'Limite de supervision',
     superConcurrencyAgents: 'Agents du Super Agent',
     superConcurrencyHint: 'Vide = illimité. 0 = gel (aucun lancement). Enregistré dans la policy.',
+    // Lot 11 — la charge réelle remplace le compteur horaire comme levier.
+    superLoadRunning: 'Charge (sessions / plafond)',
+    superLoadBinding: 'Contrainte',
+    superLoadSpent: 'Jetons facturés (vague)',
+    superLoadTokenBudget: 'Pool de jetons',
+    superLoadReset: 'Nouvelle vague',
+    superHourlyGuard: 'Garde-fou horaire (hérité)',
+    superLoadBindingTokens: 'jetons',
+    superLoadBindingHardware: 'matériel',
+    superLoadBindingOperator: 'votre plafond',
+    superLoadBindingNone: 'aucune (illimité)',
+    superLoadHint: 'Vide = aucune limite. La charge combine la machine, le pool de jetons et vos plafonds ; 0 sur un plafond est un arrêt volontaire (préférez Pause).',
     superLimitUnlimited: 'illimité',
     superProjectConcurrency: 'Concurrence du projet',
     // Lot 5b — approbation groupée : chaque accord reste à usage unique.
@@ -6154,6 +6168,18 @@ const DAB_STRINGS = {
     superConcurrencySupervision: 'Supervision limit',
     superConcurrencyAgents: 'Super Agent agents',
     superConcurrencyHint: 'Empty = unlimited. 0 = freeze (no launch). Stored in the policy.',
+    // Lot 11 — the real load replaces the hourly counter as the lever.
+    superLoadRunning: 'Load (sessions / ceiling)',
+    superLoadBinding: 'Binding fact',
+    superLoadSpent: 'Billed tokens (wave)',
+    superLoadTokenBudget: 'Token pool',
+    superLoadReset: 'New wave',
+    superHourlyGuard: 'Hourly guard (legacy)',
+    superLoadBindingTokens: 'tokens',
+    superLoadBindingHardware: 'hardware',
+    superLoadBindingOperator: 'your ceiling',
+    superLoadBindingNone: 'none (unlimited)',
+    superLoadHint: 'Empty = no limit. The load combines the machine, the token pool and your own ceilings; 0 on a ceiling is a deliberate stop (prefer Pause).',
     superLimitUnlimited: 'unlimited',
     superProjectConcurrency: 'Project concurrency',
     superDecisionsBulkApprove: 'Approve all ({n})',
@@ -10621,7 +10647,7 @@ function DabSelfTest({ busy, onSelfTest }) {
 function DabSuperagentSettings({
   superagent, mandate, capabilities, host, context, ui, busy, taskboard,
   onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
-  onSetPolicy, onToggleDnd,
+  onSetPolicy, onToggleDnd, onResetLoad,
 }) {
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
@@ -10686,6 +10712,19 @@ function DabSuperagentSettings({
               onChange(raw === '' ? null : Math.max(0, Math.trunc(Number(raw))))
             },
           }))
+        // A QUANTITY, not a number of slots: a token pool is not capped at the
+        // concurrency ceiling, so it gets its own field without the 256 bound.
+        const quantityField = (className, label, value, onChange) => h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+          h('span', { className: 'dab-sa-field-label' }, label),
+          h('input', {
+            className: `dab-input ${className}`, type: 'number', min: 0,
+            value: value === null || value === undefined ? '' : String(value),
+            'aria-label': label,
+            onChange: event => {
+              const raw = event?.target?.value ?? ''
+              onChange(raw === '' ? null : Math.max(0, Math.trunc(Number(raw))))
+            },
+          }))
         return h('div', { className: 'dab-sa-concurrency' },
           h('dl', { className: 'dab-sa-dl dab-sa-concurrency-running' },
             h('dt', null, dabT('superConcurrencyRunning')),
@@ -10703,7 +10742,39 @@ function DabSuperagentSettings({
                   else next[provider.id] = value
                   onSetPolicy?.({ providerConcurrency: next })
                 }))),
-          h('div', { className: 'dab-muted' }, dabT('superConcurrencyHint')))
+          h('div', { className: 'dab-muted' }, dabT('superConcurrencyHint')),
+          // ---- LOT 11: the REAL-TIME load, published by the host ----
+          // The machine and the token pool decide; the hourly counter is no
+          // longer the lever, so it is shown last and named as the legacy guard.
+          (() => {
+            const load = dabSaObject(host?.load) ?? {}
+            const tokens = dabSaObject(load.tokens) ?? {}
+            const loadPolicy = dabSaObject(policy.load) ?? {}
+            const bindingLabel = {
+              tokens: dabT('superLoadBindingTokens'),
+              hardware: dabT('superLoadBindingHardware'),
+              operator: dabT('superLoadBindingOperator'),
+              none: dabT('superLoadBindingNone'),
+            }[load.binding] ?? dabT('superLoadBindingNone')
+            return h('div', { className: 'dab-sa-load' },
+              h('dl', { className: 'dab-sa-dl dab-sa-load-running' },
+                h('dt', null, dabT('superLoadRunning')),
+                h('dd', null, `${Number(load.running) || 0} / ${limitText(load.ceiling)}`),
+                h('dt', null, dabT('superLoadBinding')),
+                h('dd', { className: 'dab-sa-load-binding' }, bindingLabel),
+                h('dt', null, dabT('superLoadSpent')),
+                h('dd', { className: 'dab-sa-load-tokens' }, `${Number(tokens.spent) || 0}`)),
+              quantityField('dab-sa-token-budget', dabT('superLoadTokenBudget'), tokens.budget ?? loadPolicy.tokenBudget ?? null,
+                value => onSetPolicy?.({ load: { ...loadPolicy, tokenBudget: value } })),
+              h('button', {
+                className: 'dab-btn dab-sa-load-reset',
+                type: 'button',
+                onClick: () => onResetLoad?.(),
+              }, dabT('superLoadReset')),
+              quantityField('dab-sa-hourly-guard', dabT('superHourlyGuard'), supervision.maxDelegationsPerHour ?? null,
+                value => onSetPolicy?.({ supervision: { ...supervision, maxDelegationsPerHour: value } })),
+              h('div', { className: 'dab-muted' }, dabT('superLoadHint')))
+          })())
       })()),
     // Project digest: what was verified, what runs, what is blocked, per project.
     (() => {
@@ -10823,7 +10894,7 @@ function DabSuperagentInspector(props) {
     onClose, onOpenDetail, onDryRun, onToggleProject, onSetProjectLevel, onSetProjectPriority, onSetProjectModel, onConfirmAllProjects,
     onAddDirective, onRevokeDirective, onAnswerDecision, onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume,
     onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
-    onSetPolicy, onSetProjectConcurrency, onAnswerDecisions,
+    onSetPolicy, onSetProjectConcurrency, onAnswerDecisions, onResetLoad,
   } = props
   const facts = dabSuperagentFacts(superagent, mandate, context)
   const [tab, setTab] = React.useState(typeof initialTab === 'string' ? initialTab : 'overview')
@@ -10905,7 +10976,7 @@ function DabSuperagentInspector(props) {
         ? h(DabSuperagentSettings, {
           superagent, mandate, capabilities, host, context, ui, busy, taskboard,
           onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
-  onSetPolicy,
+  onSetPolicy, onToggleDnd, onResetLoad,
         })
         : h(DabSuperagentOverview, {
           superagent, mandate, capabilities, host, context, busy, workspace,
@@ -11915,6 +11986,7 @@ function dabMakePage(store, ctx) {
         // Lot 5: the concurrency ceilings the launch gate reads, edited in place.
         onSetProjectConcurrency: (projectId, maxConcurrent) => act('project-concurrency', () => store.setProject(projectId, { maxConcurrent })),
         onSetPolicy: policy => act('policy', () => store.setPolicy(policy)),
+        onResetLoad: () => act('load-reset', () => store.resetLoad()),
         onSetProjectModel: (projectId, model) => act('project-model', () => store.setProject(projectId, { model })),
         onConfirmAllProjects: confirm => act('scope', () => store.setScope('all', undefined, confirm)),
         onAddDirective: input => act('directive', () => store.addDirective(input)),

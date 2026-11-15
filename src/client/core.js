@@ -375,6 +375,8 @@ export function createBoardStore(ctx, options = {}) {
     setMode: mode => post('/mode', { mode }),
     /** Full policy patch. The host normalises and persists every limit. */
     setPolicy: policy => post('/policy', { policy: policy ?? {} }),
+    // Lot 11 — start a new token-budget wave (measured history is untouched).
+    resetLoad: () => post('/load/reset', {}),
     stop: () => post('/stop', {}),
     tick: () => post('/tick', {}),
     decide: (proposalId, approve) => post(`/proposals/${encodeURIComponent(proposalId)}/decide`, { approve }),
