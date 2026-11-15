@@ -132,7 +132,7 @@ test('a 0.1.0 ceiling is lifted to explicit unlimited, once, and the load slice 
     const state = await first.readState()
     assert.equal(state.policy.supervision.maxConcurrentDelegations, null, 'no ceiling of its own: the load model decides')
     assert.equal(state.policy.supervision.maxDelegationsPerHour, null, 'the hourly throttle is lifted')
-    assert.deepEqual(state.policy.load, { tokenBudget: null, tokensPerTurn: null }, 'no pool is invented for the operator')
+    assert.deepEqual(state.policy.load, { tokenBudget: null, tokensPerTurn: null, hardware: null }, 'no pool is invented for the operator')
     const migrated = state.audit.filter(entry => entry.type === 'load_model_migrated')
     assert.equal(migrated.length, 1, 'the lift is auditable, not silent')
     assert.equal(migrated[0].from.maxConcurrentDelegations, 2)
@@ -177,7 +177,7 @@ test('a fresh board starts unlimited and declares no token pool', async () => {
     const state = await host.readState()
     assert.equal(state.policy.supervision.maxConcurrentDelegations, null)
     assert.equal(state.policy.supervision.maxDelegationsPerHour, null)
-    assert.deepEqual(state.policy.load, { tokenBudget: null, tokensPerTurn: null })
+    assert.deepEqual(state.policy.load, { tokenBudget: null, tokensPerTurn: null, hardware: null })
   } finally {
     await host.close()
   }

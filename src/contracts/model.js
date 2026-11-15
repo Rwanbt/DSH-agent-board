@@ -10,7 +10,9 @@
  * @module dsh-agent-board/contracts/model
  */
 
-import { normalizeConcurrencyLimit, normalizeHourlyRate, normalizeProviderConcurrency, normalizeTokenPool } from './concurrency.js'
+import {
+  normalizeConcurrencyLimit, normalizeHardwareFacts, normalizeHourlyRate, normalizeProviderConcurrency, normalizeTokenPool,
+} from './concurrency.js'
 
 export const SCHEMA_VERSION = 1
 
@@ -126,6 +128,7 @@ export const SUPERVISION_DEFAULT = Object.freeze({
 export const LOAD_DEFAULT = Object.freeze({
   tokenBudget: null,
   tokensPerTurn: null,
+  hardware: null,
 })
 
 /** Journal marker of the load model migration, stored outside the policy. */
@@ -262,6 +265,11 @@ export function normalizeLoad(input, fallback = LOAD_DEFAULT) {
   return {
     tokenBudget: normalizeTokenPool(source.tokenBudget, normalizeTokenPool(previous.tokenBudget, null)),
     tokensPerTurn: normalizeTokenPool(source.tokensPerTurn, normalizeTokenPool(previous.tokensPerTurn, null)),
+    // `null` = measure the real machine; an explicit pair overrides the noisy
+    // `freemem()` reading and makes the admission testable without a box.
+    hardware: normalizeHardwareFacts(
+      source.hardware === undefined ? previous.hardware : source.hardware,
+    ),
   }
 }
 

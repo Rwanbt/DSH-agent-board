@@ -17,25 +17,35 @@ import {
   LOAD_SOURCES,
   effectiveLoadCeiling,
   hardwareCeilingOf,
+  tokenAccountOf,
   tokenCeilingOf,
   tokenUsageOf,
 } from '../src/contracts/load-budget.js'
-import { normalizeTokenPool } from '../src/contracts/concurrency.js'
+import { normalizeHardwareFacts, normalizeTokenPool } from '../src/contracts/concurrency.js'
 
 test('the machine ceiling comes from cores and free memory, never from a table', () => {
-  // One session per two cores: a build or a test runner wants the other core.
-  assert.equal(hardwareCeilingOf({ parallelism: 8 }), 4)
-  assert.equal(hardwareCeilingOf({ parallelism: 1 }), 1, 'a single core still runs one session')
-  assert.equal(hardwareCeilingOf({ parallelism: 50 }), 25)
+  // Calibration: a session mostly WAITS on a provider, so this is an anti-overload
+  // guard (eight sessions per core), not a throughput governor.
+  assert.equal(hardwareCeilingOf({ parallelism: 8 }), 64)
+  assert.equal(hardwareCeilingOf({ parallelism: 1 }), 8, 'a single core still carries its share')
+  assert.equal(hardwareCeilingOf({ parallelism: 50 }), 400)
   // Free memory is the second signal and the tighter one wins.
-  assert.equal(hardwareCeilingOf({ parallelism: 16, freeBytes: 4 * LOAD_LIMITS.BYTES_PER_SESSION }), 4)
-  assert.equal(hardwareCeilingOf({ parallelism: 2, freeBytes: 64 * LOAD_LIMITS.BYTES_PER_SESSION }), 1)
+  assert.equal(hardwareCeilingOf({ parallelism: 16, freeBytes: 4 * 128 * 1024 * 1024 }), 4)
+  assert.equal(hardwareCeilingOf({ parallelism: 2, freeBytes: 64 * 128 * 1024 * 1024 }), 16)
   // No headroom left is a real answer, not an unlimited one.
   assert.equal(hardwareCeilingOf({ parallelism: 8, freeBytes: 1024 }), 0)
   // Nothing known means no ceiling of this kind, never a refusal.
   assert.equal(hardwareCeilingOf({}), null)
   assert.equal(hardwareCeilingOf(), null)
   assert.equal(hardwareCeilingOf({ parallelism: 'wide', freeBytes: 'lots' }), null)
+})
+
+test('an explicit machine description replaces the measured one', () => {
+  assert.equal(normalizeHardwareFacts(null), null)
+  assert.equal(normalizeHardwareFacts({}), null)
+  assert.equal(normalizeHardwareFacts({ parallelism: 0, freeBytes: 1 }), null)
+  assert.equal(normalizeHardwareFacts({ parallelism: 4, freeBytes: 0 }), null)
+  assert.deepEqual(normalizeHardwareFacts({ parallelism: 64, freeBytes: 64 * 1024 ** 3 }), { parallelism: 64, freeBytes: 64 * 1024 ** 3 })
 })
 
 test('the token ceiling divides the remaining pool by the price of a turn', () => {
@@ -86,8 +96,15 @@ test('the effective ceiling is the smallest fact and it says which one binds', (
   assert.equal(broke.binding, LOAD_SOURCES.tokens)
   assert.equal(broke.running, 3)
   const tokenReason = broke.reasons.find(reason => reason.source === LOAD_SOURCES.tokens)
-  assert.deepEqual(tokenReason, { source: LOAD_SOURCES.tokens, limit: 0, reached: true, blocked: true })
+  assert.deepEqual(tokenReason, { source: LOAD_SOURCES.tokens, limit: 0, raw: 0, reached: true, blocked: true })
   assert.equal(broke.reasons.find(reason => reason.source === LOAD_SOURCES.operator).reached, false)
+
+  // The machine never blocks everything: this very process runs there, and a
+  // free-memory reading is noisy. The raw figure stays published.
+  const starved = effectiveLoadCeiling({ hardware: 0 })
+  assert.equal(starved.ceiling, 1, 'one session can always run on the machine we are in')
+  assert.equal(starved.reasons.find(reason => reason.source === LOAD_SOURCES.hardware).raw, 0)
+  assert.equal(starved.blocked, false)
 })
 
 test('a measured usage is read from the provider, never invented', () => {
@@ -101,6 +118,16 @@ test('a measured usage is read from the provider, never invented', () => {
   assert.equal(tokenUsageOf(null), null)
   assert.equal(tokenUsageOf('nonsense'), null)
   assert.equal(tokenUsageOf({ baseline: { kind: 'usage', usage: {} } }).billedTokens, 0)
+})
+
+test('a wave counter only adds what was not already counted', () => {
+  assert.deepEqual(tokenAccountOf({ previous: 0, measured: 1_200 }), { billedTokens: 1_200, delta: 1_200 })
+  // A continuation re-measures the SAME session: only the extra is billed.
+  assert.deepEqual(tokenAccountOf({ previous: 1_200, measured: 1_900 }), { billedTokens: 1_900, delta: 700 })
+  // A recycled id or a provider that stopped reporting never subtracts.
+  assert.deepEqual(tokenAccountOf({ previous: 1_900, measured: 400 }), { billedTokens: 400, delta: 0 })
+  assert.deepEqual(tokenAccountOf({ previous: null, measured: null }), { billedTokens: 0, delta: 0 })
+  assert.deepEqual(tokenAccountOf({}), { billedTokens: 0, delta: 0 })
 })
 
 test('the load contract stays on the host: the client only renders what is published', async () => {

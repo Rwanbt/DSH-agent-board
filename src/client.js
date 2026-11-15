@@ -103,6 +103,25 @@ function normalizeQuantity(value, fallback) {
 }
 
 /**
+ * An EXPLICIT machine description, or `null` to measure the real machine.
+ *
+ * `freemem()` is noisy — Windows in particular reports a fraction of what is
+ * actually available — so an operator who knows their box, and a test that must
+ * not depend on the box, can state the two facts instead. Only two positive
+ * quantities are accepted; anything else means "measure it".
+ *
+ * @param {unknown} value
+ * @returns {{parallelism: number, freeBytes: number}|null}
+ */
+function normalizeHardwareFacts(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
+  const parallelism = normalizeQuantity(value.parallelism, 0)
+  const freeBytes = normalizeQuantity(value.freeBytes, 0)
+  if (parallelism === 0 || freeBytes === 0) return null
+  return { parallelism, freeBytes }
+}
+
+/**
  * Normalise one limit. `null` (or an absent value with a `null` fallback) means
  * unlimited; a finite value is truncated and clamped to `0..CONCURRENCY_HARD_CEILING`
  * where 0 is a real zero (a freeze), not "unlimited".
@@ -358,6 +377,7 @@ const SUPERVISION_DEFAULT = Object.freeze({
 const LOAD_DEFAULT = Object.freeze({
   tokenBudget: null,
   tokensPerTurn: null,
+  hardware: null,
 })
 
 /** Journal marker of the load model migration, stored outside the policy. */
@@ -494,6 +514,11 @@ function normalizeLoad(input, fallback = LOAD_DEFAULT) {
   return {
     tokenBudget: normalizeTokenPool(source.tokenBudget, normalizeTokenPool(previous.tokenBudget, null)),
     tokensPerTurn: normalizeTokenPool(source.tokensPerTurn, normalizeTokenPool(previous.tokensPerTurn, null)),
+    // `null` = measure the real machine; an explicit pair overrides the noisy
+    // `freemem()` reading and makes the admission testable without a box.
+    hardware: normalizeHardwareFacts(
+      source.hardware === undefined ? previous.hardware : source.hardware,
+    ),
   }
 }
 

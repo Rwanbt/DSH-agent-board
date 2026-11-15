@@ -16,9 +16,11 @@
  *
  * Two floors are deliberate and different:
  *   - a CONFIGURED ceiling is floored at `MIN_CONCURRENCY` by the operator UI;
- *   - a COMPUTED ceiling may reach 0 (a fully consumed token pool, no free
- *     memory). That is not a silent freeze: `blocked` and its source are
- *     published and the cockpit raises one exception.
+ *   - the MACHINE ceiling is floored at `MIN_CONCURRENCY` too (this process is
+ *     running on that machine; the raw figure stays published);
+ *   - the TOKEN ceiling may reach 0 — a spent pool is money already spent — and
+ *     that is not a silent freeze: `blocked` and its source are published and the
+ *     cockpit raises one exception.
  *
  * This module is pure: the host feeds it numbers, the client never imports it.
  */
@@ -37,16 +39,28 @@ export const LOAD_SOURCES = Object.freeze({
 })
 
 /**
+ * Why a launch waits behind the load model. Stable across the API and the panel.
+ */
+export const LOAD_REASONS = Object.freeze({
+  exhausted: 'load_exhausted',
+})
+
+/**
  * Everything that turns machine facts into a session count, in one frozen
  * object so the host, the tests and the documentation cannot drift apart.
  */
 export const LOAD_LIMITS = Object.freeze({
   /** A ceiling the operator configures never means "freeze by typo". */
   MIN_CONCURRENCY: 1,
-  /** A coding session runs builds and test runners: one session per two cores. */
-  CORES_PER_SESSION: 2,
-  /** Resident headroom one more live session needs (Node, git, a test runner). */
-  BYTES_PER_SESSION: 512 * 1024 * 1024,
+  /**
+   * A board session is mostly WAITING on a provider: the CPU only bursts when it
+   * runs a shell, a build or a test. Eight sessions per core is the deliberate
+   * calibration — this is an anti-overload guard, not a throughput governor; the
+   * operator's own ceiling and the token pool are the product knobs.
+   */
+  SESSIONS_PER_CORE: 8,
+  /** Free memory one more live session needs before it is worth starting. */
+  BYTES_PER_SESSION: 128 * 1024 * 1024,
   /** Price of one turn before any usage was measured on this install. */
   DEFAULT_TOKENS_PER_TURN: 60_000,
 })
@@ -73,7 +87,7 @@ export function hardwareCeilingOf({ parallelism, freeBytes } = {}, limits = LOAD
   const cores = wholeCount(parallelism)
   const bytes = Number.isFinite(Number(freeBytes)) ? Math.max(0, Number(freeBytes)) : 0
   const candidates = []
-  if (cores > 0) candidates.push(Math.max(limits.MIN_CONCURRENCY, Math.floor(cores / limits.CORES_PER_SESSION)))
+  if (cores > 0) candidates.push(Math.max(limits.MIN_CONCURRENCY, cores * limits.SESSIONS_PER_CORE))
   if (bytes > 0) candidates.push(Math.floor(bytes / limits.BYTES_PER_SESSION))
   if (candidates.length === 0) return null
   return Math.max(0, Math.min(...candidates))
@@ -108,13 +122,20 @@ export function tokenCeilingOf({ budget, consumed, tokensPerTurn } = {}, limits 
  *   running: number|null, reasons: {source: string, limit: number|null, reached: boolean, blocked: boolean}[]}}
  */
 export function effectiveLoadCeiling({ operator, hardware, tokens, running = null } = {}) {
+  // The machine ceiling is FLOORED at one: this process is running on that
+  // machine, and `freemem()` style metrics are noisy enough to report a fraction
+  // of a session while the box is perfectly able to run one. The raw measured
+  // value stays published, so a machine genuinely at its limit is visible
+  // instead of being silently ignored.
+  const hardwareRaw = normalizeConcurrencyLimit(hardware, null)
+  const hardwareLimited = hardwareRaw === null ? null : Math.max(LOAD_LIMITS.MIN_CONCURRENCY, hardwareRaw)
   // Declaration order IS the tie rule: an operator's own ceiling is reported
   // first because it is the one they can see and change, then the money, then
   // the machine.
   const entries = [
-    { source: LOAD_SOURCES.operator, limit: normalizeConcurrencyLimit(operator, null) },
-    { source: LOAD_SOURCES.tokens, limit: normalizeTokenPool(tokens, null) },
-    { source: LOAD_SOURCES.hardware, limit: normalizeConcurrencyLimit(hardware, null) },
+    { source: LOAD_SOURCES.operator, limit: normalizeConcurrencyLimit(operator, null), raw: normalizeConcurrencyLimit(operator, null) },
+    { source: LOAD_SOURCES.tokens, limit: normalizeTokenPool(tokens, null), raw: normalizeTokenPool(tokens, null) },
+    { source: LOAD_SOURCES.hardware, limit: hardwareLimited, raw: hardwareRaw },
   ]
   const count = Number.isFinite(Number(running)) && running !== null && running !== undefined ? Math.max(0, Math.trunc(Number(running))) : null
   const finite = entries.filter(entry => entry.limit !== null)
@@ -123,6 +144,7 @@ export function effectiveLoadCeiling({ operator, hardware, tokens, running = nul
   const reasons = entries.map(entry => ({
     source: entry.source,
     limit: entry.limit,
+    raw: entry.raw,
     reached: concurrencyReached(count ?? 0, entry.limit),
     blocked: entry.limit === 0,
   }))
@@ -154,4 +176,21 @@ export function tokenUsageOf(measurement) {
   // Billed = what the provider charged as tokens: prompt plus completion. Cache
   // buckets are reported apart because their price is provider-dependent.
   return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, billedTokens: inputTokens + outputTokens }
+}
+
+/**
+ * The DELTA one finished attempt adds to the wave counter.
+ *
+ * `totalTokens` of a session is cumulative for that session, so re-measuring it
+ * (a continuation, a retry, a settlement) must only add what was not already
+ * counted. A measurement that went backwards — a recycled session id, a provider
+ * that stopped reporting — never subtracts: the wave is a floor, not a balance.
+ *
+ * @param {{previous?: unknown, measured?: unknown}} [input]
+ * @returns {{billedTokens: number, delta: number}}
+ */
+export function tokenAccountOf({ previous, measured } = {}) {
+  const before = wholeCount(previous)
+  const now = wholeCount(measured)
+  return { billedTokens: now, delta: Math.max(0, now - before) }
 }
