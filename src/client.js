@@ -4,6 +4,186 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const { useState, useEffect, useMemo, useSyncExternalStore, useCallback, useRef } = React
+// ---- src/contracts/concurrency.js ----
+/**
+ * Concurrency limits: ONE source of truth.
+ *
+ * The product exists to let one developer supervise dozens of AI sessions at
+ * once, but every ceiling used to be a hard-coded clamp (`0..8`, `0..16`, the
+ * literal `maxConcurrentAgents: 2`): the technical limit became the product
+ * limit. Every knob is now configurable, with three explicit rules:
+ *
+ *   1. DEFAULTS DO NOT MOVE. The documented default of each limit is the 0.1.0
+ *      value, so an upgrade changes no behaviour silently.
+ *   2. `null` means UNLIMITED, explicitly (`UNLIMITED`). `0` keeps its historical
+ *      meaning: ZERO slots, i.e. a deliberate freeze. Inverting `0` into "no
+ *      ceiling" would turn an operator's freeze into an unlimited grant — the
+ *      one silent behaviour change a safety-minded product must never make (an
+ *      existing test pins `maxDelegationsPerHour: 0` = no delegation at all).
+ *   3. `CONCURRENCY_HARD_CEILING` only guards a typing mistake (someone types
+ *      100000). It is not a product cap and it is not reachable by accident.
+ *
+ * Pure: no clock, no I/O, no randomness.
+ *
+ * @module dsh-agent-board/contracts/concurrency
+ */
+
+/**
+ * Anti-typo guard. A limit above this is clamped to it; it is deliberately far
+ * above anything a machine+provider pair can sustain (50 sessions is the tested
+ * product target).
+ */
+const CONCURRENCY_HARD_CEILING = 256
+
+/** The value that means "no ceiling at all". */
+const UNLIMITED = null
+
+/** Documented defaults. Identical to 0.1.0 on purpose (no silent change). */
+const CONCURRENCY_DEFAULTS = Object.freeze({
+  global: 2,
+  supervisorConcurrent: 2,
+  // A project inherits the global ceiling until the operator caps it.
+  project: UNLIMITED,
+  superagentAgents: 2,
+  cyclesPerHour: 6,
+  modelCallsPerHour: 12,
+})
+
+/** Reason codes, stable across the API and the panel. */
+const CONCURRENCY_REASONS = Object.freeze({
+  global: 'concurrency_limit',
+  project: 'project_concurrency_limit',
+  provider: 'provider_concurrency_limit',
+})
+
+/**
+ * Normalise one limit. `null` (or an absent value with a `null` fallback) means
+ * unlimited; a finite value is truncated and clamped to `0..CONCURRENCY_HARD_CEILING`
+ * where 0 is a real zero (a freeze), not "unlimited".
+ *
+ * @param {unknown} value
+ * @param {number|null} [fallback] applied when the value is not finite
+ * @returns {number|null}
+ */
+function normalizeConcurrencyLimit(value, fallback = UNLIMITED) {
+  if (value === null) return UNLIMITED
+  const effective = value === undefined ? fallback : value
+  if (effective === null || effective === undefined) return UNLIMITED
+  if (typeof effective === 'string' && effective.trim() === '') return UNLIMITED
+  const number = Number(effective)
+  if (!Number.isFinite(number)) return fallback === null || fallback === undefined ? UNLIMITED : normalizeConcurrencyLimit(null, null)
+  return Math.min(CONCURRENCY_HARD_CEILING, Math.max(0, Math.trunc(number)))
+}
+
+/**
+ * Per-provider (or per provider/model) concurrency ceilings. Bounded and
+ * sanitised: an unknown key or a non-numeric value is dropped, never trusted.
+ *
+ * @param {unknown} value
+ * @returns {Record<string, number>}
+ */
+function normalizeProviderConcurrency(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {}
+  const out = {}
+  let kept = 0
+  for (const [key, limit] of Object.entries(value)) {
+    if (kept >= 20) break
+    if (typeof key !== 'string' || key.trim() === '') continue
+    const normalized = normalizeConcurrencyLimit(limit, null)
+    if (normalized === null) continue
+    out[key.trim()] = normalized
+    kept += 1
+  }
+  return out
+}
+
+/** Does the current load reach the (possibly unlimited) ceiling? */
+function concurrencyReached(running, limit) {
+  const normalized = normalizeConcurrencyLimit(limit, UNLIMITED)
+  if (normalized === null) return false
+  return Math.max(0, Number(running) || 0) >= normalized
+}
+/**
+ * The EFFECTIVE global concurrency: the board policy and the supervision layer
+ * both apply, and once either of them is unlimited the other one is the ceiling.
+ * `supervision: { enabled:false }` disables that layer's own ceiling.
+ *
+ * @param {{global?: unknown, supervisorConcurrent?: unknown, supervisionEnabled?: boolean, running?: number}} [input]
+ * @returns {{global: number|null, supervision: number|null, effective: number|null, unlimited: boolean, running: number}}
+ */
+function effectiveConcurrencyOf({
+  global = CONCURRENCY_DEFAULTS.global,
+  supervisorConcurrent = CONCURRENCY_DEFAULTS.supervisorConcurrent,
+  supervisionEnabled = true,
+  running = 0,
+} = {}) {
+  const globalLimit = normalizeConcurrencyLimit(global, CONCURRENCY_DEFAULTS.global)
+  const supervisionLimit = supervisionEnabled === false
+    ? UNLIMITED
+    : normalizeConcurrencyLimit(supervisorConcurrent, CONCURRENCY_DEFAULTS.supervisorConcurrent)
+  let effective
+  if (globalLimit === null) effective = supervisionLimit
+  else if (supervisionLimit === null) effective = globalLimit
+  else effective = Math.min(globalLimit, supervisionLimit)
+  return {
+    global: globalLimit,
+    supervision: supervisionLimit,
+    effective,
+    unlimited: effective === null,
+    running: Math.max(0, Number(running) || 0),
+  }
+}
+
+/** Provider key a per-provider ceiling is registered under. */
+function providerKeyOfRoute(route) {
+  if (route === null || typeof route !== 'object') return null
+  const provider = typeof route.provider === 'string' ? route.provider.trim() : ''
+  if (provider === '') return null
+  const model = typeof route.model === 'string' ? route.model.trim() : ''
+  return model === '' ? provider : `${provider}/${model}`
+}
+
+/**
+ * Active load per provider, keyed by BOTH `provider` and `provider/model`, so a
+ * ceiling may be declared at either granularity.
+ *
+ * @param {object[]} assignments
+ * @returns {Record<string, number>}
+ */
+function providerLoadOf(assignments) {
+  const load = {}
+  for (const assignment of Array.isArray(assignments) ? assignments : []) {
+    if (assignment === null || typeof assignment !== 'object') continue
+    if (!['starting', 'running', 'recovering'].includes(assignment.status)) continue
+    const provider = typeof assignment.model?.provider === 'string' ? assignment.model.provider : ''
+    if (provider === '') continue
+    load[provider] = (load[provider] ?? 0) + 1
+    const key = providerKeyOfRoute(assignment.model)
+    if (key !== null && key !== provider) load[key] = (load[key] ?? 0) + 1
+  }
+  return load
+}
+
+/**
+ * The most specific ceiling that applies to a route, or null.
+ *
+ * @param {Record<string, number>} providerConcurrency
+ * @param {object|null} route
+ * @returns {{key: string, limit: number}|null}
+ */
+function providerCeilingOf(providerConcurrency, route) {
+  if (providerConcurrency === null || typeof providerConcurrency !== 'object') return null
+  const key = providerKeyOfRoute(route)
+  if (key === null) return null
+  const exact = providerConcurrency[key]
+  if (Number.isFinite(Number(exact))) return { key, limit: Number(exact) }
+  const provider = typeof route?.provider === 'string' ? route.provider : ''
+  const byProvider = providerConcurrency[provider]
+  if (Number.isFinite(Number(byProvider))) return { key: provider, limit: Number(byProvider) }
+  return null
+}
+
+
 // ---- src/contracts/model.js ----
 /**
  * Stable domain contracts for the Agent Board.
@@ -16,6 +196,7 @@ window.__ModuleLoader__.load({
  *
  * @module dsh-agent-board/contracts/model
  */
+
 
 const SCHEMA_VERSION = 1
 
@@ -108,8 +289,9 @@ const SUPERVISION_DEFAULT = Object.freeze({
   enabled: true,
   emblem: 'crown',
   // Board-launched assignments in flight (starting/running/recovering).
+  // `null`/`0` means unlimited: supervision must not become the product ceiling.
   maxConcurrentDelegations: 2,
-  // Real delegation starts inside the sliding hour.
+  // Real delegation starts inside the sliding hour. 0 = unlimited.
   maxDelegationsPerHour: 6,
   // A delegated launch may not delegate again (depth 0 = a root delegation).
   maxDelegationDepth: 1,
@@ -165,6 +347,16 @@ const DEFAULT_POLICY = Object.freeze({
   allowUnverifiedHandoff: false,
   // Super Orchestrator supervision layer (pure policy; see SUPERVISION_DEFAULT).
   supervision: SUPERVISION_DEFAULT,
+  // Per-provider (or per provider/model) ceilings. Empty = no provider ceiling:
+  // the global concurrency and the provider's own rate limits still apply.
+  providerConcurrency: {},
+  // Super Agent runtime budget. These were literals in the host; they are policy
+  // now, persisted and validated like every other limit. 0 = unlimited.
+  superagent: Object.freeze({
+    maxConcurrentAgents: 2,
+    cyclesPerHour: 6,
+    modelCallsPerHour: 12,
+  }),
 })
 
 const PERMISSION_LEVELS = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
@@ -172,7 +364,9 @@ const EXECUTION_BACKENDS = Object.freeze(['board', 'taskboard', 'contract'])
 
 function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
   const mode = isMode(input.mode) ? input.mode : fallback.mode
-  const maxConcurrent = clampInt(input.maxConcurrent, 0, 8, fallback.maxConcurrent)
+  // 0/`null` = unlimited. The hard ceiling only catches a typing mistake, and the
+  // default stays 2 so an upgrade changes nothing.
+  const maxConcurrent = normalizeConcurrencyLimit(input.maxConcurrent, fallback.maxConcurrent)
   const maxSwitches = clampInt(input.maxSwitches, 0, 5, fallback.maxSwitches)
   return {
     mode,
@@ -214,6 +408,27 @@ function normalizePolicy(input = {}, fallback = DEFAULT_POLICY) {
     // Backward compatible: a persisted state.json written before the
     // supervision layer has no `supervision` key and receives the defaults.
     supervision: normalizeSupervision(input.supervision, fallback.supervision ?? SUPERVISION_DEFAULT),
+    providerConcurrency: normalizeProviderConcurrency(input.providerConcurrency ?? fallback.providerConcurrency),
+    superagent: normalizeSuperagentBudget(input.superagent, fallback.superagent ?? DEFAULT_POLICY.superagent),
+  }
+}
+
+/**
+ * The Super Agent's own runtime budget, configurable through the policy.
+ *
+ * These were three literals in the host (`maxConcurrentAgents: 2`,
+ * `cyclesPerHour: 6`, `modelCallsPerHour: 12`), so an operator running dozens of
+ * projects could not let the agent keep up. 0 means unlimited for all three.
+ */
+function normalizeSuperagentBudget(input, fallback = DEFAULT_POLICY.superagent) {
+  const source = input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}
+  const previous = fallback !== null && typeof fallback === 'object' ? fallback : DEFAULT_POLICY.superagent
+  return {
+    maxConcurrentAgents: normalizeConcurrencyLimit(source.maxConcurrentAgents, previous.maxConcurrentAgents),
+    // Hourly ceilings are RATE limits, not concurrency: they do not belong under
+    // the concurrency hard ceiling (fifty sessions legitimately exceed 256 calls).
+    cyclesPerHour: clampInt(source.cyclesPerHour, 0, 100_000, previous.cyclesPerHour),
+    modelCallsPerHour: clampInt(source.modelCallsPerHour, 0, 100_000, previous.modelCallsPerHour),
   }
 }
 
@@ -235,8 +450,8 @@ function normalizeSupervision(input, fallback = SUPERVISION_DEFAULT) {
   return {
     enabled: source.enabled === undefined ? previous.enabled !== false : source.enabled === true,
     emblem: EMBLEMS.includes(source.emblem) ? source.emblem : (EMBLEMS.includes(previous.emblem) ? previous.emblem : SUPERVISION_DEFAULT.emblem),
-    maxConcurrentDelegations: clampInt(source.maxConcurrentDelegations, 0, 16, previous.maxConcurrentDelegations ?? SUPERVISION_DEFAULT.maxConcurrentDelegations),
-    maxDelegationsPerHour: clampInt(source.maxDelegationsPerHour, 0, 200, previous.maxDelegationsPerHour ?? SUPERVISION_DEFAULT.maxDelegationsPerHour),
+    maxConcurrentDelegations: normalizeConcurrencyLimit(source.maxConcurrentDelegations, previous.maxConcurrentDelegations ?? SUPERVISION_DEFAULT.maxConcurrentDelegations),
+    maxDelegationsPerHour: clampInt(source.maxDelegationsPerHour, 0, 10_000, previous.maxDelegationsPerHour ?? SUPERVISION_DEFAULT.maxDelegationsPerHour),
     maxDelegationDepth: clampInt(source.maxDelegationDepth, 0, 8, previous.maxDelegationDepth ?? SUPERVISION_DEFAULT.maxDelegationDepth),
     allowCrossProjectDelegation: source.allowCrossProjectDelegation === undefined
       ? previous.allowCrossProjectDelegation === true
@@ -2978,7 +3193,8 @@ function supervisionBuildRecommendations({ tasks, assignments, proposals, policy
   const pendingProposalTaskIds = new Set(proposals
     .filter(proposal => proposal?.status === 'pending')
     .map(proposal => String(proposal?.taskId)))
-  const withinLimits = inFlight < config.maxConcurrentDelegations && usedThisHour < config.maxDelegationsPerHour
+  // Unlimited (`null`) contributes no ceiling; `0` still means zero.
+  const withinLimits = !concurrencyReached(inFlight, config.maxConcurrentDelegations) && usedThisHour < config.maxDelegationsPerHour
   const worktreeCapable = policy?.executionBackend === 'taskboard' || policy?.executionBackend === 'contract'
 
   const push = (kind, task, reason, evidence) => {

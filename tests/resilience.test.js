@@ -325,6 +325,15 @@ test('overlapping ticks coalesce and concurrent dispatches start exactly one ses
     assert.equal(tickB.status, 200)
     assert.equal(made.created.length, 1, 'a coalesced tick must not launch twice')
 
+    // Finish the first attempt so the project's shared tree is free: the work-tree
+    // lock (a different guarantee, tested elsewhere) would otherwise serialise the
+    // two dispatches before the single-winner race could be observed.
+    made.listeners.get('session/event')({ id: made.created[0].sessionId }, {
+      type: 'turn/end',
+      time: Date.now(),
+      data: { reason: { kind: 'completed', structuredResult: { status: 'done', summary: 'first attempt', testsRun: ['node --test tests/: pass'] } } },
+    })
+    assert.ok(await waitFor(() => made.created.length === 1))
     tasksRef.tasks = [{ ...structuredClone(TASK), id: 't-res-2', version: 2 }]
     const [a, b] = await Promise.all([
       callJson(handler(), 'POST', '/dispatch', { taskId: 't-res-2' }),

@@ -25,7 +25,7 @@ import { NOW, photoScenario, largeScenario } from './fixtures/sessions.js'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 const MODULES = [
-  'src/contracts/model.js',
+  'src/contracts/concurrency.js', 'src/contracts/model.js',
   'src/contracts/decisions-schema.js',
   'src/contracts/agent-roles.js',
   'src/supervisor/projection.js',

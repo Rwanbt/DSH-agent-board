@@ -473,6 +473,24 @@ export function workItemFromIssue(issue, { projectId } = {}) {
 }
 
 /**
+ * The working TREE an attempt writes to.
+ *
+ * A `worktree` isolation owns its own directory, so two of them never race; every
+ * other isolation writes into the project's shared directory, so at most one may
+ * be active there. This is the key that replaces "one item per project": what
+ * must be serialised is the TREE, not the project.
+ *
+ * @param {{projectId?: string, workspaceId?: string, isolation?: string|null, taskIsolation?: string|null, id?: string}} assignment
+ * @returns {string}
+ */
+export function workingTreeKeyOf(assignment) {
+  const projectId = String(assignment?.projectId ?? assignment?.workspaceId ?? '')
+  const isolation = assignment?.isolation ?? assignment?.taskIsolation ?? null
+  if (isolation === 'worktree') return `worktree:${projectId}:${String(assignment?.id ?? assignment?.taskId ?? '')}`
+  return `shared:${projectId}`
+}
+
+/**
  * Is this work item dispatchable right now?
  *
  * Derived only from durable facts (the assignment journal), never from a timer:
@@ -518,18 +536,17 @@ export function workItemReadinessOf(item, { assignments = [], now = Date.now() }
       return { ready: false, reason: WORK_READINESS_REASONS.completed, attempts: mine.length }
     }
   }
-  // ONE work item per project at a time: a synthetic dispatch forces
+  // SERIALISE THE TREE, not the project. A synthetic dispatch forces
   // `isolation:'none'` in the project's shared working tree, so two of them would
-  // race on the same files (and on `.git/index.lock`). A Task Board card owns its
-  // isolation contract, so an assignment without `workSource` never blocks here.
-  // The check sits after the completed verdict and before the retry rules: a
-  // completed item keeps `work_item_completed`, and a retry is reported again
-  // once the contending item of the project has ended.
-  const contender = (Array.isArray(assignments) ? assignments : []).find(assignment => isRecord(assignment)
-    && String(assignment.taskId ?? '') !== item.id
-    && String(assignment.workspaceId) === String(item.projectId)
+  // race on the same files (and on `.git/index.lock`); a Task Board card that owns
+  // a worktree writes elsewhere and may run in parallel. The check sits after the
+  // completed verdict and before the retry rules: a completed item keeps
+  // `work_item_completed`, and a retry is reported again once the contending
+  // assignment of the same tree has ended.
+  const itemTree = workingTreeKeyOf({ projectId: item.projectId, isolation: item.isolation ?? null, id: item.id })
+  const contender = all.find(assignment => String(assignment.taskId ?? '') !== item.id
     && ACTIVE_ASSIGNMENT_STATUSES.includes(assignment.status)
-    && assignment.workSource !== null && assignment.workSource !== undefined)
+    && workingTreeKeyOf(assignment) === itemTree)
   if (contender !== undefined) {
     return { ready: false, reason: WORK_READINESS_REASONS.projectBusy, attempts: mine.length }
   }

@@ -21,6 +21,9 @@ import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PARTS = [
+  // Concurrency limits first: `contracts/model.js` imports the normalisers, and
+  // the concatenated bundle resolves names by order.
+  'src/contracts/concurrency.js',
   'src/contracts/model.js',
   // The public decisions contract (v1): ONE decoder for the host payload, shared
   // by the store and the panels, so the inbox can never read an array that the

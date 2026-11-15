@@ -159,9 +159,14 @@ test('one synthetic work item per project at a time (shared working tree)', () =
   const elsewhere = [{ taskId: 'other', workspaceId: 'q', status: 'running', startedAt: 5, workSource: { fingerprint: 'wf-q1' } }]
   assert.equal(workItemReadinessOf(item, { assignments: elsewhere, now: 10 }).reason, WORK_READINESS_REASONS.ready)
 
-  // A Task Board card owns its isolation contract: it never blocks a work item.
-  const card = [{ taskId: 't-card', workspaceId: 'p', status: 'running', startedAt: 5 }]
+  // A Task Board card that owns its own worktree writes elsewhere: it does not
+  // contend with the project's shared tree.
+  const card = [{ taskId: 't-card', workspaceId: 'p', status: 'running', startedAt: 5, isolation: 'worktree' }]
   assert.equal(workItemReadinessOf(item, { assignments: card, now: 10 }).reason, WORK_READINESS_REASONS.ready)
+  // …but a card running in the SAME shared directory does (P1-F: the lock covers
+  // both backends, because what matters is the tree, not the backend).
+  const sharedCard = [{ taskId: 't-card', workspaceId: 'p', status: 'running', startedAt: 5, isolation: 'none' }]
+  assert.equal(workItemReadinessOf(item, { assignments: sharedCard, now: 10 }).reason, WORK_READINESS_REASONS.projectBusy)
 
   // Completed for its current fingerprint: the completed verdict wins over contention.
   const done = [
