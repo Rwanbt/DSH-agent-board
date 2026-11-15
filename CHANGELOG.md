@@ -4,6 +4,46 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-15
+
+The load release: the board stops counting STARTS per hour and starts measuring
+what a launch costs right now — the machine it runs on and the tokens it bills.
+
+### Added
+
+- **Real-time load contract** (`src/contracts/load-budget.js`): the effective
+  ceiling is the smallest of the operator's own value, the machine (parallelism
+  and free memory, or an explicit pair) and the remaining token pool. The binding
+  source is published with every `/state`, plus each reason's effective AND raw
+  figure, so a queue is explained instead of looking dead.
+- **Measured token pool**: `ctx.get('tokenMeter')` (the inject-free read) turns
+  the provider-reported usage into a ceiling; `policy.load.tokenBudget` is the
+  pool and `policy.load.tokensPerTurn` its price (measured, else the documented
+  fallback). `POST /api/v2/load/reset` starts a new wave and is audited.
+- **Migration of the old ceilings** (once, audited as `load_model_migrated`): a
+  document written by 0.1.0 carries `maxConcurrentDelegations: 2` and
+  `maxDelegationsPerHour: 6`; those two documented defaults become `null` ("no
+  ceiling of its own", the load model decides) while a value the operator chose
+  is preserved.
+- **Cockpit**: the settings panel shows the published load (running/ceiling and
+  the binding fact), edits the token pool and starts a new wave.
+
+### Changed
+
+- `maxDelegationsPerHour` is no longer the lever: it is an advanced safety valve,
+  shown last, and an explicit `null` now means "no rate limit at all".
+- A spent pool or a full machine QUEUES a card (`load_exhausted`); a running
+  session is never preempted to make room.
+
+### Fixed
+
+- A `null` rate limit was compared with `<`/`>=`, so "unlimited" refused every
+  delegation (`src/orchestrator/delegation.js`, `src/supervisor/super-orchestrator.js`).
+- Two documents declaring the same line were collapsed into one work item, so a
+  distinct section could be skipped as already done.
+- Reading an undeclared Cordis service as a property throws; the executor probe
+  now answers `undefined` for an absent capability instead of aborting its caller.
+
 ## [0.2.0] - 2026-11-15
 
 The production-ready autonomy release: the cockpit sees the inbox, a finished turn

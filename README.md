@@ -86,8 +86,10 @@ inside your mandate, executes.
 - **Supervision** — a workspace-level Super Orchestrator **layer** (not an AI
   agent) that aggregates real project/agent/task facts, exposes blocks and
   cross-project dependencies, proposes (never applies) reassignments, and gates
-  board-owned delegations with concurrency/hourly/depth/cycle limits. The
-  `Projets` tree and `Hiérarchie` views keep role/status/task-state filters.
+  board-owned delegations with concurrency/depth limits, and admits a launch on the
+  real-time load: what the machine can carry and what your remaining token pool
+  pays for, with the binding fact published (see `docs/adr/0003-load-in-real-time.md`).
+  The `Projets` tree and `Hiérarchie` views keep role/status/task-state filters.
 - **Cards & branches** — sessions from the native `sessions.list` snapshot,
   sub-agents from the `subagentCatalog` projection and/or `parentId`, grouped by
   DSH workspace, collapsible sub-trees, compact mode, responsive down to a phone

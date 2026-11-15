@@ -147,3 +147,46 @@ Still open by design (see `docs/LIMITATIONS.md` P5-1…P5-9): 50 simultaneous HO
 sessions need worktree isolation; no live 50-session/provider run; no OS/toast
 notification delivery; the mobile band height is a CSS contract, not a measured
 pixel; the live release steps are prepared but not executed.
+
+## Lot 11 — real load instead of an hourly throttle (round 3)
+
+Asked by the operator after round 2: a zero/hourly ceiling made the product
+unusable, and a rate over time measures starts, not load. The decision: admit a
+launch on `min(operator, machine, token pool)`, publish which one binds, and treat
+two same-title declarations in two documents as two works.
+
+| Fact | Value |
+|---|---|
+| Commits | `5082fb7` (identity), `812cd2c` (load contract), `a8d8b08` (policy + one-shot lift), `462a5a1` (Cordis probe), `5c99224` (calibration + declared machine), `8fc9086` (host gate), `2e393cd` (admission test), `38b712b` (cockpit) |
+| Tests | **775 pass, 0 fail, 0 skipped** (760 before Lot 11) |
+| Bundle | 713 597 bytes, 26 modules, byte-identical after `npm run client` |
+| `npm run check` | green at every commit boundary |
+| Machine facts (this box) | 16 parallelism, 1.90 GB free as reported by Windows |
+
+### Decisions taken with the operator
+
+- The 0.1.0 ceilings (2 concurrent, 6 starts/hour) are lifted ONCE to `null`
+  (audited `load_model_migrated`); a deliberate non-default value is kept. The
+  hourly field survives as an advanced valve and an explicit `null` now means
+  "no rate limit".
+- The machine guard never blocks everything (floored at one, raw figure
+  published); the token pool may reach zero and is published as `blocked`.
+- `maxDelegationsPerHour: 0` keeps meaning zero (an existing 0.1.0 test pins it);
+  the UI floor of one applies to configured ceilings, and Pause is the real brake.
+
+### The one production incident of this round
+
+The first host wiring read `ctx.tokenMeter` as a PROPERTY. A Cordis context
+throws on an undeclared service, the throw escaped a `/state` route promise and
+took the Host down while the plugin was live. Fixed by reading optional services
+through `ctx.get(name)` (inject-free) in `tokenMeterOf()`, and by guarding the
+direct read in `src/executors/dsh.js`. It also migrated the operator's real
+`state.json` (the plugin was live): the two ceilings there are now `null` and the
+audit trail carries the `from` values.
+
+### Still open
+
+- P11-1…P11-4 in `docs/LIMITATIONS.md` (heuristic machine guard, fallback price
+  per turn, monotonic wave counter, no preemption).
+- No live provider run: the pool and the ceilings were exercised on fixtures and a
+  fake `tokenMeter`, never against a real provider.

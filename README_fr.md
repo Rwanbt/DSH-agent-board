@@ -90,7 +90,10 @@ dans les limites de votre mandat, exécute.
   agent IA) qui agrège des faits réels projet/agent/tâche, expose les blocages et
   dépendances inter-projets, propose (sans jamais appliquer) des réaffectations,
   et encadre les délégations du board avec des limites de
-  concurrence/heure/profondeur/cycle. Les vues `Projets` et `Hiérarchie`
+  concurrence/profondeur, puis n'admet un lancement qu'en fonction de la charge
+  réelle : ce que la machine peut porter et ce que votre pool de jetons restant
+  peut payer, la contrainte qui mord étant publiée (voir
+  `docs/adr/0003-load-in-real-time.md`). Les vues `Projets` et `Hiérarchie`
   conservent les filtres rôle/statut/état de tâche.
 - **Cartes et branches** — sessions issues du snapshot natif `sessions.list`,
   sous-agents depuis la projection `subagentCatalog` et/ou `parentId`, regroupés
