@@ -568,11 +568,16 @@ function dabMakePage(store, ctx) {
         onToggleProject: toggleProject,
         onSetProjectLevel: (projectId, level) => act('project-level', () => store.setProject(projectId, { level })),
         onSetProjectPriority: (projectId, priority) => act('project-priority', () => store.setProject(projectId, { priority })),
+        // Lot 5: the concurrency ceilings the launch gate reads, edited in place.
+        onSetProjectConcurrency: (projectId, maxConcurrent) => act('project-concurrency', () => store.setProject(projectId, { maxConcurrent })),
+        onSetPolicy: policy => act('policy', () => store.setPolicy(policy)),
         onSetProjectModel: (projectId, model) => act('project-model', () => store.setProject(projectId, { model })),
         onConfirmAllProjects: confirm => act('scope', () => store.setScope('all', undefined, confirm)),
         onAddDirective: input => act('directive', () => store.addDirective(input)),
         onRevokeDirective: id => act('revoke', () => store.revokeDirective(id)),
         onAnswerDecision: (id, optionId) => act('decision', () => store.answerDecision(id, optionId)),
+        // Lot 5b: one gesture for same-scope approvals; each grant stays single-use.
+        onAnswerDecisions: decisions => act('decisions-bulk', () => store.answerDecisions(decisions)),
         onSetLevel: level => act('level', () => store.setLevel(level)),
         onSetModel: model => actRef.current('model', () => store.setSuperagentModel(model)),
         onModelInfo: (provider, model) => store.modelInfo(provider, model),

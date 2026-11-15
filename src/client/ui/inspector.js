@@ -179,12 +179,45 @@ function DabAllProjectsConfirm({ confirmText = '', onChange, onConfirm, onCancel
 }
 
 /** Decision inbox: only REAL pending decisions, never an implied answer. */
-function DabSuperagentDecisions({ superagent, filter = 'decisions', onFilter, onAnswer, busy }) {
+function DabSuperagentDecisions({ superagent, filter = 'decisions', onFilter, onAnswer, onAnswerBulk, attention = null, busy }) {
   const h = React.createElement
   const groups = dabDecisionGroups(superagent?.decisions)
   const active = filter === 'approvals' ? 'approvals' : 'decisions'
   const list = active === 'approvals' ? groups.approvals : groups.pending
+  // Grouped approval: approvals that share the SAME project and action are one
+  // decision for the operator, even though each keeps its own single-use grant.
+  const bulkGroups = (() => {
+    const byKey = new Map()
+    for (const decision of groups.approvals) {
+      const key = `${decision.projectId ?? '*'}|${decision.action ?? ''}`
+      const entry = byKey.get(key)
+      if (entry === undefined) byKey.set(key, { key, projectId: decision.projectId ?? null, action: decision.action ?? '', decisions: [decision] })
+      else entry.decisions.push(decision)
+    }
+    return [...byKey.values()].filter(entry => entry.decisions.length > 1)
+  })()
+  const attentionItems = Array.isArray(attention?.items) ? attention.items.slice(0, 3) : []
   return h('div', { className: 'dab-sa-inbox', 'data-filter': active },
+    // What is waiting BEHIND the decision, in one line: enough to decide without
+    // opening the session.
+    attentionItems.length > 0
+      ? h('ul', { className: 'dab-sa-attention', 'aria-label': dabT('superAttentionLabel') },
+        attentionItems.map(entry => h('li', { key: entry.id, className: 'dab-sa-attention-row', 'data-severity': entry.severity },
+          h('span', { className: 'dab-tag' }, entry.severity),
+          h('span', { className: 'dab-sa-attention-title' }, entry.title),
+          h('span', { className: 'dab-muted' }, ` — ${entry.suggestedAction} (${entry.costToResolveSeconds}s)`))))
+      : null,
+    bulkGroups.length > 0
+      ? h('div', { className: 'dab-sa-bulk' },
+        bulkGroups.map(group => h('button', {
+          key: group.key,
+          type: 'button',
+          className: 'dab-btn dab-sa-bulk-approve',
+          'data-count': String(group.decisions.length),
+          disabled: busy === true,
+          onClick: () => onAnswerBulk?.(group.decisions.map(decision => ({ id: decision.id, optionId: 'approve' }))),
+        }, `${dabT('superDecisionsBulkApprove', { n: group.decisions.length })} · ${group.action || dabT('superDecisionScopeSame')}`)))
+      : null,
     h('div', { className: 'dab-sa-inbox-head' },
       h('h3', { className: 'dab-sa-section-title' }, dabT('superDecisions')),
       groups.pending.length > 0
@@ -251,7 +284,7 @@ function DabSuperagentDecisions({ superagent, filter = 'decisions', onFilter, on
 }
 
 /** Vue d'ensemble: objective, steps, factual result, capabilities, incidents. */
-function DabSuperagentOverview({ superagent, mandate, capabilities, host, context, workspace, onOpenDetail, onAnswer, decisionFilter, onDecisionFilter, busy }) {
+function DabSuperagentOverview({ superagent, mandate, capabilities, host, context, workspace, onOpenDetail, onAnswer, onAnswerBulk, attention = null, decisionFilter, onDecisionFilter, busy }) {
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
   const plan = facts.plan ?? {}
@@ -337,13 +370,14 @@ function DabSuperagentOverview({ superagent, mandate, capabilities, host, contex
         : h('ul', { className: 'dab-sa-journal' }, journal.shown.map(entry => h('li', { key: `${entry.at}-${entry.kind}` },
           h('span', { className: 'dab-sa-step-time' }, dabSaMoment(entry.at) ?? ''), String(entry.summary ?? entry.kind ?? '?')))),
       dabSaExtraNode(h, journal.extra)),
-    h(DabSuperagentDecisions, { superagent, filter: decisionFilter, onFilter: onDecisionFilter, onAnswer, busy }))
+    h(DabSuperagentDecisions, { superagent, filter: decisionFilter, onFilter: onDecisionFilter, onAnswer, onAnswerBulk, attention, busy }))
 }
 
 /** Projets: real portfolio, per-project policy, scope, Simuler (dry-run). */
 function DabSuperagentProjects({
   superagent, mandate, host, context, dryRun, dryRunBusy, busy,
   onToggleProject, onSetProjectLevel, onSetProjectPriority, onSetProjectModel, onConfirmAllProjects, onDryRun, scopeConfirmOpen,
+  onSetProjectConcurrency,
 }) {
   const h = React.createElement
   const [confirming, setConfirming] = React.useState(false)
@@ -442,6 +476,19 @@ function DabSuperagentProjects({
             className: 'dab-input dab-sa-priority', type: 'number', min: 0, max: 9, value: row.priority,
             'aria-label': `${dabT('superProjectPriority')} : ${row.title}`,
             onChange: event => onSetProjectPriority?.(row.id, Number(event?.target?.value)),
+          })),
+        // Per-project concurrency ceiling: one project may saturate without
+        // freezing the others. Empty means "inherit the global ceiling".
+        h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+          h('span', { className: 'dab-sa-field-label' }, dabT('superProjectConcurrency')),
+          h('input', {
+            className: 'dab-input dab-sa-project-concurrency', type: 'number', min: 0, max: 256,
+            value: row.maxConcurrent === null || row.maxConcurrent === undefined ? '' : String(row.maxConcurrent),
+            'aria-label': `${dabT('superProjectConcurrency')} : ${row.title}`,
+            onChange: event => {
+              const raw = event?.target?.value ?? ''
+              onSetProjectConcurrency?.(row.id, raw === '' ? null : Math.max(0, Math.trunc(Number(raw))))
+            },
           }))),
       h('div', { className: 'dab-sa-project-facts' },
         typeof onSetProjectModel === 'function' && modelRoutes.length > 0
@@ -771,6 +818,7 @@ function DabSelfTest({ busy, onSelfTest }) {
 function DabSuperagentSettings({
   superagent, mandate, capabilities, host, context, ui, busy, taskboard,
   onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
+  onSetPolicy,
 }) {
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
@@ -811,6 +859,49 @@ function DabSuperagentSettings({
         type: 'button', className: 'dab-btn dab-sa-reapply-level', disabled: busy === true,
         onClick: () => onSetLevel(level),
       }, dabT('superLevelReapply')) : null),
+    // Concurrency is configuration (Lot 5): the operator edits the SAME limits the
+    // launch gate reads, and the panel shows the exact running/limit pair.
+    dabSaSection(h, 'concurrency', dabT('superSettingsConcurrency'),
+      (() => {
+        const policy = dabSaObject(host?.policy) ?? {}
+        const limits = dabSaObject(host?.budget?.limits) ?? {}
+        const used = dabSaObject(host?.budget?.used) ?? {}
+        const supervision = dabSaObject(policy.supervision) ?? {}
+        const agents = dabSaObject(policy.superagent) ?? {}
+        const providers = Array.isArray(host?.host?.models?.providers) ? host.host.models.providers : (Array.isArray(host?.models?.providers) ? host.models.providers : [])
+        const providerLimits = dabSaObject(policy.providerConcurrency) ?? {}
+        const limitText = value => (value === null || value === undefined ? dabT('superLimitUnlimited') : String(value))
+        const numberField = (className, label, value, onChange) => h('label', { className: 'dab-sa-field dab-sa-field-inline' },
+          h('span', { className: 'dab-sa-field-label' }, label),
+          h('input', {
+            className: `dab-input ${className}`, type: 'number', min: 0, max: 256,
+            value: value === null || value === undefined ? '' : String(value),
+            'aria-label': label,
+            onChange: event => {
+              const raw = event?.target?.value ?? ''
+              // An empty field means UNLIMITED (null), never 0: 0 is a freeze.
+              onChange(raw === '' ? null : Math.max(0, Math.trunc(Number(raw))))
+            },
+          }))
+        return h('div', { className: 'dab-sa-concurrency' },
+          h('dl', { className: 'dab-sa-dl dab-sa-concurrency-running' },
+            h('dt', null, dabT('superConcurrencyRunning')),
+            h('dd', null, `${Number(used.concurrency) || 0} / ${limitText(limits.maxConcurrent)}`)),
+          numberField('dab-sa-max-concurrent', dabT('superConcurrencyGlobal'), policy.maxConcurrent ?? null, value => onSetPolicy?.({ maxConcurrent: value })),
+          numberField('dab-sa-max-delegations', dabT('superConcurrencySupervision'), supervision.maxConcurrentDelegations ?? null, value => onSetPolicy?.({ supervision: { ...supervision, maxConcurrentDelegations: value } })),
+          numberField('dab-sa-max-agents', dabT('superConcurrencyAgents'), agents.maxConcurrentAgents ?? null, value => onSetPolicy?.({ superagent: { ...agents, maxConcurrentAgents: value } })),
+          providers.length === 0
+            ? null
+            : h('div', { className: 'dab-sa-provider-limits' },
+              providers.map(provider => numberField(`dab-sa-provider-${provider.id}`, provider.name ?? provider.id, providerLimits[provider.id] ?? null,
+                value => {
+                  const next = { ...providerLimits }
+                  if (value === null) delete next[provider.id]
+                  else next[provider.id] = value
+                  onSetPolicy?.({ providerConcurrency: next })
+                }))),
+          h('div', { className: 'dab-muted' }, dabT('superConcurrencyHint')))
+      })()),
     dabSaSection(h, 'budget', dabT('superSettingsBudget'),
       budget === null
         ? dabSaReason(h, 'budget_not_published')
@@ -901,6 +992,7 @@ function DabSuperagentInspector(props) {
     onClose, onOpenDetail, onDryRun, onToggleProject, onSetProjectLevel, onSetProjectPriority, onSetProjectModel, onConfirmAllProjects,
     onAddDirective, onRevokeDirective, onAnswerDecision, onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume,
     onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
+    onSetPolicy, onSetProjectConcurrency, onAnswerDecisions,
   } = props
   const facts = dabSuperagentFacts(superagent, mandate, context)
   const [tab, setTab] = React.useState(typeof initialTab === 'string' ? initialTab : 'overview')
@@ -974,6 +1066,7 @@ function DabSuperagentInspector(props) {
     ? h(DabSuperagentProjects, {
       superagent, mandate, host, context, dryRun, dryRunBusy, busy,
       onToggleProject, onSetProjectLevel, onSetProjectPriority, onSetProjectModel, onConfirmAllProjects, onDryRun,
+      onSetProjectConcurrency,
     })
     : activeTab === 'directives'
       ? h(DabSuperagentDirectives, { superagent, portfolio, busy, onAdd: onAddDirective, onRevoke: onRevokeDirective })
@@ -981,10 +1074,12 @@ function DabSuperagentInspector(props) {
         ? h(DabSuperagentSettings, {
           superagent, mandate, capabilities, host, context, ui, busy, taskboard,
           onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
+  onSetPolicy,
         })
         : h(DabSuperagentOverview, {
           superagent, mandate, capabilities, host, context, busy, workspace,
-          onOpenDetail, onAnswer: onAnswerDecision, decisionFilter, onDecisionFilter: setDecisionFilter,
+          onOpenDetail, onAnswer: onAnswerDecision, onAnswerBulk: onAnswerDecisions, attention: host?.attention,
+          decisionFilter, onDecisionFilter: setDecisionFilter,
         })
 
   return h('div', { className: 'dab-insp-overlay dab-sa-inspector', 'data-narrow': narrow === true ? 'true' : 'false' },

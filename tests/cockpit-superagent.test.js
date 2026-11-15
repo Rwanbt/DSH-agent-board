@@ -1103,3 +1103,78 @@ test('settings explain level profiles and let an existing L4 reapply permissions
   const busy = render(cockpit.DabSuperagentSettings({ ...props, busy: true }))
   assert.equal(byClass(busy, 'dab-sa-reapply-level')[0].props.disabled, true)
 })
+
+// ------------------------------------------- concurrency settings (Lot 5 UI)
+test('the inspector edits the SAME concurrency limits the launch gate reads', () => {
+  const patches = []
+  const host = {
+    ...makeHost(),
+    policy: { maxConcurrent: null, supervision: { maxConcurrentDelegations: 4, enabled: true }, superagent: { maxConcurrentAgents: 6 }, providerConcurrency: { deepseek: 3 } },
+    budget: { limits: { maxConcurrent: null }, used: { concurrency: 12 } },
+    host: { ...makeHost().host, models: { discovered: true, providers: [{ id: 'deepseek', name: 'DeepSeek', models: [{ id: 'v4' }] }] } },
+  }
+  const tree = render(cockpit.DabSuperagentSettings({
+    superagent: makeInactiveSuperagent(), mandate: makeMandate(), host, context: {}, ui: {}, taskboard: makeHost().taskboardPublic,
+    onSetPolicy: patch => { patches.push(patch); return { ok: true } },
+  }))
+  // An unlimited global ceiling is SHOWN as unlimited, never as 0.
+  assert.match(textOf(byClass(tree, 'dab-sa-concurrency-running')[0]), /12 \/ unlimited/)
+  const globalInput = byClass(tree, 'dab-sa-max-concurrent')[0]
+  assert.equal(globalInput.props.value, '', 'unlimited renders as an empty field')
+  globalInput.props.onChange({ target: { value: '50' } })
+  globalInput.props.onChange({ target: { value: '' } })
+  assert.deepEqual(patches, [{ maxConcurrent: 50 }, { maxConcurrent: null }], 'empty means unlimited, never 0')
+  byClass(tree, 'dab-sa-max-delegations')[0].props.onChange({ target: { value: '16' } })
+  assert.equal(patches[2].supervision.maxConcurrentDelegations, 16)
+  byClass(tree, 'dab-sa-provider-deepseek')[0].props.onChange({ target: { value: '8' } })
+  assert.deepEqual(patches[3].providerConcurrency, { deepseek: 8 })
+  // Clearing a provider ceiling removes the entry instead of setting 0.
+  byClass(tree, 'dab-sa-provider-deepseek')[0].props.onChange({ target: { value: '' } })
+  assert.deepEqual(patches[4].providerConcurrency, {})
+
+  // The per-project ceiling lives on the project row and inherits when empty.
+  const projectPatches = []
+  const projects = render(cockpit.DabSuperagentProjects({
+    superagent: makeInactiveSuperagent(), mandate: makeMandate(), host: makeHost(), context: {}, dryRun: null,
+    onSetProjectConcurrency: (projectId, value) => projectPatches.push([projectId, value]),
+  }))
+  const field = byClass(projects, 'dab-sa-project-concurrency')[0]
+  assert.equal(field.props.value, '', 'no project ceiling yet')
+  field.props.onChange({ target: { value: '3' } })
+  field.props.onChange({ target: { value: '' } })
+  assert.deepEqual(projectPatches[0], ['ws:a', 3])
+  assert.deepEqual(projectPatches[1], ['ws:a', null])
+})
+
+// ------------------------------------- grouped approval + context (Lot 5b UI)
+test('same-scope approvals are grouped, each grant staying single-use', () => {
+  const approval = (id, projectId, taskId) => ({
+    id, kind: 'approval', projectId, action: 'launch', status: 'pending', title: `Approve ${id}`, taskIds: [taskId], urgency: 'normal',
+    options: [{ id: 'approve', label: 'Approve', effect: 'approve' }, { id: 'reject', label: 'Reject', effect: 'reject' }],
+    costToResolveSeconds: 30, createdAt: 1,
+  })
+  const sent = []
+  const superagent = makeInactiveSuperagent({
+    decisions: [approval('d1', 'ws:a', 't1'), approval('d2', 'ws:a', 't2'), approval('d3', 'ws:b', 't3')],
+  })
+  const attention = {
+    items: [{ id: 'att-1', severity: 'blocking', title: 'Approve the launch', suggestedAction: 'Approve or reject.', costToResolveSeconds: 30 }],
+    counters: { total: 1, blocking: 1, high: 0, notify: 1, costSeconds: 30 },
+  }
+  const tree = render(cockpit.DabSuperagentDecisions({ superagent, filter: 'approvals', onAnswerBulk: entries => sent.push(entries), attention }))
+  // Only the SAME project+action pair is grouped: ws:a has two, ws:b has one.
+  const bulk = byClass(tree, 'dab-sa-bulk-approve')
+  assert.equal(bulk.length, 1)
+  assert.equal(bulk[0].props['data-count'], '2')
+  bulk[0].props.onClick()
+  assert.deepEqual(sent, [[{ id: 'd1', optionId: 'approve' }, { id: 'd2', optionId: 'approve' }]])
+  // The context needed to decide is on screen, one line per entry.
+  assert.match(textOf(byClass(tree, 'dab-sa-attention')[0]), /Approve the launch/)
+  assert.match(textOf(byClass(tree, 'dab-sa-attention')[0]), /30s/)
+  // No grouping without a same-scope pair.
+  const single = render(cockpit.DabSuperagentDecisions({
+    superagent: makeInactiveSuperagent({ decisions: [approval('d1', 'ws:a', 't1'), approval('d3', 'ws:b', 't3')] }),
+    filter: 'approvals', onAnswerBulk: () => {},
+  }))
+  assert.equal(byClass(single, 'dab-sa-bulk-approve').length, 0)
+})

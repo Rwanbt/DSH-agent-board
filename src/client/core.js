@@ -373,6 +373,8 @@ export function createBoardStore(ctx, options = {}) {
     unack: sessionId => post('/ack', { sessionId, seen: false }),
     resume: () => post('/resume', {}),
     setMode: mode => post('/mode', { mode }),
+    /** Full policy patch. The host normalises and persists every limit. */
+    setPolicy: policy => post('/policy', { policy: policy ?? {} }),
     stop: () => post('/stop', {}),
     tick: () => post('/tick', {}),
     decide: (proposalId, approve) => post(`/proposals/${encodeURIComponent(proposalId)}/decide`, { approve }),
@@ -421,6 +423,8 @@ export function createBoardStore(ctx, options = {}) {
     stopSuperagent: () => post('/superagent/stop', {}),
     cycleSuperagent: trigger => post('/superagent/cycle', { trigger: trigger ?? 'manual' }),
     setSuperagentModel: model => post('/superagent/model', model ?? {}),
+    /** Answer several same-scope decisions in ONE gesture (each stays single-use). */
+    answerDecisions: decisions => post('/superagent/decisions/bulk', { decisions: Array.isArray(decisions) ? decisions : [] }),
     /** Exact-route efforts for one model (read-only; no state refresh). */
     modelInfo: (provider, model) => request('POST', '/models/info', { provider, model }),
     probeTaskboard: () => post('/integrations/taskboard/probe', {}),
