@@ -26,8 +26,9 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const HERO = process.argv.includes('--hero')
 const WORK = join(ROOT, '.ux-harness', 'demo')
-const OUT = join(ROOT, 'docs', 'demo')
+const OUT = join(ROOT, HERO ? 'docs/design/hero' : 'docs/demo')
 const REACT = 'https://unpkg.com/react@18.3.1/umd/react.production.min.js'
 const REACT_DOM = 'https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js'
 
@@ -298,11 +299,13 @@ function mountScript() {
   // The demo can open a specific view (?view=projects) without a click, and the
   // seeded state is ALWAYS written so a reused browser profile cannot leak the
   // previous capture's view into this one.
-  const demoView = new URLSearchParams(location.search).get('view')
+  const demoParams = new URLSearchParams(location.search)
+  const demoView = demoParams.get('view')
+  const demoFilter = demoParams.get('filter')
   try {
     localStorage.setItem('dsh-agent-board:ui:v2', JSON.stringify({
       schema: 2, viewMode: demoView === 'projects' || demoView === 'hierarchy' ? demoView : 'global',
-      filter: 'attention', query: '', project: null, compact: false,
+      filter: demoFilter === 'all' || demoFilter === 'action' ? demoFilter : 'attention', query: '', project: null, compact: false,
       folded: [], expanded: [], collapsed: [], dismissed: [],
       roleFilter: null, statusFilter: null, taskStateFilter: null, supervisionOpen: false, notifications: true,
     }))
@@ -332,6 +335,8 @@ function mountScript() {
           toolbar: box(document.querySelector('.dab-toolbar')),
           rootBox: box(rootEl),
           cards: cards.length,
+          sections: [...document.querySelectorAll('.dab-section-title')].map(node => node.textContent),
+          activeFilter: document.querySelector('.dab-chip-btn[aria-pressed="true"]')?.textContent ?? null,
           projectGroups: document.querySelectorAll('.dab-project').length,
           branches: document.querySelectorAll('.dab-branch').length,
           kids: document.querySelectorAll('.dab-kids').length,
@@ -342,7 +347,30 @@ function mountScript() {
           bodyBg: getComputedStyle(document.body).backgroundColor,
           cardBg: cards[0] === undefined ? null : getComputedStyle(cards[0]).backgroundColor,
           textColor: rootEl === null ? null : getComputedStyle(rootEl).color,
-          titles: cards.slice(0, 8).map(card => card.querySelector('.dab-gcard-name')?.textContent ?? null),
+          titles: cards.slice(0, 12).map(card => card.querySelector('.dab-gcard-name')?.textContent ?? null),
+          // The hero must never show the host sign-in wall: this page mounts the
+          // plugin bundle alone, and these two facts prove it in the artifact.
+          signIn: {
+            textSeen: /Connectez-vous|Ajouter une clé API/.test(document.body.innerText ?? ''),
+            overlayElements: document.querySelectorAll('[class*="login"],[class*="signin"],[data-dsh-signin]').length,
+          },
+          theme: {
+            bodyBackground: getComputedStyle(document.body).backgroundColor,
+            scheme: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+            applied: (() => {
+              const channels = (getComputedStyle(document.body).backgroundColor.match(/[0-9]+/g) ?? []).slice(0, 3).map(Number)
+              if (channels.length !== 3) return null
+              return channels.reduce((sum, value) => sum + value, 0) / 3 < 96 ? 'dark' : 'light'
+            })(),
+          },
+          reachable: (() => {
+            const element = document.elementFromPoint(Math.floor(window.innerWidth / 2), Math.floor(window.innerHeight / 2))
+            return {
+              reachable: element !== null && element.closest('.dab-root') !== null,
+              tag: element?.tagName ?? null,
+              card: Boolean(element?.closest?.('.dab-gcard-wrap')),
+            }
+          })(),
           hostError: store.getSnapshot().hostError ?? null,
         }
         const pre = document.createElement('pre')
@@ -439,12 +467,12 @@ async function pollJson(url, timeoutMs = 15_000) {
  * lays out in, and the page reports when the fake state is painted, so the PNG
  * is deterministic instead of racing the first render.
  */
-async function shoot(chromium, url, { width, height, file, audit = false, view = null }) {
-  const profile = join(WORK, 'profile-' + width + 'x' + height + '-' + (view ?? 'global'))
+async function shoot(chromium, url, { width, height, file, audit = false, view = null, filter = null, scale = 1 }) {
+  const profile = join(WORK, 'profile-' + width + 'x' + height + '-' + (view ?? 'global') + '-' + (filter ?? 'default') + (scale === 1 ? '' : '-x' + scale))
   const port = 9200 + Math.floor(Math.random() * 600)
   const child = spawn(chromium, [
     '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run', '--no-default-browser-check',
-    '--disable-extensions', '--force-device-scale-factor=1', '--allow-file-access-from-files',
+    '--disable-extensions', '--force-device-scale-factor=' + scale, '--allow-file-access-from-files',
     '--remote-debugging-port=' + port, '--user-data-dir=' + profile, 'about:blank',
   ], { stdio: 'ignore' })
   try {
@@ -485,12 +513,13 @@ async function shoot(chromium, url, { width, height, file, audit = false, view =
     await send('Page.enable')
     await send('Runtime.enable')
     await send('Emulation.setDeviceMetricsOverride', {
-      width, height, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: height,
+      width, height, deviceScaleFactor: scale, mobile: false, screenWidth: width, screenHeight: height,
     })
     const loaded = once('Page.loadEventFired')
     const query = new URLSearchParams()
     if (audit) query.set('audit', '1')
     if (view !== null) query.set('view', view)
+    if (filter !== null) query.set('filter', filter)
     const suffix = query.toString() === '' ? '' : '?' + query.toString()
     await send('Page.navigate', { url: url + suffix })
     await loaded
@@ -500,16 +529,20 @@ async function shoot(chromium, url, { width, height, file, audit = false, view =
     })
     const metrics = ready.result?.value ?? {}
     if (metrics.width !== width) throw new Error('viewport mismatch: ' + JSON.stringify(metrics))
+    let report = null
     if (audit) {
       await new Promise(resolve => setTimeout(resolve, 450))
-      const report = await send('Runtime.evaluate', { returnByValue: true, expression: "document.getElementById('layout-audit')?.textContent ?? null" })
-      if (report.result?.value) console.log('layout ' + width + 'x' + height + ': ' + report.result.value)
+      const layout = await send('Runtime.evaluate', { returnByValue: true, expression: "document.getElementById('layout-audit')?.textContent ?? null" })
+      if (typeof layout.result?.value === 'string') {
+        try { report = JSON.parse(layout.result.value) } catch { report = null }
+      }
+      console.log('layout ' + width + 'x' + height + ': ' + (layout.result?.value ?? 'null'))
     }
     const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
     await writeFile(file, Buffer.from(shot.data, 'base64'))
     if (audit) console.log('audit ' + width + 'x' + height + ': ' + JSON.stringify(metrics))
     socket.close()
-    return { file, metrics }
+    return { file, metrics, report }
   } finally {
     child.kill()
   }
@@ -517,14 +550,68 @@ async function shoot(chromium, url, { width, height, file, audit = false, view =
 
 const url = await buildPage()
 const chromium = findChromium()
-const shots = [
-  { width: 1440, height: 900, file: join(OUT, 'demo-dark-desktop.png') },
-  { width: 1440, height: 1024, file: join(OUT, 'demo-dark-projects-desktop.png'), view: 'projects' },
-  { width: 390, height: 844, file: join(OUT, 'demo-dark-mobile.png') },
-]
-for (const shot of shots) {
-  const captured = await shoot(chromium, url, { ...shot, audit: true })
-  console.log('captured ' + shot.file + ' (' + shot.width + 'x' + shot.height + ', cards=' + captured.metrics.cards + ', viewport=' + captured.metrics.width + 'x' + captured.metrics.height + ')')
+
+if (HERO) {
+  const shots = [
+    { name: 'hero-desktop-1440x900', width: 1440, height: 900, filter: 'all', scale: 2 },
+    { name: 'hero-mobile-390x844', width: 390, height: 844, filter: 'all', scale: 2 },
+  ]
+  const metrics = {
+    generatedAt: new Date().toISOString(),
+    pipeline: 'node scripts/capture-demo-screenshots.mjs --hero',
+    theme: { requested: 'dark', applied: null },
+    dataset: {
+      fictional: true,
+      projects: PROJECTS.map(project => project.title),
+      sessions: SESSIONS.length,
+    },
+    signInOverlay: null,
+    shots: {},
+  }
+  let signIn = null
+  for (const shot of shots) {
+    const file = join(OUT, shot.name + '.png')
+    const captured = await shoot(chromium, url, {
+      width: shot.width, height: shot.height, file, filter: shot.filter, scale: shot.scale, audit: true,
+    })
+    const report = captured.report ?? {}
+    if ((report.cards ?? 0) === 0) throw new Error('no cards rendered for ' + shot.name)
+    signIn = report.signIn ?? signIn
+    metrics.theme.applied = report.theme?.applied ?? metrics.theme.applied
+    metrics.shots[shot.name] = {
+      file: 'docs/design/hero/' + shot.name + '.png',
+      viewport: { width: shot.width, height: shot.height },
+      scale: shot.scale,
+      view: report.view ?? null,
+      filter: report.activeFilter ?? null,
+      cards: report.cards ?? captured.metrics.cards,
+      sections: report.sections ?? [],
+      titles: report.titles ?? [],
+      reachable: report.reachable ?? null,
+    }
+    console.log('captured ' + file + ' (' + shot.width + 'x' + shot.height + ' @' + shot.scale + 'x, cards=' + report.cards + ', filter=' + report.activeFilter + ')')
+  }
+  const present = signIn?.textSeen === true || (signIn?.overlayElements ?? 0) > 0
+  metrics.signInOverlay = {
+    present,
+    textSeen: signIn?.textSeen ?? null,
+    overlayElements: signIn?.overlayElements ?? null,
+    note: 'The capture page mounts the plugin client bundle only: no host shell, no sign-in wall.',
+  }
+  await writeFile(join(OUT, 'metrics.json'), JSON.stringify(metrics, null, 2) + '\n', 'utf8')
+  console.log('metrics: ' + join(OUT, 'metrics.json'))
+  console.log('sign-in wall present: ' + present)
+  if (present) throw new Error('sign-in overlay detected: refusing to ship a hero that shows it')
+} else {
+  const shots = [
+    { width: 1440, height: 900, file: join(OUT, 'demo-dark-desktop.png') },
+    { width: 1440, height: 1024, file: join(OUT, 'demo-dark-projects-desktop.png'), view: 'projects' },
+    { width: 390, height: 844, file: join(OUT, 'demo-dark-mobile.png') },
+  ]
+  for (const shot of shots) {
+    const captured = await shoot(chromium, url, { ...shot, audit: true })
+    console.log('captured ' + shot.file + ' (' + shot.width + 'x' + shot.height + ', cards=' + captured.metrics.cards + ', viewport=' + captured.metrics.width + 'x' + captured.metrics.height + ')')
+  }
 }
 console.log('chromium: ' + chromium)
 console.log('dataset: ' + isoMinutesAgo(0) + ' — fictional projects Orion Studio / Nebula API / Atlas Docs')

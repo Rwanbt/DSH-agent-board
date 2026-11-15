@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/demo/demo-dark-desktop.png" alt="Agent Board cockpit (dark theme) — fictional demo dataset" width="100%">
+  <img src="docs/design/hero/hero.png" alt="Agent Board cockpit (dark theme) — desktop and mobile, fictional demo dataset" width="100%">
 </p>
 
 <h1 align="center">Agent Board</h1>
@@ -21,7 +21,8 @@
 
 > **About the screenshots:** they are rendered from the plugin's real client
 > bundle with a **fictional dataset** (no personal project, session or path).
-> Regenerate them with `node scripts/capture-demo-screenshots.mjs` — see
+> The hero is composed from the desktop and phone captures; regenerate
+> everything with `node scripts/capture-demo-screenshots.mjs` — see
 > [Screenshots](#screenshots).
 
 ---
@@ -370,6 +371,11 @@ node scripts/capture-demo-screenshots.mjs   # 1440x900, 1440x1024 (projects), 39
 The script prints the real viewport and the rendered card/branch/link counts, so
 a layout regression is visible without opening the image.
 
+The hero at the top is composed from the same harness with `--hero` and a small
+Pillow composer; the capture page mounts the plugin bundle alone, so the host
+sign-in wall never appears. Procedure, fictional dataset and evidence (ten
+cards, dark theme, no overlay): [docs/design/HERO-SHOTS.md](docs/design/HERO-SHOTS.md).
+
 ## Tests
 
 ```sh
@@ -389,7 +395,7 @@ node scripts/verify-live.mjs       # read-only status of both live integrations 
 - [Architecture](docs/ARCHITECTURE.md) · [Contracts & adapters](docs/CONTRACTS.md)
 - [GOAL 6 delivery record (mandate, Super Agent, forge)](docs/GOAL6-DELIVERY.md) · [contract](docs/GOAL6-CONTRACT.md) · [Task Board public-v1 audit](docs/TASKBOARD-PUBLIC-V1-AUDIT.md)
 - [Autonomy levels & profiles audit](docs/audit/AUTONOMY-LEVEL-PROFILES-2026-11-14.md) · [permissions/autonomy fixes](docs/audit/PERMISSIONS-AUTONOMY-FIXES-2026-11-13.md)
-- [Screenshots: what was removed and why](docs/EVIDENCE-SCREENSHOTS.md) · [GOAL 6 UI evidence](docs/e2e/GOAL6-UI-EVIDENCE.md)
+- [Screenshots: what was removed and why](docs/EVIDENCE-SCREENSHOTS.md) · [GOAL 6 UI evidence](docs/e2e/GOAL6-UI-EVIDENCE.md) · [hero pipeline](docs/design/HERO-SHOTS.md)
 - [Responsive cockpit contract](docs/UX-COCKPIT-CONTRACT.md) · [GOAL 5 delivery record](docs/GOAL5-DELIVERY.md)
 - [Mascots, supervision & Super Orchestrator](docs/MASCOTS-SUPER-ORCHESTRATOR.md)
 - [Task Board execution contract (proposed, simulated)](docs/TASKBOARD-CONTRACT.md) · [coordination](docs/TASKBOARD-COORDINATION.md)

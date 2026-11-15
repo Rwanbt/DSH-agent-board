@@ -1,0 +1,127 @@
+{
+  "generatedAt": "2026-11-15T00:30:36.554Z",
+  "pipeline": "node scripts/capture-demo-screenshots.mjs --hero",
+  "theme": {
+    "requested": "dark",
+    "applied": "dark"
+  },
+  "dataset": {
+    "fictional": true,
+    "projects": [
+      "Orion Studio",
+      "Nebula API",
+      "Atlas Docs"
+    ],
+    "sessions": 10
+  },
+  "signInOverlay": {
+    "present": false,
+    "textSeen": false,
+    "overlayElements": 0,
+    "note": "The capture page mounts the plugin client bundle only: no host shell, no sign-in wall."
+  },
+  "shots": {
+    "hero-desktop-1440x900": {
+      "file": "docs/design/hero/hero-desktop-1440x900.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "scale": 2,
+      "view": "global",
+      "filter": "Tout",
+      "cards": 10,
+      "sections": [
+        "Besoin d\u2019attention",
+        "Agents en cours",
+        "Autres activit\u00e9s"
+      ],
+      "titles": [
+        "api-review",
+        "Approve the export schema change",
+        "Fix the broken sidebar link",
+        "Harden the webhook signature check",
+        "invoice-review",
+        "Refactor the invoice export",
+        "Add the ADR-0007 journal rename test",
+        "Write the migration guide",
+        "License check",
+        "Rotate the staging keys"
+      ],
+      "reachable": {
+        "reachable": true,
+        "tag": "SPAN",
+        "card": true
+      }
+    },
+    "hero-mobile-390x844": {
+      "file": "docs/design/hero/hero-mobile-390x844.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "scale": 2,
+      "view": "global",
+      "filter": "Tout",
+      "cards": 10,
+      "sections": [
+        "Besoin d\u2019attention",
+        "Agents en cours",
+        "Autres activit\u00e9s"
+      ],
+      "titles": [
+        "api-review",
+        "Approve the export schema change",
+        "Fix the broken sidebar link",
+        "Harden the webhook signature check",
+        "invoice-review",
+        "Refactor the invoice export",
+        "Add the ADR-0007 journal rename test",
+        "Write the migration guide",
+        "License check",
+        "Rotate the staging keys"
+      ],
+      "reachable": {
+        "reachable": true,
+        "tag": "BUTTON",
+        "card": false
+      }
+    }
+  },
+  "composition": {
+    "file": "docs/design/hero/hero.png",
+    "canvas": {
+      "width": 2560,
+      "height": 1440
+    },
+    "backdrop": "dark",
+    "desktop": {
+      "file": "hero-desktop-1440x900.png",
+      "at": [
+        150,
+        250
+      ],
+      "width": 1408,
+      "height": 880
+    },
+    "phone": {
+      "file": "hero-mobile-390x844.png",
+      "at": [
+        1865,
+        174
+      ],
+      "width": 485,
+      "height": 1012,
+      "screenHeight": 980
+    },
+    "caption": [
+      "Agent Board",
+      "DeepSeek Harness \u2014 desktop et mobile \u00b7 donn\u00e9es fictives"
+    ],
+    "luminance": {
+      "canvas": 0.13,
+      "desktop": 0.149
+    },
+    "captionBandStd": 51.9
+  }
+}

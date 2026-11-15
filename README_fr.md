@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/demo/demo-dark-desktop.png" alt="Cockpit Agent Board (thème sombre) — jeu de données de démonstration fictif" width="100%">
+  <img src="docs/design/hero/hero.png" alt="Cockpit Agent Board (thème sombre) — desktop et mobile, jeu de données de démonstration fictif" width="100%">
 </p>
 
 <h1 align="center">Agent Board</h1>
@@ -21,8 +21,9 @@
 
 > **À propos des captures :** elles sont rendues par le vrai bundle client du
 > plugin avec un **jeu de données fictif** (aucun projet, session ou chemin
-> personnel). Régénérez-les avec `node scripts/capture-demo-screenshots.mjs` —
-> voir [Captures d'écran](#captures-décran).
+> personnel). Le hero est composé à partir des captures desktop et mobile ;
+> régénérez l'ensemble avec `node scripts/capture-demo-screenshots.mjs` — voir
+> [Captures d'écran](#captures-décran).
 
 ---
 
@@ -395,6 +396,12 @@ Le script affiche la fenêtre d'affichage réelle et les compteurs réels de
 cartes/branches/liens rendus, donc une régression de mise en page est visible sans
 ouvrir l'image.
 
+Le hero en haut est composé à partir du même harnais avec `--hero` et d'un petit
+composeur Pillow ; la page de capture ne monte que le bundle du plugin, donc la
+mire de connexion de l'hôte n'apparaît jamais. Procédure, jeu de données fictif
+et preuves (dix cartes, thème sombre, aucune surcouche) :
+[docs/design/HERO-SHOTS.md](docs/design/HERO-SHOTS.md).
+
 ## Tests
 
 ```sh
@@ -414,7 +421,7 @@ node scripts/verify-live.mjs       # statut en lecture seule des deux intégrati
 - [Architecture](docs/ARCHITECTURE.md) · [Contrats et adaptateurs](docs/CONTRACTS.md)
 - [Registre de livraison GOAL 6 (mandat, Super Agent, forge)](docs/GOAL6-DELIVERY.md) · [contrat](docs/GOAL6-CONTRACT.md) · [audit public-v1 du Task Board](docs/TASKBOARD-PUBLIC-V1-AUDIT.md)
 - [Audit des niveaux et profils d'autonomie](docs/audit/AUTONOMY-LEVEL-PROFILES-2026-11-14.md) · [correctifs permissions/autonomie](docs/audit/PERMISSIONS-AUTONOMY-FIXES-2026-11-13.md)
-- [Captures : ce qui a été retiré et pourquoi](docs/EVIDENCE-SCREENSHOTS.md) · [preuves UI GOAL 6](docs/e2e/GOAL6-UI-EVIDENCE.md)
+- [Captures : ce qui a été retiré et pourquoi](docs/EVIDENCE-SCREENSHOTS.md) · [preuves UI GOAL 6](docs/e2e/GOAL6-UI-EVIDENCE.md) · [pipeline du hero](docs/design/HERO-SHOTS.md)
 - [Contrat du cockpit responsive](docs/UX-COCKPIT-CONTRACT.md) · [registre de livraison GOAL 5](docs/GOAL5-DELIVERY.md)
 - [Mascottes, supervision et Super Orchestrateur](docs/MASCOTS-SUPER-ORCHESTRATOR.md)
 - [Contrat d'exécution Task Board (proposé, simulé)](docs/TASKBOARD-CONTRACT.md) · [coordination](docs/TASKBOARD-COORDINATION.md)
