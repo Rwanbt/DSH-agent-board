@@ -39,7 +39,8 @@ import { delegationDepthOf, delegationUsageOf, evaluateDelegation, supervisionCo
 import { taskReadinessOf } from '../orchestrator/readiness.js'
 import { PROMOTION_COOLDOWN_MS, PROMOTION_LIMIT_PER_CYCLE, TRIAGE_REASONS as PROMOTION_REASONS, backlogReadinessOf, selectPromotionCandidates } from '../orchestrator/triage.js'
 import {
-  ADR_DIRECTORIES, DOC_SOURCE_FILES, WORK_ITEM_LIMIT, discoverDocWork, workItemFromIssue, workItemReadinessOf, workPromptOf,
+  ADR_DIRECTORIES, DOC_SOURCE_FILES, WORK_ITEM_LIMIT, WORK_JOURNAL_SCHEMA_VERSION, discoverDocWork, migrateWorkJournalV1toV2,
+  workItemFromIssue, workItemReadinessOf, workPromptOf,
 } from '../orchestrator/project-work.js'
 import { readCoordinationModel } from '../connectors/taskboard-coordination.js'
 import {
@@ -897,6 +898,16 @@ export function apply(ctx, config = {}) {
         audit({ type: 'superagent_session_recycled', at: Date.now(), reason: 'host_restart', sessionId: state.superagent.identity.session.sessionId })
         if (isPrimary) void store.write(state).catch(error => warn(`superagent recycle save failed: ${String(error)}`))
       }
+    }
+    // A journal written before the identity/content split is keyed by a title
+    // hash, which is no longer an identity nor a content proof. The migration only
+    // marks those records (it never invents a fingerprint), so a historical item
+    // is re-evaluated at most once instead of looking finished for ever.
+    const workMigration = migrateWorkJournalV1toV2(state.assignments, { at: Date.now() })
+    if (workMigration.migrated > 0) {
+      state.assignments = workMigration.assignments
+      audit({ type: 'work_journal_migrated', at: Date.now(), from: 1, to: WORK_JOURNAL_SCHEMA_VERSION, migrated: workMigration.migrated, legacy: workMigration.legacy })
+      if (isPrimary) void store.write(state).catch(error => warn(`work journal migration save failed: ${String(error)}`))
     }
     // A deployment may SEED the operator's mandate through the plugin config on
     // the very first run. It is an explicit operator input (cordis config or the

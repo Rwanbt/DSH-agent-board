@@ -122,23 +122,126 @@ function normalizeForCompare(value) {
   return normalizeWorkTitle(value).toLowerCase()
 }
 
+/** Journal version written by this module (see `migrateWorkJournalV1toV2`). */
+export const WORK_JOURNAL_SCHEMA_VERSION = 2
+
+/** Prefix of the content fingerprint. `wf-` is the legacy title-only hash. */
+const CONTENT_FINGERPRINT_PREFIX = 'wf2-'
+const LEGACY_FINGERPRINT_PREFIX = 'wf-'
+const MAX_BLOCK_TEXT = 4000
+
+/** Canonical locator: forward slashes, trimmed, lower case. */
+export function normalizeWorkLocator(ref) {
+  const text = typeof ref === 'string' ? ref.trim().replace(/\\/g, '/') : ''
+  return text.toLowerCase()
+}
+
 /**
- * Stable id of one work item: derived from the project, the source and the
- * normalized title. A document edit that keeps the title therefore keeps the
- * identity (and the dispatch journal keeps applying); a real change of intent
- * creates a new item.
+ * IDENTITY of one work item — WHERE it is declared, never what it says.
  *
- * @param {{projectId?: string, source?: string, title?: string}} input
+ * The v1 id hashed the title, so renaming a line created a brand-new item (and
+ * re-dispatched finished work), while two different documents declaring the same
+ * sentence collapsed into one item. Identity is now the locator: the document
+ * path plus its anchor/line, or an external reference (`#42`).
+ *
+ * @param {{projectId?: string, source?: string, ref?: string}} input
  * @returns {string}
  */
-export function workItemIdOf({ projectId, source, title } = {}) {
-  const text = `${String(projectId ?? '')}\u0000${String(source ?? '')}\u0000${normalizeForCompare(title)}`
+export function workItemIdentityOf({ projectId, source, ref } = {}) {
+  const text = `${String(projectId ?? '')}\u0000${String(source ?? '')}\u0000${normalizeWorkLocator(ref)}`
   return `work-${hashText(text)}`
 }
 
-/** Content fingerprint of an item, used to detect a real intent change. */
+/**
+ * Legacy v1 id (project + source + title). Kept because the journal written by
+ * 0.1.0 is keyed by it: a migration reads these values, and a caller that only
+ * has a title can still derive the id the OLD journal used.
+ *
+ * @param {{projectId?: string, source?: string, title?: string}|{projectId?: string, source?: string, ref?: string}} input
+ * @returns {string}
+ */
+export function workItemIdOf(input = {}) {
+  if (typeof input.ref === 'string' && input.ref !== '') return workItemIdentityOf(input)
+  const text = `${String(input.projectId ?? '')}\u0000${String(input.source ?? '')}\u0000${normalizeForCompare(input.title)}`
+  return `work-${hashText(text)}`
+}
+
+/** Bounded, comparable form of the referenced block (whitespace-collapsed). */
+function normalizeBlockText(text) {
+  const value = typeof text === 'string' ? text : ''
+  return value.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, MAX_BLOCK_TEXT)
+}
+
+/**
+ * CONTENT fingerprint of one work item — what the line asks for.
+ *
+ * Title + objective + acceptance criteria + the referenced block, normalised.
+ * A document edit that changes the intent produces a new fingerprint at the SAME
+ * identity, which is what makes the item eligible again (a new revision).
+ *
+ * @param {{title?: string, objective?: string, criteria?: string[], block?: string}} input
+ * @returns {string}
+ */
+export function workItemContentFingerprintOf({ title, objective = '', criteria = [], block = '' } = {}) {
+  const parts = [
+    normalizeForCompare(title),
+    normalizeForCompare(objective),
+    ...(Array.isArray(criteria) ? criteria.map(entry => normalizeForCompare(entry)).filter(Boolean).sort() : []),
+    normalizeBlockText(block),
+  ]
+  return `${CONTENT_FINGERPRINT_PREFIX}${hashText(parts.join('\u0000'))}`
+}
+
+/**
+ * Content fingerprint in the legacy signature (`{projectId, source, title}`).
+ * Kept for callers that only know the old triple.
+ *
+ * @param {{projectId?: string, source?: string, title?: string}} [input]
+ * @returns {string}
+ */
 export function workItemFingerprintOf({ projectId, source, title } = {}) {
   return `wf-${hashText(`${String(projectId ?? '')}\u0000${String(source ?? '')}\u0000${normalizeForCompare(title)}`)}`
+}
+
+/**
+ * Migrate the dispatch journal from the v1 (title-keyed) work source to v2
+ * (identity + content fingerprint).
+ *
+ * It never invents a v2 fingerprint for a v1 record: a title was not the content,
+ * and claiming otherwise would silently mark NEW intent as already done. The old
+ * value is preserved as `legacyFingerprint` for audit, and the record is marked
+ * `schemaVersion:2` so the migration is idempotent.
+ *
+ * @param {object[]|{assignments?: object[]}} journal
+ * @param {{at?: number}} [options]
+ * @returns {{assignments: object[], migrated: number, legacy: number}}
+ */
+export function migrateWorkJournalV1toV2(journal, { at = null } = {}) {
+  const list = Array.isArray(journal) ? journal : (Array.isArray(journal?.assignments) ? journal.assignments : [])
+  let migrated = 0
+  let legacy = 0
+  const assignments = list.map(entry => {
+    const source = entry !== null && typeof entry === 'object' && isRecord(entry.workSource) ? entry.workSource : null
+    if (source === null) return entry
+    if (Number(source.schemaVersion) >= WORK_JOURNAL_SCHEMA_VERSION) return entry
+    migrated += 1
+    const previous = typeof source.fingerprint === 'string' ? source.fingerprint : null
+    const isLegacy = previous !== null && previous.startsWith(LEGACY_FINGERPRINT_PREFIX)
+    if (isLegacy) legacy += 1
+    return {
+      ...entry,
+      workSource: {
+        ...source,
+        schemaVersion: WORK_JOURNAL_SCHEMA_VERSION,
+        // A v1 title hash is NOT a content fingerprint: null means "no content
+        // proof", so the item stays eligible instead of looking done.
+        fingerprint: null,
+        ...(isLegacy ? { legacyFingerprint: previous } : {}),
+      },
+      ...(Number.isFinite(Number(at)) ? { workJournalMigratedAt: Number(at) } : {}),
+    }
+  })
+  return { assignments, migrated, legacy }
 }
 
 /** Does this checklist line explicitly ask for a human decision? */
@@ -248,6 +351,7 @@ export function discoverDocWork({ projectId, files, limit = WORK_ITEM_LIMIT } = 
           title: item.title, needsHumanDecision,
           decisionReason: needsHumanDecision ? `adr_not_accepted:${parsed.status}` : null,
           context: `ADR « ${parsed.title} » — statut ${describeAdrStatus(parsed.status)}`,
+          block: item.raw ?? item.title,
         })
         if (entry !== null) candidates.push(entry)
       }
@@ -260,6 +364,7 @@ export function discoverDocWork({ projectId, files, limit = WORK_ITEM_LIMIT } = 
         title: item.title, needsHumanDecision,
         decisionReason: needsHumanDecision ? 'decision_marker' : null,
         context: item.heading === '' ? '' : `section « ${item.heading} »`,
+        block: item.raw ?? item.title,
       })
       if (entry !== null) candidates.push(entry)
     }
@@ -286,14 +391,22 @@ function compareCandidates(left, right) {
   return left.id < right.id ? -1 : left.id > right.id ? 1 : 0
 }
 
-function buildItem({ projectId, source, path, line, heading, title, needsHumanDecision, decisionReason, context }) {
+function buildItem({ projectId, source, path, line, heading, title, needsHumanDecision, decisionReason, context, block }) {
   const normalized = normalizeWorkTitle(title)
   if (normalized === '') return null
-  const id = workItemIdOf({ projectId, source, title: normalized })
   const where = `${path}:${line}`
+  // Identity is the locator (document + line); content is what the line says.
+  const id = workItemIdentityOf({ projectId, source, ref: where })
   const parts = [`Source : ${where}`]
   if (typeof context === 'string' && context !== '') parts.push(context)
   if (typeof heading === 'string' && heading !== '') parts.push(`Section : ${heading}`)
+  // The fingerprint must NOT contain the locator: a line that only moved asks for
+  // exactly the same work, and re-dispatching finished work is the failure mode
+  // this lot exists to remove.
+  const objective = [
+    ...(typeof context === 'string' && context !== '' ? [context] : []),
+    ...(typeof heading === 'string' && heading !== '' ? [`Section : ${heading}`] : []),
+  ].join('\n')
   return {
     id,
     projectId,
@@ -301,7 +414,11 @@ function buildItem({ projectId, source, path, line, heading, title, needsHumanDe
     ref: where,
     title: normalized,
     description: parts.join('\n'),
-    fingerprint: workItemFingerprintOf({ projectId, source, title: normalized }),
+    fingerprint: workItemContentFingerprintOf({
+      title: normalized,
+      objective,
+      block: typeof block === 'string' ? block : '',
+    }),
     needsHumanDecision: needsHumanDecision === true,
     decisionReason: decisionReason ?? null,
     origin: 'document',
@@ -332,18 +449,22 @@ export function workItemFromIssue(issue, { projectId } = {}) {
   const decisionLabel = lower.find(label => ISSUE_DECISION_LABELS.includes(label)) ?? null
   const needsHumanDecision = assigned || decisionLabel !== null
   const decisionReason = assigned ? 'issue_assigned' : (decisionLabel !== null ? `issue_label:${decisionLabel}` : null)
-  const id = workItemIdOf({ projectId: project, source: 'issue', title })
+  // An issue is identified by its NUMBER, never by its title: retitling an issue
+  // is the same piece of work, and two documents may carry the same sentence.
+  const where = `#${issue.number}`
+  const id = workItemIdentityOf({ projectId: project, source: 'issue', ref: where })
+  const body = typeof issue.body === 'string' ? issue.body.trim().slice(0, 600) : ''
   return {
     id,
     projectId: project,
     source: 'issue',
-    ref: `#${issue.number}`,
+    ref: where,
     title,
     description: [
       `Issue #${issue.number}: ${title}`,
-      ...(typeof issue.body === 'string' && issue.body.trim() !== '' ? [issue.body.trim().slice(0, 600)] : []),
+      ...(body !== '' ? [body] : []),
     ].join('\n'),
-    fingerprint: workItemFingerprintOf({ projectId: project, source: 'issue', title }),
+    fingerprint: workItemContentFingerprintOf({ title, objective: body, block: title }),
     needsHumanDecision,
     decisionReason,
     origin: 'forge',
@@ -369,8 +490,14 @@ export function workItemReadinessOf(item, { assignments = [], now = Date.now() }
   if (item.needsHumanDecision === true) {
     return { ready: false, reason: `${WORK_READINESS_REASONS.needsHumanDecision}:${item.decisionReason ?? 'flagged'}`, attempts: 0 }
   }
-  const mine = (Array.isArray(assignments) ? assignments : [])
-    .filter(assignment => isRecord(assignment) && String(assignment.taskId ?? '') === item.id)
+  const all = Array.isArray(assignments) ? assignments.filter(entry => isRecord(entry)) : []
+  // An attempt belongs to the item either by IDENTITY (its locator) or by CONTENT:
+  // a checklist line that only moved down its document keeps its proven state,
+  // because the content it asks for did not change.
+  const mine = all.filter(assignment => String(assignment.taskId ?? '') === item.id
+    || (typeof item.fingerprint === 'string' && item.fingerprint !== ''
+      && typeof assignment.workSource?.fingerprint === 'string'
+      && assignment.workSource.fingerprint === item.fingerprint))
   if (mine.some(assignment => ACTIVE_ASSIGNMENT_STATUSES.includes(assignment.status))) {
     return { ready: false, reason: WORK_READINESS_REASONS.inProgress, attempts: mine.length }
   }
@@ -387,7 +514,7 @@ export function workItemReadinessOf(item, { assignments = [], now = Date.now() }
     // an upgrade never re-dispatches every historical item.
     const verified = latest.workVerified !== false
     const reopened = typeof latest.reopenedAt === 'number' && Number.isFinite(latest.reopenedAt)
-    if (latest.status === 'done' && verified && !reopened && fingerprint === item.fingerprint) {
+    if (latest.status === 'done' && verified && !reopened && fingerprint !== null && fingerprint === item.fingerprint) {
       return { ready: false, reason: WORK_READINESS_REASONS.completed, attempts: mine.length }
     }
   }
