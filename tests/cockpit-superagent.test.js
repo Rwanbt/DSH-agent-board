@@ -1178,3 +1178,30 @@ test('same-scope approvals are grouped, each grant staying single-use', () => {
   }))
   assert.equal(byClass(single, 'dab-sa-bulk-approve').length, 0)
 })
+
+// ------------------------------- silence by default + graded trust (Lot 5b UI)
+test('do-not-disturb mutes the notification flag, and trust is only suggested', () => {
+  const attention = {
+    items: [{ id: 'a1', severity: 'blocking', title: 'Blocking decision', suggestedAction: 'Decide.', costToResolveSeconds: 30, notify: true }],
+    counters: { total: 1, blocking: 1, high: 0, notify: 1, costSeconds: 30 },
+    trust: [{ projectId: 'ws:a', action: 'comment', approvals: 4, incidents: 0, suggested: true }],
+  }
+  const superagent = { identity: { level: 'L3', status: 'idle', model: null }, decisions: [], directives: [], activity: [], budget: {}, attention }
+  const mandate = { scopeMode: 'selected', selectedWorkspaces: ['ws:a'], level: 'L3', projects: { 'ws:a': { enabled: true } } }
+  const bandFor = notificationsEnabled => band({ superagent, mandate, attention, notificationsEnabled, compact: true })
+  assert.equal(byClass(bandFor(true), 'dab-attention-badge')[0].props['data-notify'], 'true')
+  assert.equal(byClass(bandFor(false), 'dab-attention-badge')[0].props['data-notify'], 'false', 'DND silences the badge notification')
+  // The badge still counts while muted: the operator can look, nothing interrupts.
+  assert.equal(byClass(bandFor(false), 'dab-attention-badge')[0].props['data-count'], '1')
+
+  // Trust: the settings PROPOSE the promotion, and never apply it.
+  const settings = render(cockpit.DabSuperagentSettings({
+    superagent, mandate, host: makeHost(), context: {}, ui: { doNotDisturb: true }, taskboard: makeHost().taskboardPublic,
+    onToggleDnd: () => {},
+  }))
+  const rows = byClass(settings, 'dab-sa-trust-row')
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].props['data-action'], 'comment')
+  assert.match(textOf(rows[0]), /approved 4 times without incident/)
+  assert.equal(byClass(settings, 'dab-sa-dnd')[0].props.checked, true)
+})

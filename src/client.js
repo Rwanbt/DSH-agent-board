@@ -5481,6 +5481,10 @@ const DAB_STRINGS = {
     // Lot 5b — approbation groupée : chaque accord reste à usage unique.
     superDecisionsBulkApprove: 'Tout approuver ({n})',
     superDecisionScopeSame: 'même portée',
+    // Lot 5b — silence par défaut : ne pas déranger, et confiance graduée PROPOSÉE.
+    superSettingsDnd: 'Ne pas déranger',
+    superDndHint: 'Aucune notification, même pour une décision bloquante.',
+    superTrustSuggested: '{project} · {action} : approuvé {n} fois sans incident — passer en auto ?',
     superDecisionsPending: '{n} décisions en attente',
     supervisionStatusStopped: 'Arrêté (observation)',
     supervisionStopNoAction: 'Mode Observation — aucune action tant que vous ne passez pas en Supervisé ou Autonome',
@@ -5993,6 +5997,9 @@ const DAB_STRINGS = {
     superProjectConcurrency: 'Project concurrency',
     superDecisionsBulkApprove: 'Approve all ({n})',
     superDecisionScopeSame: 'same scope',
+    superSettingsDnd: 'Do not disturb',
+    superDndHint: 'No notification at all, not even for a blocking decision.',
+    superTrustSuggested: '{project} · {action}: approved {n} times without incident — switch to auto?',
     superDecisionsPending: '{n} pending decisions',
     supervisionStatusStopped: 'Stopped (observing)',
     supervisionStopNoAction: 'Stop mode — no action possible without switching to Supervised or Autonomous',
@@ -8510,6 +8517,9 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
     attentionCostSeconds: typeof attention?.counters?.costSeconds === 'number' ? attention.counters.costSeconds : null,
     exceptionsOnly: attention?.exceptionMode === true,
     kpis: attention?.kpis !== null && typeof attention?.kpis === 'object' ? attention.kpis : null,
+    // Graded trust: what the operator approved N times without incident. The UI
+    // may PROPOSE a promotion; nothing is promoted automatically.
+    trust: Array.isArray(attention?.trust) ? attention.trust.filter(entry => entry !== null && typeof entry === 'object') : [],
     enabledProjects,
     totalProjects,
     decisions,
@@ -9029,7 +9039,7 @@ function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, o
 
 function DabSuperOrchestratorBarImpl({
   workspace, totals, projects, orchestrators: orchestratorList, mode, open, onToggle, onSelect, compact,
-  superagent, mandate, capabilities, attention, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenAttention, onOpenProjects,
+  superagent, mandate, capabilities, attention, notificationsEnabled, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenAttention, onOpenProjects,
   projectRows, onToggleProject, onSetProjectLevel, onOpenSettings,
 }) {
   const h = React.createElement
@@ -9187,6 +9197,9 @@ function DabSuperOrchestratorBarImpl({
           className: 'dab-attention-badge',
           'data-count': String(facts.attentionCount),
           'data-severity': facts.attentionItems[0]?.severity ?? 'normal',
+          // The badge always counts; the NOTIFICATION flag says whether this entry
+          // may wake the operator at all (high/blocking, notifications on, not DND).
+          'data-notify': notificationsEnabled === true && facts.attentionItems.some(entry => entry.notify === true) ? 'true' : 'false',
           'aria-label': `${dabT('superAttentionLabel')} : ${facts.attentionCount}`,
           title: facts.attentionItems[0]?.title ?? dabT('superAttentionLabel'),
           onClick: onOpenAttention ?? onOpenSuperagent,
@@ -9260,6 +9273,7 @@ const DabSuperOrchestratorBar = React.memo(DabSuperOrchestratorBarImpl, (a, b) =
   && a.onOpenDecisions === b.onOpenDecisions
   && a.onOpenAttention === b.onOpenAttention
   && a.attention === b.attention
+  && a.notificationsEnabled === b.notificationsEnabled
   && a.onOpenProjects === b.onOpenProjects
   && a.projectRows === b.projectRows
   && a.onToggleProject === b.onToggleProject
@@ -10441,7 +10455,7 @@ function DabSelfTest({ busy, onSelfTest }) {
 function DabSuperagentSettings({
   superagent, mandate, capabilities, host, context, ui, busy, taskboard,
   onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
-  onSetPolicy,
+  onSetPolicy, onToggleDnd,
 }) {
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
@@ -10545,7 +10559,24 @@ function DabSuperagentSettings({
           'aria-label': dabT('superSettingsNotifications'),
           onChange: event => onToggleNotifications?.(event?.target?.checked === true),
         }),
-        h('span', null, dabT('superNotificationsHint')))),
+        h('span', null, dabT('superNotificationsHint'))),
+      h('label', { className: 'dab-sa-check' },
+        h('input', {
+          type: 'checkbox', className: 'dab-sa-dnd',
+          checked: ui?.doNotDisturb === true,
+          'aria-label': dabT('superSettingsDnd'),
+          onChange: event => onToggleDnd?.(event?.target?.checked === true),
+        }),
+        h('span', null, dabT('superDndHint'))),
+      // A promotion is SUGGESTED, never applied: this proves the request.
+      facts.trust.filter(entry => entry.suggested === true).length === 0
+        ? null
+        : h('ul', { className: 'dab-sa-trust' }, facts.trust.filter(entry => entry.suggested === true).slice(0, 5).map(entry => h('li', {
+          key: `${entry.projectId}|${entry.action}`,
+          className: 'dab-sa-trust-row',
+          'data-action': entry.action,
+          'data-approvals': String(entry.approvals),
+        }, dabT('superTrustSuggested', { project: entry.projectId ?? '*', action: entry.action, n: entry.approvals }))))),
     dabSaSection(h, 'permissions', dabT('superSettingsPermissions'),
       // A refusal that applies to EVERY action (Stop, Observe mode) is said once
       // above the list instead of on each of the 13 rows.
@@ -11213,6 +11244,7 @@ function dabReadUi() {
       taskStateFilter: filters.taskState,
       supervisionOpen: typeof parsed.supervisionOpen === 'boolean' ? parsed.supervisionOpen : base.supervisionOpen,
       notifications: typeof parsed.notifications === 'boolean' ? parsed.notifications : base.notifications,
+      doNotDisturb: typeof parsed.doNotDisturb === 'boolean' ? parsed.doNotDisturb : base.doNotDisturb,
     }
   } catch {
     return base
@@ -11570,6 +11602,8 @@ function dabMakePage(store, ctx) {
       capabilities,
       // The published attention queue: the band badges what needs a HUMAN.
       attention: snapshot.attention,
+      // A notification must be wanted: notifications on AND not muted.
+      notificationsEnabled: ui.notifications !== false && ui.doNotDisturb !== true,
       stopped: superContext.stopped,
       busy,
       onStart: () => act('start', () => startEngineThen(() => store.startSuperagent())),
@@ -11720,6 +11754,7 @@ function dabMakePage(store, ctx) {
         onSetAction: (action, enabled) => act('action', () => store.setAction(action, enabled)),
         onSetActionMode: (action, mode) => act('action', () => store.setActionMode(action, mode)),
         onToggleNotifications: value => setUi({ notifications: value === true }),
+        onToggleDnd: value => setUi({ doNotDisturb: value === true }),
         onStop: () => act('stop', async () => {
           const executions = await store.stop()
           const session = await store.stopSuperagent()

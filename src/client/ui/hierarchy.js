@@ -567,6 +567,9 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
     attentionCostSeconds: typeof attention?.counters?.costSeconds === 'number' ? attention.counters.costSeconds : null,
     exceptionsOnly: attention?.exceptionMode === true,
     kpis: attention?.kpis !== null && typeof attention?.kpis === 'object' ? attention.kpis : null,
+    // Graded trust: what the operator approved N times without incident. The UI
+    // may PROPOSE a promotion; nothing is promoted automatically.
+    trust: Array.isArray(attention?.trust) ? attention.trust.filter(entry => entry !== null && typeof entry === 'object') : [],
     enabledProjects,
     totalProjects,
     decisions,

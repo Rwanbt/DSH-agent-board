@@ -384,6 +384,10 @@ const DAB_STRINGS = {
     // Lot 5b — approbation groupée : chaque accord reste à usage unique.
     superDecisionsBulkApprove: 'Tout approuver ({n})',
     superDecisionScopeSame: 'même portée',
+    // Lot 5b — silence par défaut : ne pas déranger, et confiance graduée PROPOSÉE.
+    superSettingsDnd: 'Ne pas déranger',
+    superDndHint: 'Aucune notification, même pour une décision bloquante.',
+    superTrustSuggested: '{project} · {action} : approuvé {n} fois sans incident — passer en auto ?',
     superDecisionsPending: '{n} décisions en attente',
     supervisionStatusStopped: 'Arrêté (observation)',
     supervisionStopNoAction: 'Mode Observation — aucune action tant que vous ne passez pas en Supervisé ou Autonome',
@@ -896,6 +900,9 @@ const DAB_STRINGS = {
     superProjectConcurrency: 'Project concurrency',
     superDecisionsBulkApprove: 'Approve all ({n})',
     superDecisionScopeSame: 'same scope',
+    superSettingsDnd: 'Do not disturb',
+    superDndHint: 'No notification at all, not even for a blocking decision.',
+    superTrustSuggested: '{project} · {action}: approved {n} times without incident — switch to auto?',
     superDecisionsPending: '{n} pending decisions',
     supervisionStatusStopped: 'Stopped (observing)',
     supervisionStopNoAction: 'Stop mode — no action possible without switching to Supervised or Autonomous',

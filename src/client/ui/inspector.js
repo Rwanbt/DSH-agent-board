@@ -818,7 +818,7 @@ function DabSelfTest({ busy, onSelfTest }) {
 function DabSuperagentSettings({
   superagent, mandate, capabilities, host, context, ui, busy, taskboard,
   onSetLevel, onSetAction, onSetActionMode, onToggleNotifications, onStop, onResume, onSetModel, onModelInfo, onProbeTaskboard, onCycle, onSelfTest,
-  onSetPolicy,
+  onSetPolicy, onToggleDnd,
 }) {
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
@@ -922,7 +922,24 @@ function DabSuperagentSettings({
           'aria-label': dabT('superSettingsNotifications'),
           onChange: event => onToggleNotifications?.(event?.target?.checked === true),
         }),
-        h('span', null, dabT('superNotificationsHint')))),
+        h('span', null, dabT('superNotificationsHint'))),
+      h('label', { className: 'dab-sa-check' },
+        h('input', {
+          type: 'checkbox', className: 'dab-sa-dnd',
+          checked: ui?.doNotDisturb === true,
+          'aria-label': dabT('superSettingsDnd'),
+          onChange: event => onToggleDnd?.(event?.target?.checked === true),
+        }),
+        h('span', null, dabT('superDndHint'))),
+      // A promotion is SUGGESTED, never applied: this proves the request.
+      facts.trust.filter(entry => entry.suggested === true).length === 0
+        ? null
+        : h('ul', { className: 'dab-sa-trust' }, facts.trust.filter(entry => entry.suggested === true).slice(0, 5).map(entry => h('li', {
+          key: `${entry.projectId}|${entry.action}`,
+          className: 'dab-sa-trust-row',
+          'data-action': entry.action,
+          'data-approvals': String(entry.approvals),
+        }, dabT('superTrustSuggested', { project: entry.projectId ?? '*', action: entry.action, n: entry.approvals }))))),
     dabSaSection(h, 'permissions', dabT('superSettingsPermissions'),
       // A refusal that applies to EVERY action (Stop, Observe mode) is said once
       // above the list instead of on each of the 13 rows.

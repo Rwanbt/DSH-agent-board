@@ -92,7 +92,7 @@ function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, o
 
 function DabSuperOrchestratorBarImpl({
   workspace, totals, projects, orchestrators: orchestratorList, mode, open, onToggle, onSelect, compact,
-  superagent, mandate, capabilities, attention, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenAttention, onOpenProjects,
+  superagent, mandate, capabilities, attention, notificationsEnabled, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenAttention, onOpenProjects,
   projectRows, onToggleProject, onSetProjectLevel, onOpenSettings,
 }) {
   const h = React.createElement
@@ -250,6 +250,9 @@ function DabSuperOrchestratorBarImpl({
           className: 'dab-attention-badge',
           'data-count': String(facts.attentionCount),
           'data-severity': facts.attentionItems[0]?.severity ?? 'normal',
+          // The badge always counts; the NOTIFICATION flag says whether this entry
+          // may wake the operator at all (high/blocking, notifications on, not DND).
+          'data-notify': notificationsEnabled === true && facts.attentionItems.some(entry => entry.notify === true) ? 'true' : 'false',
           'aria-label': `${dabT('superAttentionLabel')} : ${facts.attentionCount}`,
           title: facts.attentionItems[0]?.title ?? dabT('superAttentionLabel'),
           onClick: onOpenAttention ?? onOpenSuperagent,
@@ -323,6 +326,7 @@ const DabSuperOrchestratorBar = React.memo(DabSuperOrchestratorBarImpl, (a, b) =
   && a.onOpenDecisions === b.onOpenDecisions
   && a.onOpenAttention === b.onOpenAttention
   && a.attention === b.attention
+  && a.notificationsEnabled === b.notificationsEnabled
   && a.onOpenProjects === b.onOpenProjects
   && a.projectRows === b.projectRows
   && a.onToggleProject === b.onToggleProject

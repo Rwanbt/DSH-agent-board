@@ -47,6 +47,14 @@ constant, and one operator can supervise fifty sessions by exception.
   every grant still single-use.
 - **Mobile band**: a 56 px single-row status strip at ≤430 px with one exception
   badge, instead of a ~185 px wrapped panel.
+- **Concurrency settings in the inspector**: global, supervision, Super Agent agents
+  and per-provider ceilings, plus an inherited per-project ceiling, with an exact
+  running/limit readout (`null` spelled "unlimited").
+- **Grouped approval in the inbox** and **Do not disturb**: same-scope approvals
+  are answered in one gesture (each grant single-use), and DND mutes the
+  notification flag while the badge keeps counting.
+- **Graded trust is surfaced**: the settings list the "approved N times without
+  incident" proposals; nothing is promoted automatically.
 - **CI** (`.github/workflows/ci.yml`) on push/PR to `dev` and `main`:
   `npm run check`, bundle freshness, `git diff --check`.
 - **Privacy guard** (`tests/no-personal-traces.test.js`) and personal paths

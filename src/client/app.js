@@ -80,6 +80,7 @@ function dabReadUi() {
       taskStateFilter: filters.taskState,
       supervisionOpen: typeof parsed.supervisionOpen === 'boolean' ? parsed.supervisionOpen : base.supervisionOpen,
       notifications: typeof parsed.notifications === 'boolean' ? parsed.notifications : base.notifications,
+      doNotDisturb: typeof parsed.doNotDisturb === 'boolean' ? parsed.doNotDisturb : base.doNotDisturb,
     }
   } catch {
     return base
@@ -437,6 +438,8 @@ function dabMakePage(store, ctx) {
       capabilities,
       // The published attention queue: the band badges what needs a HUMAN.
       attention: snapshot.attention,
+      // A notification must be wanted: notifications on AND not muted.
+      notificationsEnabled: ui.notifications !== false && ui.doNotDisturb !== true,
       stopped: superContext.stopped,
       busy,
       onStart: () => act('start', () => startEngineThen(() => store.startSuperagent())),
@@ -587,6 +590,7 @@ function dabMakePage(store, ctx) {
         onSetAction: (action, enabled) => act('action', () => store.setAction(action, enabled)),
         onSetActionMode: (action, mode) => act('action', () => store.setActionMode(action, mode)),
         onToggleNotifications: value => setUi({ notifications: value === true }),
+        onToggleDnd: value => setUi({ doNotDisturb: value === true }),
         onStop: () => act('stop', async () => {
           const executions = await store.stop()
           const session = await store.stopSuperagent()
