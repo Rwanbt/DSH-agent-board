@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-12T08:48:34.393Z",
+  "generatedAt": "2026-11-15T03:28:42.074Z",
   "environment": {
     "node": "v26.13.0",
     "platform": "Windows_NT 10.0.26100",
@@ -16,8 +16,8 @@
     "iterations": 40,
     "warmup": 5,
     "percentile": "nearest-rank",
-    "gcAvailable": false,
-    "heap": "omitted (rerun with --expose-gc)",
+    "gcAvailable": true,
+    "heap": "median retained heap delta over 3 samples, forced GC before and after",
     "statePayload": "trimmed /state payload: per-agent acks/previews/turnEnd/assignments + bounded-empty collections",
     "clientStore": "REAL createBoardStore + fake ctx, fake clock: 50 notifications over 1000 ms, 200 ms coalescing"
   },
@@ -47,19 +47,21 @@
         "unavailable": 0
       },
       "buildMs": {
-        "p50": 0.04,
-        "p95": 0.059,
-        "max": 0.069,
-        "min": 0.035
+        "p50": 0.051,
+        "p95": 0.079,
+        "max": 0.119,
+        "min": 0.044
       },
       "aggregateMs": {
         "p50": 0.004,
         "p95": 0.007,
-        "max": 0.009,
-        "min": 0.003
+        "max": 0.013,
+        "min": 0.004
       },
       "statePayloadBytes": 970,
-      "statePayloadKB": 0.9
+      "statePayloadKB": 0.9,
+      "heapDeltaBytes": 280,
+      "heapDeltaMB": 0
     },
     {
       "id": "live-20",
@@ -82,19 +84,21 @@
         "unavailable": 2
       },
       "buildMs": {
-        "p50": 0.13,
-        "p95": 0.179,
-        "max": 0.588,
-        "min": 0.07
+        "p50": 0.108,
+        "p95": 0.207,
+        "max": 0.774,
+        "min": 0.076
       },
       "aggregateMs": {
-        "p50": 0.015,
-        "p95": 0.033,
-        "max": 0.074,
-        "min": 0.009
+        "p50": 0.011,
+        "p95": 0.017,
+        "max": 0.022,
+        "min": 0.01
       },
       "statePayloadBytes": 3410,
-      "statePayloadKB": 3.3
+      "statePayloadKB": 3.3,
+      "heapDeltaBytes": 624,
+      "heapDeltaMB": 0
     },
     {
       "id": "live-50",
@@ -117,19 +121,21 @@
         "unavailable": 5
       },
       "buildMs": {
-        "p50": 0.115,
-        "p95": 0.214,
-        "max": 0.454,
-        "min": 0.062
+        "p50": 0.167,
+        "p95": 0.432,
+        "max": 0.559,
+        "min": 0.073
       },
       "aggregateMs": {
-        "p50": 0.005,
-        "p95": 0.006,
-        "max": 0.007,
-        "min": 0.005
+        "p50": 0.007,
+        "p95": 0.009,
+        "max": 0.023,
+        "min": 0.006
       },
       "statePayloadBytes": 8117,
-      "statePayloadKB": 7.9
+      "statePayloadKB": 7.9,
+      "heapDeltaBytes": 80,
+      "heapDeltaMB": 0
     },
     {
       "id": "live-150",
@@ -152,19 +158,21 @@
         "unavailable": 15
       },
       "buildMs": {
-        "p50": 0.164,
-        "p95": 0.278,
-        "max": 0.318,
-        "min": 0.148
+        "p50": 0.233,
+        "p95": 0.421,
+        "max": 0.477,
+        "min": 0.195
       },
       "aggregateMs": {
-        "p50": 0.012,
-        "p95": 0.02,
-        "max": 0.074,
-        "min": 0.012
+        "p50": 0.016,
+        "p95": 0.027,
+        "max": 0.05,
+        "min": 0.015
       },
       "statePayloadBytes": 23812,
-      "statePayloadKB": 23.3
+      "statePayloadKB": 23.3,
+      "heapDeltaBytes": 21352,
+      "heapDeltaMB": 0.02
     },
     {
       "id": "history-1000",
@@ -187,19 +195,21 @@
         "unavailable": 0
       },
       "buildMs": {
-        "p50": 1.02,
-        "p95": 1.678,
-        "max": 1.792,
-        "min": 0.797
+        "p50": 1.449,
+        "p95": 2.052,
+        "max": 2.658,
+        "min": 1.017
       },
       "aggregateMs": {
-        "p50": 0.084,
-        "p95": 0.113,
-        "max": 0.254,
-        "min": 0.078
+        "p50": 0.103,
+        "p95": 0.142,
+        "max": 0.391,
+        "min": 0.097
       },
       "statePayloadBytes": 147857,
-      "statePayloadKB": 144.4
+      "statePayloadKB": 144.4,
+      "heapDeltaBytes": 113456,
+      "heapDeltaMB": 0.11
     },
     {
       "id": "deep-chain-1000",
@@ -222,19 +232,21 @@
         "unavailable": 0
       },
       "buildMs": {
-        "p50": 0.965,
-        "p95": 1.612,
-        "max": 2.391,
-        "min": 0.872
+        "p50": 1.494,
+        "p95": 2.118,
+        "max": 2.289,
+        "min": 1.16
       },
       "aggregateMs": {
-        "p50": 0.119,
-        "p95": 0.153,
-        "max": 0.305,
-        "min": 0.111
+        "p50": 0.136,
+        "p95": 0.206,
+        "max": 0.841,
+        "min": 0.13
       },
       "statePayloadBytes": 34866,
-      "statePayloadKB": 34
+      "statePayloadKB": 34,
+      "heapDeltaBytes": 110712,
+      "heapDeltaMB": 0.11
     }
   ],
   "clientStore": {
