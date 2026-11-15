@@ -370,6 +370,8 @@ const DAB_STRINGS = {
     superResume: 'Reprendre le Super Agent',
     superDetailsShort: 'Détails',
     superDetailsOpen: 'Ouvrir le détail du Super Agent',
+    // The exception badge says what needs a HUMAN, never what is running (Lot 5b).
+    superAttentionLabel: 'Ce qui a besoin de vous',
     superDecisionsPending: '{n} décisions en attente',
     supervisionStatusStopped: 'Arrêté (observation)',
     supervisionStopNoAction: 'Mode Observation — aucune action tant que vous ne passez pas en Supervisé ou Autonome',
@@ -871,6 +873,7 @@ const DAB_STRINGS = {
     superResume: 'Resume the Super Agent',
     superDetailsShort: 'Details',
     superDetailsOpen: 'Open the Super Agent details',
+    superAttentionLabel: 'Needs you',
     superDecisionsPending: '{n} pending decisions',
     supervisionStatusStopped: 'Stopped (observing)',
     supervisionStopNoAction: 'Stop mode — no action possible without switching to Supervised or Autonomous',

@@ -702,3 +702,51 @@ test('the banner shows the PUBLISHED effective level, not a stale identity copy'
   )
   assert.equal(rows[0].effectiveLevel, 'L1')
 })
+
+// ---------------------------------------------------- mobile band (Lot 6)
+test('mobile band: one row, one exception badge, <= 64 px collapsed', () => {
+  const projection = projectionFixture()
+  const { hierarchy } = cockpitModel(projection)
+  const attention = {
+    items: [{ id: 'att-1', severity: 'blocking', reason: 'decision_pending', projectId: 'ws:w-ravum', title: 'Approve the launch', costToResolveSeconds: 30, ageMs: 1_000, occurrences: 1, suggestedAction: 'Approve or reject.' }],
+    counters: { total: 1, blocking: 1, high: 0, notify: 1, costSeconds: 30 },
+    exceptionMode: true,
+    kpis: { interventionsPerHour: 2, medianTimeToDecisionMs: 25_000, sessionsPerOperator: 50, itemsBlockedOnHuman: 1 },
+  }
+  const superagent = { identity: { level: 'L3', status: 'idle', model: { provider: 'deepseek', model: 'v4' } }, decisions: [], directives: [], activity: [], budget: {}, attention }
+  const mandate = { scopeMode: 'selected', selectedWorkspaces: ['ws:w-ravum'], level: 'L3', paused: false, projects: { 'ws:w-ravum': { enabled: true, level: null } }, effectiveLevels: {} }
+  let opened = 0
+  const tree = render(cockpit.DabSuperOrchestratorBar({
+    workspace: hierarchy.workspace, totals: hierarchy.totals, projects: hierarchy.projects, orchestrators: hierarchy.orchestrators,
+    mode: 'supervised', open: false, onToggle: () => {}, onSelect: () => {}, compact: true,
+    superagent, mandate, capabilities: null, attention, stopped: false, busy: false,
+    onStart: () => {}, onPause: () => {}, onStop: () => {}, onResume: () => {}, onOpenAttention: () => { opened += 1 },
+  }))
+  // The badge is the ONLY thing the compact band adds: one tap, with the count.
+  const badge = byClass(tree, 'dab-attention-badge')
+  assert.equal(badge.length, 1)
+  assert.equal(badge[0].type, 'button')
+  assert.equal(badge[0].props['data-count'], '1')
+  assert.equal(badge[0].props['data-severity'], 'blocking')
+  badge[0].props.onClick()
+  assert.equal(opened, 1)
+  // No badge without a real pending exception.
+  const calm = render(cockpit.DabSuperOrchestratorBar({
+    workspace: hierarchy.workspace, totals: hierarchy.totals, projects: hierarchy.projects, orchestrators: hierarchy.orchestrators,
+    mode: 'supervised', open: false, onToggle: () => {}, onSelect: () => {}, compact: true,
+    superagent: { ...superagent, attention: { items: [], counters: { total: 0 }, exceptionMode: false } },
+    mandate, capabilities: null, stopped: false, busy: false,
+    onStart: () => {}, onPause: () => {}, onStop: () => {}, onResume: () => {}, onOpenAttention: () => {},
+  }))
+  assert.equal(byClass(calm, 'dab-attention-badge').length, 0, 'a healthy board shows no badge')
+
+  // The CSS contract: at <= 430 px the head is a single 56 px row and the badge is
+  // the only counter left. The pixel height itself is NOT measured here (no
+  // browser in this suite) — that is the documented UNVERIFIED visual step.
+  const css = cockpit.DAB_CSS
+  const mobile = css.slice(css.indexOf('@container dab (max-width: 430px)'))
+  assert.match(mobile, /\.dab-band-head \{[^}]*flex-wrap: nowrap/)
+  assert.match(mobile, /padding: 8px 30px 8px 10px/)
+  assert.match(mobile, /\.dab-band-head \.dab-super-sub,[\s\S]*?display: none/)
+  assert.match(mobile, /\.dab-attention-badge \{ display: inline-flex; \}/)
+})

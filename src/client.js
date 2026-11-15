@@ -5463,6 +5463,8 @@ const DAB_STRINGS = {
     superResume: 'Reprendre le Super Agent',
     superDetailsShort: 'Détails',
     superDetailsOpen: 'Ouvrir le détail du Super Agent',
+    // The exception badge says what needs a HUMAN, never what is running (Lot 5b).
+    superAttentionLabel: 'Ce qui a besoin de vous',
     superDecisionsPending: '{n} décisions en attente',
     supervisionStatusStopped: 'Arrêté (observation)',
     supervisionStopNoAction: 'Mode Observation — aucune action tant que vous ne passez pas en Supervisé ou Autonome',
@@ -5964,6 +5966,7 @@ const DAB_STRINGS = {
     superResume: 'Resume the Super Agent',
     superDetailsShort: 'Details',
     superDetailsOpen: 'Open the Super Agent details',
+    superAttentionLabel: 'Needs you',
     superDecisionsPending: '{n} pending decisions',
     supervisionStatusStopped: 'Stopped (observing)',
     supervisionStopNoAction: 'Stop mode — no action possible without switching to Supervised or Autonomous',
@@ -6827,6 +6830,45 @@ const DAB_CSS = `
   .dab-band-counters { gap: 8px; }
   .dab-hier-ws-sub { gap: 6px; }
 }
+
+/* ---------- mobile band: one row, <= 64 px collapsed (Lot 6)
+ * The band is a status strip on a phone, not a panel: the title, the AI session
+ * chip and the ONE exception badge. Everything else stays in the opened card, so
+ * a 390x844 screen keeps its vertical space for the board itself. */
+@container dab (max-width: 430px) {
+  .dab-band-head {
+    flex-wrap: nowrap;
+    align-items: center;
+    min-height: 0;
+    /* 40 px mascot + 2*8 px padding + 8 px breathing = 56 px, under the 64 px target. */
+    padding: 8px 30px 8px 10px;
+    gap: 8px;
+  }
+  /* One line of identity only: the subtitle and the duplicated facts are hidden. */
+  .dab-band-head .dab-super-sub,
+  .dab-band-head .dab-super-facts,
+  .dab-band-head .dab-super-state,
+  .dab-band-head .dab-super-layer { display: none; }
+  .dab-band-head .dab-band-mascot .dab-avatar { width: 34px; height: 34px; }
+  .dab-band-head .dab-super-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The AI chip keeps its dot and state, never its reason line. */
+  .dab-band-head .dab-super-ai { min-width: 0; }
+  .dab-band-head .dab-super-ai-reason { display: none; }
+  .dab-band-head .dab-super-ai-name { display: none; }
+  /* A single badge decides whether the operator opens the band at all. */
+  .dab-band-head .dab-attention-badge { display: inline-flex; }
+  .dab-band-head .dab-super-decisions { display: none; }
+  .dab-band-body { padding: 2px 10px 10px; }
+}
+
+/* The exception badge: what needs a HUMAN, one tap away. */
+.dab-attention-badge { display: none; flex: none; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l3, transparent); background: none; color: inherit; font: inherit; font-size: 12px;
+  font-weight: 600; cursor: pointer; }
+.dab-attention-badge[data-severity="blocking"] { border-color: var(--dsw-alias-status-error, currentColor); }
+.dab-attention-badge[data-severity="high"] { border-color: var(--dsw-alias-status-warning, currentColor); }
+.dab-attention-badge:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+.dab-attention-badge .dab-super-decisions-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
 /* =====================================================================
  * RESPONSIVE COCKPIT (GOAL 5)
@@ -8961,7 +9003,7 @@ function dabSuperProjects(h, { rows, busy, onToggleProject, onSetProjectLevel, o
 
 function DabSuperOrchestratorBarImpl({
   workspace, totals, projects, orchestrators: orchestratorList, mode, open, onToggle, onSelect, compact,
-  superagent, mandate, capabilities, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenProjects,
+  superagent, mandate, capabilities, attention, busy, stopped, onStart, onPause, onStop, onResume, onOpenSuperagent, onOpenDecisions, onOpenAttention, onOpenProjects,
   projectRows, onToggleProject, onSetProjectLevel, onOpenSettings,
 }) {
   const h = React.createElement
@@ -8989,6 +9031,8 @@ function DabSuperOrchestratorBarImpl({
     paused: mandate?.paused === true,
     scopeMode: typeof mandate?.scopeMode === 'string' ? mandate.scopeMode : null,
     requiresConfiguration: mandate?.requiresConfiguration === true,
+    // The published attention queue (Lot 5b): the band badges what needs a human.
+    attention: attention ?? null,
   }
   const stoppedByOperator = stopped === true || superagent?.identity?.status === 'stopped'
   const facts = dabSuperagentFacts(superagent, mandate, context)
@@ -9111,6 +9155,19 @@ function DabSuperOrchestratorBarImpl({
       h('span', { className: 'dab-super-fact dab-super-level' }, h('span', { className: 'dab-super-fact-label' }, dabT('superLevelLabel')), dabLevelBadge(h, facts.level) ?? levelText),
       projectsText === null ? null : h('span', { className: 'dab-super-fact dab-super-enabled' }, projectsText),
       h('span', { className: 'dab-super-fact dab-super-activity', title: activityText }, activityText),
+      facts.attentionCount > 0
+        ? h('button', {
+          type: 'button',
+          className: 'dab-attention-badge',
+          'data-count': String(facts.attentionCount),
+          'data-severity': facts.attentionItems[0]?.severity ?? 'normal',
+          'aria-label': `${dabT('superAttentionLabel')} : ${facts.attentionCount}`,
+          title: facts.attentionItems[0]?.title ?? dabT('superAttentionLabel'),
+          onClick: onOpenAttention ?? onOpenSuperagent,
+        },
+        h('span', { className: 'dab-super-decisions-dot', 'aria-hidden': 'true' }),
+        String(facts.attentionCount))
+        : null,
       facts.pendingCount > 0
         ? h('button', {
           type: 'button',
@@ -9175,6 +9232,8 @@ const DabSuperOrchestratorBar = React.memo(DabSuperOrchestratorBarImpl, (a, b) =
   && a.onResume === b.onResume
   && a.onOpenSuperagent === b.onOpenSuperagent
   && a.onOpenDecisions === b.onOpenDecisions
+  && a.onOpenAttention === b.onOpenAttention
+  && a.attention === b.attention
   && a.onOpenProjects === b.onOpenProjects
   && a.projectRows === b.projectRows
   && a.onToggleProject === b.onToggleProject
@@ -11388,6 +11447,8 @@ function dabMakePage(store, ctx) {
       superagent,
       mandate,
       capabilities,
+      // The published attention queue: the band badges what needs a HUMAN.
+      attention: snapshot.attention,
       stopped: superContext.stopped,
       busy,
       onStart: () => act('start', () => startEngineThen(() => store.startSuperagent())),

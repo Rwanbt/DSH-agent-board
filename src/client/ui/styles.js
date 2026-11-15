@@ -382,6 +382,45 @@ const DAB_CSS = `
   .dab-hier-ws-sub { gap: 6px; }
 }
 
+/* ---------- mobile band: one row, <= 64 px collapsed (Lot 6)
+ * The band is a status strip on a phone, not a panel: the title, the AI session
+ * chip and the ONE exception badge. Everything else stays in the opened card, so
+ * a 390x844 screen keeps its vertical space for the board itself. */
+@container dab (max-width: 430px) {
+  .dab-band-head {
+    flex-wrap: nowrap;
+    align-items: center;
+    min-height: 0;
+    /* 40 px mascot + 2*8 px padding + 8 px breathing = 56 px, under the 64 px target. */
+    padding: 8px 30px 8px 10px;
+    gap: 8px;
+  }
+  /* One line of identity only: the subtitle and the duplicated facts are hidden. */
+  .dab-band-head .dab-super-sub,
+  .dab-band-head .dab-super-facts,
+  .dab-band-head .dab-super-state,
+  .dab-band-head .dab-super-layer { display: none; }
+  .dab-band-head .dab-band-mascot .dab-avatar { width: 34px; height: 34px; }
+  .dab-band-head .dab-super-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The AI chip keeps its dot and state, never its reason line. */
+  .dab-band-head .dab-super-ai { min-width: 0; }
+  .dab-band-head .dab-super-ai-reason { display: none; }
+  .dab-band-head .dab-super-ai-name { display: none; }
+  /* A single badge decides whether the operator opens the band at all. */
+  .dab-band-head .dab-attention-badge { display: inline-flex; }
+  .dab-band-head .dab-super-decisions { display: none; }
+  .dab-band-body { padding: 2px 10px 10px; }
+}
+
+/* The exception badge: what needs a HUMAN, one tap away. */
+.dab-attention-badge { display: none; flex: none; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l3, transparent); background: none; color: inherit; font: inherit; font-size: 12px;
+  font-weight: 600; cursor: pointer; }
+.dab-attention-badge[data-severity="blocking"] { border-color: var(--dsw-alias-status-error, currentColor); }
+.dab-attention-badge[data-severity="high"] { border-color: var(--dsw-alias-status-warning, currentColor); }
+.dab-attention-badge:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+.dab-attention-badge .dab-super-decisions-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
 /* =====================================================================
  * RESPONSIVE COCKPIT (GOAL 5)
  * Header + filter bar + Super Orchestrator band + indicators + adaptive

@@ -435,6 +435,8 @@ function dabMakePage(store, ctx) {
       superagent,
       mandate,
       capabilities,
+      // The published attention queue: the band badges what needs a HUMAN.
+      attention: snapshot.attention,
       stopped: superContext.stopped,
       busy,
       onStart: () => act('start', () => startEngineThen(() => store.startSuperagent())),
