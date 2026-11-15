@@ -8,7 +8,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -101,10 +101,17 @@ async function callJson(routes, method, path, body, timeoutMs = 60_000) {
 }
 
 /** Boot the real host with a fake Task Board serving one ready card. */
-async function boot({ budget, withMeter = true }) {
+async function boot({ budget, withMeter = true, loadPrice = null }) {
   const projectIds = ['p0']
   const tasks = [{ id: 't0', title: 'Task 0', status: 'todo', workspaceId: 'p0', dependsOn: [], version: 1, permission: 'workspace-write', isolation: 'none' }]
   const home = await mkdtemp(join(tmpdir(), 'dab-load-'))
+  if (loadPrice !== null) {
+    // The document a previous wave would have written: real history, not a mock.
+    await mkdir(join(home, 'agent-board'), { recursive: true })
+    await writeFile(join(home, 'agent-board', 'state.json'), JSON.stringify({
+      schemaVersion: 2, mode: 'off', mandate: mandateFor(projectIds), loadPrice,
+    }), 'utf8')
+  }
   const previousHome = process.env.DSH_HOME
   process.env.DSH_HOME = home
   const previousFetch = globalThis.fetch
@@ -124,6 +131,8 @@ async function boot({ budget, withMeter = true }) {
     routes: made.routes,
     created: made.created,
     readState: async () => (await callJson(made.routes, 'GET', '/state')).body.value,
+    /** Deliver one runtime event the way DSH does (the host listens on `session/event`). */
+    emit: (sessionId, reason, type = 'turn/end') => made.listeners.get('session/event')?.({ id: sessionId }, { type, time: Date.now(), data: { reason } }),
     async close() {
       dispose()
       globalThis.fetch = previousFetch
@@ -218,6 +227,32 @@ test('a load block reaches the attention queue as ONE named cause', async () => 
     assert.equal(attention.items.filter(item => item.reason === 'load_exhausted').length, 1)
     assert.match(String(loadEntry.suggestedAction), /pool|wave|session/i)
     assert.doesNotMatch(String(loadEntry.suggestedAction), /sliding hour/i)
+  } finally {
+    await host.close()
+  }
+})
+
+test('a settled attempt moves its bill into the wave and feeds the price average', async () => {
+  // A previous wave measured 900 000 tokens over 3 turns: 300 000 per turn.
+  const host = await boot({ budget: 10_000_000, loadPrice: { tokens: 900_000, turns: 3 } })
+  try {
+    await callJson(host.routes, 'POST', '/mode', { mode: 'autonomous' })
+    await callJson(host.routes, 'POST', '/tick', {})
+    const sessionId = host.created[0].sessionId
+    await waitFor(async () => (await host.readState()).load.tokens.measured === 1_200, 'the live measurement')
+    // The measured price replaced the constant: the pool is read at 300k/turn.
+    const before = await host.readState()
+    assert.equal(before.load.tokens.perTurn, 300_000)
+    assert.equal(before.load.tokens.perTurnSource, 'measured')
+
+    // A PROVEN turn settles: its usage moves from the live bucket into the wave.
+    host.emit(sessionId, { kind: 'completed', structuredResult: { status: 'done', summary: 'done', testsRun: ['npm run check'], commit: 'abc1234' } })
+    await waitFor(async () => (await host.readState()).assignments.every(entry => entry.status === 'done'), 'the settlement')
+    const settled = await host.readState()
+    assert.equal(settled.load.tokens.sessions.length, 0, 'the session left the live bucket')
+    assert.equal(settled.load.tokens.spent, 1_200, 'the bill survives the session, counted once')
+    // One more completed turn joins the price sample: 901 200 over 4 turns.
+    assert.equal(settled.load.tokens.perTurn, Math.round(901_200 / 4))
   } finally {
     await host.close()
   }
