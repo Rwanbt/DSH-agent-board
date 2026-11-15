@@ -369,17 +369,17 @@ export function discoverDocWork({ projectId, files, limit = WORK_ITEM_LIMIT } = 
       if (entry !== null) candidates.push(entry)
     }
   }
-  // The SAME declaration copied in two documents (a roadmap line and a TODO line)
-  // is ONE piece of work. The winner is chosen by SOURCE PRIORITY (never by file
-  // order), so the result is identical whatever order the files were read in.
-  const bestByTitle = new Map()
+  // Identity is the locator, so the same sentence declared in two documents is
+  // TWO works: 0.1.0 collapsed them by title and could skip a distinct section as
+  // "already done". The only collapse left is a literal duplicate id (same
+  // project + source + path:line), which cannot come from two different files.
+  const seen = new Set()
+  const items = []
   for (const entry of candidates) {
-    const key = normalizeForCompare(entry.title)
-    if (key === '') continue
-    const current = bestByTitle.get(key)
-    if (current === undefined || compareCandidates(entry, current) < 0) bestByTitle.set(key, entry)
+    if (seen.has(entry.id)) continue
+    seen.add(entry.id)
+    items.push(entry)
   }
-  const items = [...bestByTitle.values()]
   items.sort(compareCandidates)
   return items.slice(0, cap)
 }

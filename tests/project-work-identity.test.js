@@ -65,6 +65,27 @@ test('the content fingerprint covers the objective, the criteria and the block',
   assert.notEqual(fingerprint, workItemContentFingerprintOf({ ...base, block: 'different text' }))
 })
 
+test('two documents declaring the same line are two works, not one', () => {
+  // 0.1.0 collapsed equal titles across files, so a distinct section was skipped
+  // silently as "already done". Identity is the locator: two declarations are two
+  // works, even word for word.
+  const files = [
+    { path: 'TODO.md', content: '# TODO\n- [ ] Ship the ADR triage\n' },
+    { path: 'ROADMAP.md', content: '# Roadmap\n- [ ] Ship the ADR triage\n' },
+  ]
+  const items = discoverDocWork({ projectId: 'w1', files })
+  assert.equal(items.length, 2)
+  assert.equal(new Set(items.map(item => item.id)).size, 2, 'two locators, two ids')
+  assert.deepEqual(items.map(item => item.ref).sort(), ['ROADMAP.md:2', 'TODO.md:2'])
+  // Determinism is preserved: input order never changes the result.
+  const reversed = discoverDocWork({ projectId: 'w1', files: [...files].reverse() })
+  assert.deepEqual(reversed.map(item => item.id), items.map(item => item.id))
+  // Progress is per declaration: proving one does not prove the other.
+  const settled = [{ id: 'asg-1', taskId: items[0].id, status: 'done', workVerified: true, startedAt: 1, endedAt: 2, workSource: { fingerprint: items[0].fingerprint } }]
+  const reasons = items.map(item => workItemReadinessOf(item, { assignments: settled, now: 10 }).reason).sort()
+  assert.deepEqual(reasons, [WORK_READINESS_REASONS.ready, WORK_READINESS_REASONS.completed].sort())
+})
+
 test('a reworded line at the same place is a NEW revision of the same item', () => {
   const before = docItems('# TODO\n- [ ] Ship the ADR triage\n')[0]
   // Same line, stronger intent: the identity holds, the content moves.
