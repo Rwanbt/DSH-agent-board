@@ -50,6 +50,7 @@ inside your mandate, executes.
 <summary><b>Table of contents</b></summary>
 
 - [What it does](#what-it-does)
+- [The agents](#the-agents)
 - [Quick start](#quick-start)
 - [Autonomy model](#autonomy-model)
 - [Project-declared work (no Task Board needed)](#project-declared-work-no-task-board-needed)
@@ -139,6 +140,28 @@ inside your mandate, executes.
   guard), a card can never widen its permission, every route goes through the
   connection trust gate, checkpoints are bounded and secret-redacted, no client
   module has an HTML sink, and no credential is read or logged.
+
+## The agents
+
+Agent Board ships **15 approved SVG roles across 6 silhouettes**. Six form the
+primary cast, shown first; the full board adds the specialists, including the
+workspace-level **Super Orchestrator** that coordinates project orchestrators.
+A role belongs to a family — governance (triangle), coordination (square),
+execution (cloud), quality (circle), validation (diamond), protection (hexagon)
+— and its colour encodes that role and family. The runtime status is a separate
+dot or badge, never the mascot colour. Every role exists in a `full` and a
+`compact` variant, and the Super Orchestrator also has a crown (default) and a
+bolt emblem.
+
+<p align="center">
+  <img src="docs/design/mascots/preview-6.png" alt="The six primary Agent Board roles: Orchestrator, Planner, Worker, Reviewer, Verifier and Guardian" width="100%">
+</p>
+<p align="center"><em>The six primary roles: Orchestrator, Planner, Worker, Reviewer, Verifier, Guardian.</em></p>
+
+<p align="center">
+  <img src="docs/design/mascots/preview-15.png" alt="All fifteen Agent Board roles, including the Super Orchestrator, Architect, Knowledge Manager, Dispatcher, Observer, Researcher, Integrator, Optimizer and Auditor" width="72%">
+</p>
+<p align="center"><em>All fifteen roles, including the Super Orchestrator.</em></p>
 
 ## Quick start
 

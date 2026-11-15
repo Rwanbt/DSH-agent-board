@@ -50,6 +50,7 @@ dans les limites de votre mandat, exécute.
 <summary><b>Table des matières</b></summary>
 
 - [Ce qu'il fait](#ce-quil-fait)
+- [Les agents](#les-agents)
 - [Démarrage rapide](#démarrage-rapide)
 - [Modèle d'autonomie](#modèle-dautonomie)
 - [Travail déclaré par le projet (sans Task Board)](#travail-déclaré-par-le-projet-sans-task-board)
@@ -151,6 +152,28 @@ dans les limites de votre mandat, exécute.
   permission, chaque route passe par la porte de confiance de la connexion, les
   points de contrôle sont bornés et expurgés des secrets, aucun module client n'a
   de puits HTML, et aucun identifiant n'est lu ni journalisé.
+
+## Les agents
+
+Agent Board fournit **15 rôles SVG approuvés répartis en 6 silhouettes**. Six
+forment la distribution principale, montrée en premier ; la planche complète
+ajoute les spécialistes, dont le **Super Orchestrator** au niveau workspace qui
+coordonne les orchestrateurs de projets. Un rôle appartient à une famille —
+gouvernance (triangle), coordination (carré), exécution (nuage), qualité
+(cercle), validation (losange), protection (hexagone) — et sa couleur encode ce
+rôle et sa famille. Le statut d'exécution est un point ou un badge séparé, jamais
+la couleur de la mascotte. Chaque rôle existe en variante `full` et `compact`, et
+le Super Orchestrator a aussi un emblème couronne (par défaut) et éclair.
+
+<p align="center">
+  <img src="docs/design/mascots/preview-6.png" alt="Les six rôles principaux d'Agent Board : Orchestrator, Planner, Worker, Reviewer, Verifier et Guardian" width="100%">
+</p>
+<p align="center"><em>Les six rôles principaux : Orchestrator, Planner, Worker, Reviewer, Verifier, Guardian.</em></p>
+
+<p align="center">
+  <img src="docs/design/mascots/preview-15.png" alt="Les quinze rôles d'Agent Board, dont le Super Orchestrator, Architect, Knowledge Manager, Dispatcher, Observer, Researcher, Integrator, Optimizer et Auditor" width="72%">
+</p>
+<p align="center"><em>Les quinze rôles, dont le Super Orchestrator.</em></p>
 
 ## Démarrage rapide
 
