@@ -381,7 +381,13 @@ export function workItemReadinessOf(item, { assignments = [], now = Date.now() }
   const at = latest === null ? 0 : Number(latest.endedAt ?? latest.startedAt) || 0
   if (latest !== null) {
     const fingerprint = typeof latest.workSource?.fingerprint === 'string' ? latest.workSource.fingerprint : null
-    if (latest.status === 'done' && fingerprint === item.fingerprint) {
+    // `done` is the TURN verdict, not a proof: only an assignment the host
+    // verified (and that no operator reopened) may mark the item completed.
+    // A journal written before this field existed stays trusted (`!== false`) so
+    // an upgrade never re-dispatches every historical item.
+    const verified = latest.workVerified !== false
+    const reopened = typeof latest.reopenedAt === 'number' && Number.isFinite(latest.reopenedAt)
+    if (latest.status === 'done' && verified && !reopened && fingerprint === item.fingerprint) {
       return { ready: false, reason: WORK_READINESS_REASONS.completed, attempts: mine.length }
     }
   }
