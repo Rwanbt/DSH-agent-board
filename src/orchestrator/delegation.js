@@ -204,7 +204,9 @@ export function evaluateDelegation({ policy = {}, task = null, taskboard = null,
   if (concurrencyReached(inFlight, config.maxConcurrentDelegations)) return refusal('delegation_concurrency_exceeded')
 
   const launches = launchesWithinHour(usage, assignments, now)
-  if (launches.length >= config.maxDelegationsPerHour) return refusal('delegation_budget_exhausted')
+  // Same rule as the concurrency ceiling: `null` = no rate limit at all, which is
+  // the default since the load model. A raw `>=` would compare against 0.
+  if (concurrencyReached(launches.length, config.maxDelegationsPerHour)) return refusal('delegation_budget_exhausted')
 
   return { allow: true, reason: 'allowed' }
 }

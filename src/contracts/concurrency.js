@@ -50,6 +50,52 @@ export const CONCURRENCY_REASONS = Object.freeze({
 })
 
 /**
+ * Normalise a TOKEN POOL, in tokens.
+ *
+ * `null`, `undefined`, an empty string and any unreadable value mean "no pool"
+ * (nothing binds on money). `0` is a real pool of zero — everything is spent.
+ * Unlike a concurrency ceiling there is no anti-typo cap: a pool is a quantity,
+ * not a number of slots.
+ *
+ * @param {unknown} value
+ * @param {number|null} [fallback]
+ * @returns {number|null}
+ */
+export function normalizeTokenPool(value, fallback = null) {
+  return normalizeQuantity(value, fallback)
+}
+
+/** Hard ceiling of a rate limit: a typo, never a product cap. */
+export const RATE_HARD_CEILING = 10_000
+
+/**
+ * Normalise a RATE limit (starts per hour, model calls per hour).
+ *
+ * `null` means no rate limit at all — Lot 11 turned that into the default, since
+ * a counter over time measures starts, not load. `0` stays a real zero (no call
+ * at all), which is what 0.1.0 documented and what an existing test pins.
+ *
+ * @param {unknown} value
+ * @param {number|null} [fallback]
+ * @param {number} [ceiling]
+ * @returns {number|null}
+ */
+export function normalizeHourlyRate(value, fallback = null, ceiling = RATE_HARD_CEILING) {
+  const count = normalizeQuantity(value, fallback)
+  return count === null ? null : Math.min(ceiling, count)
+}
+
+/** A non-negative whole quantity, or `null` when the value is not one. */
+function normalizeQuantity(value, fallback) {
+  if (value === null || value === undefined) return fallback
+  if (typeof value === 'string' && value.trim() === '') return fallback
+  if (typeof value === 'boolean') return fallback
+  const number = Number(value)
+  if (!Number.isFinite(number) || number < 0) return fallback
+  return Math.trunc(number)
+}
+
+/**
  * Normalise one limit. `null` (or an absent value with a `null` fallback) means
  * unlimited; a finite value is truncated and clamped to `0..CONCURRENCY_HARD_CEILING`
  * where 0 is a real zero (a freeze), not "unlimited".

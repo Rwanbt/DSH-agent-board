@@ -17,10 +17,10 @@ import {
   LOAD_SOURCES,
   effectiveLoadCeiling,
   hardwareCeilingOf,
-  normalizeTokenPool,
   tokenCeilingOf,
   tokenUsageOf,
 } from '../src/contracts/load-budget.js'
+import { normalizeTokenPool } from '../src/contracts/concurrency.js'
 
 test('the machine ceiling comes from cores and free memory, never from a table', () => {
   // One session per two cores: a build or a test runner wants the other core.

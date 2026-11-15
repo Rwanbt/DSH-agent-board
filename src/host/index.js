@@ -24,7 +24,8 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 
 import {
-  DEFAULT_POLICY, INTERRUPTED_TURN_KINDS, MODES, STATUS, allowedPermissionOf, isMode, newId, normalizePolicy, normalizeSuperagentBudget,
+  DEFAULT_POLICY, INTERRUPTED_TURN_KINDS, LOAD_MODEL_VERSION, MODES, STATUS, allowedPermissionOf, isMode,
+  migratePolicyToLoadModel, newId, normalizePolicy, normalizeSuperagentBudget,
   textOfContent, truncate,
 } from '../contracts/model.js'
 import {
@@ -945,6 +946,26 @@ export function apply(ctx, config = {}) {
     state = loaded
     state.policy = normalizePolicy(state.policy ?? {})
     if (isMode(state.mode)) state.policy.mode = state.mode
+    // ---- LOT 11: real load replaces the hourly throttle, ONCE ---------------
+    // A document written by 0.1.0 carries the two ceilings that throttled the
+    // product (2 concurrent, 6 starts per hour). They become explicit "no
+    // ceiling of its own" — the load model decides from the machine and the
+    // token pool — while a value the operator clearly chose is preserved. The
+    // marker lives OUTSIDE the policy so a normalisation cannot re-run it.
+    if (!Number.isFinite(Number(state.loadModelVersion)) || Number(state.loadModelVersion) < LOAD_MODEL_VERSION) {
+      const loadMigration = migratePolicyToLoadModel(state.policy, { at: Date.now() })
+      state.loadModelVersion = LOAD_MODEL_VERSION
+      if (loadMigration.migrated) {
+        state.policy = normalizePolicy(loadMigration.policy)
+        audit({
+          type: 'load_model_migrated',
+          at: Date.now(),
+          from: loadMigration.from,
+          to: { maxConcurrentDelegations: null, maxDelegationsPerHour: null },
+        })
+      }
+      if (isPrimary) void store.write(state).catch(error => warn(`load model migration save failed: ${String(error)}`))
+    }
     // ---- GOAL 6: explicit, deny-by-default mandate -------------------------
     // A v1 document has no mandate. It is migrated ONCE, restrictively: an empty
     // legacy allow-list becomes `none` (never "all"), every mutating action stays

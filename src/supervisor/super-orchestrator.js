@@ -681,7 +681,8 @@ function supervisionBuildRecommendations({ tasks, assignments, proposals, policy
     .filter(proposal => proposal?.status === 'pending')
     .map(proposal => String(proposal?.taskId)))
   // Unlimited (`null`) contributes no ceiling; `0` still means zero.
-  const withinLimits = !concurrencyReached(inFlight, config.maxConcurrentDelegations) && usedThisHour < config.maxDelegationsPerHour
+  const withinLimits = !concurrencyReached(inFlight, config.maxConcurrentDelegations)
+    && !concurrencyReached(usedThisHour, config.maxDelegationsPerHour)
   const worktreeCapable = policy?.executionBackend === 'taskboard' || policy?.executionBackend === 'contract'
 
   const push = (kind, task, reason, evidence) => {

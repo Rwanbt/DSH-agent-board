@@ -23,7 +23,7 @@
  * This module is pure: the host feeds it numbers, the client never imports it.
  */
 
-import { concurrencyReached, normalizeConcurrencyLimit } from './concurrency.js'
+import { concurrencyReached, normalizeConcurrencyLimit, normalizeTokenPool } from './concurrency.js'
 
 /**
  * Where an admission decision came from. `none` means "nothing binds": the
@@ -54,25 +54,6 @@ export const LOAD_LIMITS = Object.freeze({
 function wholeCount(value) {
   const number = Number(value)
   if (!Number.isFinite(number) || number <= 0) return 0
-  return Math.trunc(number)
-}
-
-/**
- * A token pool in tokens, or `null` for "no pool" (unlimited).
- *
- * `0` is a real pool of zero: everything already spent. `null`, `undefined` and
- * an empty string mean the operator declared no pool at all.
- *
- * @param {unknown} value
- * @param {number|null} [fallback]
- * @returns {number|null}
- */
-export function normalizeTokenPool(value, fallback = null) {
-  if (value === null || value === undefined) return fallback
-  if (typeof value === 'string' && value.trim() === '') return fallback
-  if (value === false) return fallback
-  const number = Number(value)
-  if (!Number.isFinite(number) || number < 0) return fallback
   return Math.trunc(number)
 }
 
