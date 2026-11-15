@@ -178,7 +178,13 @@ async function boot({ contractMode = 'full', task = simulatedTask({ isolation: '
 }
 
 function turnEnd(kind, extra = {}) {
-  return { type: 'turn/end', time: Date.now(), data: { reason: { kind, ...extra } } }
+  // A turn ending is not a proof of work: the host now requires one before it
+  // settles an attempt as done, so every completion in this fixture reports the
+  // same verifiable result (tests run + commit).
+  const structuredResult = kind === 'completed'
+    ? { status: 'done', summary: 'fixture completion', testsRun: ['node --test tests/: pass'], commit: 'c0ffee' }
+    : null
+  return { type: 'turn/end', time: Date.now(), data: { reason: { kind, structuredResult, ...extra } } }
 }
 
 test('contract backend: lease -> session -> attach -> settle succeeded, report attached, card in_review (never done)', async () => {

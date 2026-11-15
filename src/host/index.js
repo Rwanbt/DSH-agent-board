@@ -29,6 +29,9 @@ import {
   emptyMandate, migrateLegacyPolicy, normalizeMandate,
 } from '../contracts/mandate.js'
 import { DECISIONS_PAYLOAD_LIMITS, decisionsPayloadOf } from '../contracts/decisions-schema.js'
+import {
+  MAX_CONTINUATIONS, TURN_OUTCOME, classifyTurnEnd, continuationPromptOf, parseStructuredResult, workEvidenceOf,
+} from './turn-outcome.js'
 import { buildProjection, normalizeSessions } from '../supervisor/projection.js'
 import { MAX_SUPERVISION_EVENTS, buildSupervision, mergeSupervisionEvents, supervisionEvents } from '../supervisor/super-orchestrator.js'
 import { selectDispatchable, stopPlan, readinessOf, mandateCheck, countRunning } from '../orchestrator/dag.js'
@@ -1356,6 +1359,9 @@ export function apply(ctx, config = {}) {
           status: Number.isFinite(rawStatus) ? rawStatus : null,
           code: typeof reason?.error?.code === 'string' ? reason.error.code : null,
           retryAfterMs,
+          // The agent's own completion report, when the executor forwards one.
+          // It is DATA: `settleTurnOutcome` validates it and never trusts it alone.
+          structuredResult: reason?.structuredResult ?? event?.data?.structuredResult ?? null,
         })
         return
       }
@@ -2522,6 +2528,10 @@ export function apply(ctx, config = {}) {
       now: Date.now(),
       ttlMs: state.policy.leaseTtlMs,
     })
+    // The baseline that makes a completion PROVABLE: without the HEAD and the
+    // ledger status at launch, "a new commit" and "the card moved" are both
+    // unobservable. A project that is not a repository captures null and falls
+    // back to the structured-result proof.
     const draft = {
       taskId: task.id,
       taskTitle: typeof task.title === 'string' ? truncate(task.title, 200) : null,
@@ -2542,6 +2552,7 @@ export function apply(ctx, config = {}) {
       lease,
       fencingToken,
       startedAt: Date.now(),
+      startCardStatus: typeof task?.status === 'string' ? task.status : null,
     }
     const { created, assignment } = ensureAssignment(state.assignments, draft)
     if (!created) {
@@ -2562,6 +2573,11 @@ export function apply(ctx, config = {}) {
       assignment.workSource = { ...task.workSource }
     }
     state.assignments.push(assignment)
+    // Captured AFTER the assignment exists, so an early `turn/end` is still
+    // attributable (attribution must never wait on a git call), and BEFORE the
+    // session is created, so nothing the agent does can land in the baseline.
+    const launchGit = await gatherGit(resolveWorkspace(String(task.workspaceId ?? ''))?.path)
+    assignment.startHead = typeof launchGit?.head === 'string' && launchGit.head !== '' ? launchGit.head : null
     const authorizationRevision = state.mandate.revision
     // The reservation already occupies its slot. Revalidate after creation /
     // attachment without counting our own slot twice; revocation sends no work.
@@ -3058,6 +3074,209 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  /**
+   * The ledger status the agent may have moved, or null when it cannot be read.
+   * Best-effort ON PURPOSE: a read failure only removes one proof source, it
+   * never turns a completion into a failure by itself.
+   */
+  async function observedCardStatus(assignment) {
+    if (typeof assignment?.startCardStatus !== 'string') return null
+    try {
+      const adapter = connectors.get('dsh-taskboard')
+      if (adapter === null || adapter === undefined || typeof adapter.get !== 'function') return null
+      const task = await adapter.get(assignment.taskId)
+      return typeof task?.status === 'string' ? task.status : null
+    } catch (error) {
+      warn(`card status read failed for ${String(assignment?.taskId)}: ${String(error?.message ?? error)}`)
+      return null
+    }
+  }
+
+  /** A turn that ended without provable work asks a human, once, through the inbox. */
+  function proposeUnverifiedWorkDecision(assignment, verdict, evidence) {
+    const agent = ensureSuperAgent()
+    const result = proposeDecision(agent.decisions, {
+      kind: 'high_impact',
+      projectId: assignment.workspaceId,
+      title: `Work not verified: ${assignment.taskTitle ?? assignment.taskId}`,
+      context: [
+        `Assignment ${assignment.id} ended as ${verdict.reason} after ${MAX_CONTINUATIONS} continuation(s).`,
+        `No proof was found (${(evidence?.reasons ?? []).join(', ') || 'no evidence source'}).`,
+        'Re-run the work, or open the session and finish it by hand.',
+      ].join(' '),
+      taskIds: [String(assignment.taskId)],
+      options: [
+        { id: 'retry', label: 'Re-run the work', effect: 'approve' },
+        { id: 'leave', label: 'Leave it for now', effect: 'reject' },
+      ],
+      recommendation: 'Re-run the work',
+      urgency: 'urgent',
+    }, { now: Date.now() })
+    // `duplicate:true` means the same question is already pending: never ask twice.
+    if (result.duplicate !== true) {
+      agent.decisions = result.inbox
+      agent.dirty = true
+      audit({ type: 'unverified_work_decision', assignmentId: assignment.id, taskId: assignment.taskId, decisionId: result.decision?.id ?? null })
+    }
+  }
+
+  /**
+   * Decide what a finished turn PROVES, then settle accordingly.
+   *
+   * This is the single place where a board-launched attempt becomes `done`; it
+   * runs on every `completed`/`max-tokens` ending, in both the board and the
+   * contract backends, so the ledger can never see `in_review` for work the host
+   * did not verify.
+   */
+  async function settleTurnOutcome(assignment, { kind, cwd, details = {}, delegationAllowed = true }) {
+    const sessionId = assignment.sessionId
+    // The tree a commit would land in. The runtime's working directory wins; the
+    // project directory is a truthful fallback (the attempt belongs to it), so a
+    // host without that optional service can still verify a real commit.
+    const evidenceCwd = (typeof cwd === 'string' && cwd !== '')
+      ? cwd
+      : (() => {
+          const workspacePath = resolveWorkspace(String(assignment.workspaceId ?? ''))?.path
+          return typeof workspacePath === 'string' && workspacePath !== '' ? workspacePath : undefined
+        })()
+    const structured = parseStructuredResult(details?.structuredResult)
+      // The agent's own report is the last assistant message; it survives in the
+      // preview, which is bounded — a report that does not fit cannot be parsed
+      // and falls back to the other proof sources.
+      ?? parseStructuredResult(state.previews[sessionId]?.text)
+    // A validated structured result IS the proof: do not spend a git call (and a
+    // synchronous caller's latency) looking for a second one.
+    const git = structured !== null ? null : await gatherGit(evidenceCwd)
+    // Only spend a ledger read when the cheap sources proved nothing.
+    const cheapProof = structured !== null
+      || ((assignment.startHead ?? null) !== null && git !== null && git.head !== assignment.startHead)
+    const cardStatus = cheapProof ? null : await observedCardStatus(assignment)
+    const evidence = workEvidenceOf({
+      startHead: assignment.startHead ?? null,
+      git,
+      structured,
+      startCardStatus: assignment.startCardStatus ?? null,
+      cardStatus,
+    })
+    const verdict = classifyTurnEnd({ kind, evidence, continuations: Number(assignment.continuations) || 0 })
+    assignment.turnFinished = true
+    assignment.workVerified = verdict.outcome === TURN_OUTCOME.VERIFIED_DONE
+    assignment.outcomeKind = verdict.outcome
+    assignment.outcome = kind
+    assignment.evidence = evidence.proof ?? { reasons: evidence.reasons }
+
+    if (verdict.outcome === TURN_OUTCOME.VERIFIED_DONE) {
+      assignment.status = LEASE_STATUS.DONE
+      assignment.endedAt = Date.now()
+      assignment.lease = null
+      audit({
+        type: 'turn_done', taskId: assignment.taskId, assignmentId: assignment.id, kind,
+        outcome: verdict.outcome, reason: verdict.reason, proof: evidence.proof?.kind ?? null,
+      })
+      if (assignment.backend === 'contract') {
+        // Close the canonical execution: `requestReview` asks the Task Board to
+        // move the card to in_review. The board never asks for `done`.
+        try {
+          await settleContractExecution(assignment, { outcome: 'succeeded', git })
+        } catch (error) {
+          warn(`contract settlement failed for ${assignment.id}: ${String(error?.message ?? error)}`)
+        }
+      }
+      // Record whether the NEXT attempt may come back to the operator's primary
+      // route. This is a decision on the record, not a silent drift.
+      if (assignment.model !== null && assignment.model !== undefined) {
+        const decision = planPrimaryReturn({
+          policy: state.policy,
+          currentRoute: assignment.model,
+          atSafeBoundary: true,
+          health: state.health,
+          now: Date.now(),
+        })
+        assignment.primaryReturn = decision.action === 'return'
+          ? { eligible: true, route: routeKey(decision.route), reason: decision.reason }
+          : { eligible: false, reason: decision.reason }
+      }
+      return verdict
+    }
+
+    if (verdict.outcome === TURN_OUTCOME.NEEDS_CONTINUATION) {
+      assignment.continuations = verdict.continuations + 1
+      assignment.retryAt = null
+      // A Stop/mode-OFF during the turn must suppress the continuation: the
+      // operator asked the board to stop spending calls, not to finish politely.
+      if (!delegationAllowed) {
+        assignment.status = LEASE_STATUS.INTERRUPTED
+        assignment.endedAt = Date.now()
+        assignment.error = 'continuation_suppressed'
+        assignment.lease = null
+        audit({ type: 'continuation_suppressed', assignmentId: assignment.id, taskId: assignment.taskId, reason: state.mode === MODES.OFF ? 'mode_off' : 'stopped_by_operator' })
+        return verdict
+      }
+      const gate = continuationGate(assignment)
+      if (!gate.allowed) {
+        assignment.status = LEASE_STATUS.INTERRUPTED
+        assignment.endedAt = Date.now()
+        assignment.error = truncate(`continuation_suppressed:${gate.reason}`, 400)
+        assignment.lease = null
+        audit({ type: 'continuation_suppressed', assignmentId: assignment.id, taskId: assignment.taskId, reason: gate.reason })
+        return verdict
+      }
+      const reason = verdict.reason.startsWith('max_tokens') ? 'max_tokens' : 'completed_without_evidence'
+      // Stay RUNNING: the work is genuinely still in progress in the same session,
+      // and the attempt keeps its concurrency slot so a second item cannot start
+      // on the same tree while this one is unfinished.
+      assignment.status = LEASE_STATUS.RUNNING
+      audit({
+        type: 'turn_continued', assignmentId: assignment.id, taskId: assignment.taskId,
+        reason, attempt: assignment.continuations, missing: evidence.reasons,
+      })
+      try {
+        const handle = ctx.agents.get(sessionId)
+        if (handle?.followup === undefined) throw new Error('agent is no longer live')
+        recordBudget('request')
+        handle.followup({
+          id: `msg-agentboard-continue-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
+          role: 'user',
+          content: [{ type: 'text', text: continuationPromptOf({ reason, attempt: assignment.continuations, taskId: assignment.taskId }) }],
+          source: { kind: 'user' },
+        })
+        audit({ type: 'continuation_dispatched', assignmentId: assignment.id, taskId: assignment.taskId, attempt: assignment.continuations })
+      } catch (error) {
+        assignment.status = LEASE_STATUS.INTERRUPTED
+        assignment.endedAt = Date.now()
+        assignment.error = truncate(`continuation dispatch failed: ${String(error?.message ?? error)}`, 400)
+        assignment.lease = null
+      }
+      return verdict
+    }
+
+    assignment.status = LEASE_STATUS.FAILED
+    assignment.endedAt = Date.now()
+    assignment.error = truncate(verdict.reason, 400)
+    assignment.lease = null
+    assignment.needsHuman = true
+    audit({
+      type: 'turn_failed', taskId: assignment.taskId, assignmentId: assignment.id, kind,
+      outcome: verdict.outcome, reason: verdict.reason, missing: evidence.reasons,
+    })
+    if (assignment.backend === 'contract') {
+      try {
+        await settleContractExecution(assignment, { outcome: 'failed' })
+      } catch (error) {
+        warn(`contract settlement failed for ${assignment.id}: ${String(error?.message ?? error)}`)
+      }
+    }
+    proposeUnverifiedWorkDecision(assignment, verdict, evidence)
+    return verdict
+  }
+
+  /**
+   * One settlement per turn end. The settlement awaits a git capture, so a
+   * duplicate `turn/end` for the same session would otherwise run twice and
+   * journal two verdicts for the same turn.
+   */
+  const settlingSessions = new Set()
+
   async function onTurnEnd(sessionId, kind, error, details = {}) {
     // A host that lost the lock must not keep driving sessions: the new primary
     // owns the decisions, and a second handoff would duplicate the work.
@@ -3083,33 +3302,12 @@ export function apply(ctx, config = {}) {
     // asked the board to stop.
     const delegationAllowed = state.mode !== MODES.OFF && !isStopped()
     if (kind === 'completed' || kind === 'max-tokens') {
-      assignment.status = LEASE_STATUS.DONE
-      assignment.endedAt = Date.now()
-      assignment.outcome = kind
-      assignment.lease = null
-      audit({ type: 'turn_done', taskId: assignment.taskId, assignmentId: assignment.id, kind })
-      if (assignment.backend === 'contract') {
-        // Close the canonical execution: `requestReview` asks the Task Board to
-        // move the card to in_review. The board never asks for `done`.
-        try {
-          await settleContractExecution(assignment, { outcome: 'succeeded', git: await gatherGit(cwd) })
-        } catch (error) {
-          warn(`contract settlement failed for ${assignment.id}: ${String(error?.message ?? error)}`)
-        }
-      }
-      // Record whether the NEXT attempt may come back to the operator's primary
-      // route. This is a decision on the record, not a silent drift.
-      if (assignment.model !== null && assignment.model !== undefined) {
-        const decision = planPrimaryReturn({
-          policy: state.policy,
-          currentRoute: assignment.model,
-          atSafeBoundary: true,
-          health: state.health,
-          now: Date.now(),
-        })
-        assignment.primaryReturn = decision.action === 'return'
-          ? { eligible: true, route: routeKey(decision.route), reason: decision.reason }
-          : { eligible: false, reason: decision.reason }
+      if (settlingSessions.has(sessionId)) return
+      settlingSessions.add(sessionId)
+      try {
+        await settleTurnOutcome(assignment, { kind, cwd, details, delegationAllowed })
+      } finally {
+        settlingSessions.delete(sessionId)
       }
       touch()
       return
@@ -3130,12 +3328,18 @@ export function apply(ctx, config = {}) {
       return
     }
     if (kind !== 'error') {
-      assignment.status = LEASE_STATUS.DONE
+      // An unrecognised ending (including a bare `cancelled`) is NOT a success.
+      // It used to be recorded as `done`, which made a stopped run look finished;
+      // now it is a failure with an explicit reason, and the canonical execution
+      // is closed as failed rather than asking for review on an unknown outcome.
+      assignment.status = LEASE_STATUS.FAILED
       assignment.endedAt = Date.now()
       assignment.outcome = kind
+      assignment.outcomeKind = TURN_OUTCOME.FAILED
+      assignment.error = truncate(`unknown_turn_kind:${String(kind)}`, 400)
+      assignment.turnFinished = true
       assignment.lease = null
-      // An unrecognised ending is not a verified success: close the canonical
-      // execution as failed rather than asking for review on an unknown outcome.
+      audit({ type: 'turn_failed', taskId: assignment.taskId, assignmentId: assignment.id, kind, reason: 'unknown_turn_kind' })
       if (assignment.backend === 'contract') void settleContractExecution(assignment, { outcome: 'failed' })
       touch()
       return
@@ -4984,6 +5188,25 @@ export function apply(ctx, config = {}) {
               if (state.mode === MODES.OFF) return sendJson(res, 409, { ok: false, error: 'mode_off' })
               const value = resumeOrchestration('rest_api')
               return sendJson(res, 200, { ok: true, value })
+            }
+            // Controlled reopening: an operator (or an L4 agent acting under the
+            // operator's mandate, through the same audited surface) may put a
+            // verified-done item back into the dispatchable pool. The journal
+            // keeps the reason, and the work item is relaunchable again.
+            const reopenRoute = route.match(/^\/assignments\/([^/]+)\/reopen$/)
+            if (reopenRoute !== null) {
+              const assignmentId = decodeURIComponent(reopenRoute[1])
+              const reason = truncate(typeof body.reason === 'string' ? body.reason.trim() : '', 300)
+              if (reason === '') return sendJson(res, 400, { ok: false, error: 'reason_required' })
+              const assignment = state.assignments.find(entry => entry.id === assignmentId)
+              if (assignment === undefined) return sendJson(res, 404, { ok: false, error: 'unknown_assignment' })
+              if (assignment.status !== LEASE_STATUS.DONE) return sendJson(res, 409, { ok: false, error: 'not_done' })
+              assignment.reopenedAt = Date.now()
+              assignment.reopenReason = reason
+              assignment.workVerified = false
+              audit({ type: 'assignment_reopened', assignmentId: assignment.id, taskId: assignment.taskId, reason })
+              touch()
+              return sendJson(res, 200, { ok: true, value: assignment })
             }
             if (route === '/ack') {
               const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''

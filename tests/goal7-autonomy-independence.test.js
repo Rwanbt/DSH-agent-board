@@ -108,7 +108,7 @@ function makeCtx({ projectPath, nativeMove }) {
             messages.push({ sessionId: options.sessionId, text: message?.content?.[0]?.text ?? '' })
             setTimeout(() => {
               emit(options.sessionId, { type: 'assistant/message', time: Date.now(), data: { message: { content: [{ type: 'text', text: control.replyText }] } } })
-              emit(options.sessionId, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed' } } })
+              emit(options.sessionId, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed', structuredResult: { status: 'done', summary: 'fixture worker completion', testsRun: ['node --test tests/: pass'] } } } })
             }, control.replyDelayMs)
           },
         }

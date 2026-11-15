@@ -103,7 +103,7 @@ function makeCtx() {
             }
             setTimeout(() => {
               emit(options.sessionId, { type: 'assistant/message', time: Date.now(), data: { message: { content: [{ type: 'text', text: control.replies?.length ? control.replies.shift() : control.replyText }] } } })
-              emit(options.sessionId, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed' } } })
+              emit(options.sessionId, { type: 'turn/end', time: Date.now(), data: { reason: { kind: 'completed', structuredResult: { status: 'done', summary: 'fixture worker completion', testsRun: ['node --test tests/: pass'] } } } })
             }, control.replyDelayMs)
           },
         }
