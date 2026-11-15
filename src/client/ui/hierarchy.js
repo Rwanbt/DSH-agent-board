@@ -525,6 +525,15 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
   const enabledProjects = policyIds.filter(id => policies[id]?.enabled === true).length
   const totalProjects = policyIds.length
   const lastActivity = activity.length > 0 ? activity[activity.length - 1] : null
+  // The ONE autonomy fact the host publishes (global ∩ project ∩ integration).
+  // `identity.level` is only a fallback for an older host, and it is no longer a
+  // second source of truth: the host now derives it too.
+  const autonomy = sa?.autonomy !== null && typeof sa?.autonomy === 'object' && !Array.isArray(sa.autonomy)
+    ? sa.autonomy
+    : (context?.autonomy !== null && typeof context?.autonomy === 'object' ? context.autonomy : null)
+  const level = typeof autonomy?.level === 'string'
+    ? autonomy.level
+    : (typeof identity?.level === 'string' ? identity.level : (typeof mandate?.level === 'string' ? mandate.level : null))
   return {
     available: sa !== null,
     identity,
@@ -542,7 +551,9 @@ function dabSuperagentFacts(superagent, mandate, context = {}) {
       ? `${typeof model.provider === 'string' ? `${model.provider}/` : ''}${model.model}`
       : null,
     fallbackModels: Array.isArray(model?.fallback) ? model.fallback.filter(entry => entry !== null && typeof entry === 'object') : [],
-    level: typeof identity?.level === 'string' ? identity.level : (typeof mandate?.level === 'string' ? mandate.level : null),
+    level,
+    scope: typeof autonomy?.scope === 'string' ? autonomy.scope : (typeof mandate?.scopeMode === 'string' ? mandate.scopeMode : null),
+    autonomy,
     enabledProjects,
     totalProjects,
     decisions,
@@ -631,7 +642,11 @@ function dabProjectPolicyRows(host, superagent, mandate) {
       enabled,
       selected,
       level: DAB_AUTONOMY_LEVELS.includes(policy.level) ? policy.level : null,
-      effectiveLevel: DAB_AUTONOMY_LEVELS.includes(policy.level) ? policy.level : (DAB_AUTONOMY_LEVELS.includes(mandate?.level) ? mandate.level : 'L0'),
+      // The host publishes the per-project effective value (global ∩ project ∩
+      // integration). Only an older host falls back to recombining it here.
+      effectiveLevel: DAB_AUTONOMY_LEVELS.includes(mandate?.effectiveLevels?.[entry.id])
+        ? mandate.effectiveLevels[entry.id]
+        : (DAB_AUTONOMY_LEVELS.includes(policy.level) ? policy.level : (DAB_AUTONOMY_LEVELS.includes(mandate?.level) ? mandate.level : 'L0')),
       inheritedLevel: DAB_AUTONOMY_LEVELS.includes(mandate?.level) ? mandate.level : 'L0',
       modelInherited: policy.model === null || typeof policy.model !== 'object',
       priority: Number.isFinite(Number(policy.priority)) ? Number(policy.priority) : 5,

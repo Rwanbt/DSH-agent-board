@@ -655,3 +655,50 @@ test('the responsive contract documents every width the mockup targets', async (
   assert.match(source, /bottom-left/)
   assert.match(source, /in_review/)
 })
+
+// ------------------------------------------------------- effective autonomy
+test('the banner shows the PUBLISHED effective level, not a stale identity copy', () => {
+  const projection = projectionFixture()
+  const { hierarchy } = cockpitModel(projection)
+  // The host now publishes the effective value; the stored identity level is a
+  // stale L0 (what `/mandate/level` used to leave behind).
+  const superagent = {
+    identity: { level: 'L0', status: 'idle', model: { provider: 'deepseek', model: 'v4' } },
+    autonomy: { level: 'L3', scope: 'selected', globalLevel: 'L3', projectLevel: 'L3', integrationCeiling: 'L4', projectEnabled: true },
+    session: { active: false, sessionId: null },
+    decisions: [],
+    directives: [],
+    activity: [],
+    budget: {},
+  }
+  const mandate = {
+    scopeMode: 'selected', selectedWorkspaces: ['ws:w-ravum'], level: 'L3', paused: false,
+    projects: { 'ws:w-ravum': { enabled: true, level: null } },
+    effectiveLevels: { 'ws:w-ravum': 'L3' },
+    autonomy: superagent.autonomy,
+  }
+  const facts = cockpit.dabSuperagentFacts(superagent, mandate, {})
+  assert.equal(facts.level, 'L3', 'the effective level wins over the stored identity level')
+  assert.equal(facts.scope, 'selected')
+
+  const tree = render(cockpit.DabSuperOrchestratorBar({
+    workspace: hierarchy.workspace, totals: hierarchy.totals, projects: hierarchy.projects, orchestrators: hierarchy.orchestrators,
+    mode: 'supervised', open: true, onToggle: () => {}, onSelect: () => {}, compact: false,
+    superagent, mandate, capabilities: null, stopped: false, busy: false,
+    onStart: () => {}, onPause: () => {}, onStop: () => {}, onResume: () => {},
+  }))
+  assert.equal(byClass(tree, 'dab-level')[0].props['data-level'], 'L3')
+
+  // An older host publishes no autonomy object: the legacy fields still render.
+  const legacyFacts = cockpit.dabSuperagentFacts({ identity: { level: 'L1' }, decisions: [], directives: [], activity: [] }, { level: 'L1', projects: {} }, {})
+  assert.equal(legacyFacts.level, 'L1')
+  assert.equal(legacyFacts.scope, null)
+
+  // A project row uses the published per-project value when the host provides it.
+  const rows = cockpit.dabProjectPolicyRows(
+    { workspaces: [{ id: 'ws:w-ravum', title: 'Ravum' }] },
+    { identity: { model: null } },
+    { ...mandate, level: 'L3', effectiveLevels: { 'ws:w-ravum': 'L1' }, projects: { 'ws:w-ravum': { enabled: true, level: 'L1' } } },
+  )
+  assert.equal(rows[0].effectiveLevel, 'L1')
+})

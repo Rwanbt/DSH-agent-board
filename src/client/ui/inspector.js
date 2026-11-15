@@ -774,7 +774,10 @@ function DabSuperagentSettings({
 }) {
   const h = React.createElement
   const facts = dabSuperagentFacts(superagent, mandate, context)
-  const level = typeof mandate?.level === 'string' ? mandate.level : (facts.level ?? 'L0')
+  // The published global level wins; the mandate is only a legacy fallback.
+  const level = typeof facts.autonomy?.globalLevel === 'string'
+    ? facts.autonomy.globalLevel
+    : (typeof mandate?.level === 'string' ? mandate.level : (facts.level ?? 'L0'))
   // `/state` and the SSE stream publish the catalog under `host.host.models`;
   // `/diagnostics` puts it at the top level. Read both, never assume one.
   const models = dabSaObject(host?.host?.models) ?? dabSaObject(host?.models)

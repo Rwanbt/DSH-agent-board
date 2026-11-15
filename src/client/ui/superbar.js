@@ -259,7 +259,7 @@ function DabSuperOrchestratorBarImpl({
   controls,
 
   open === true && Array.isArray(projectRows) && projectRows.length > 0
-    ? dabSuperProjects(h, { rows: projectRows, busy, onToggleProject, onSetProjectLevel, onOpenProjects: onOpenProjects ?? onOpenSuperagent, onOpenSettings, needsProjects, globalLevel: typeof mandate?.level === 'string' ? mandate.level : facts.level, launchGranted: mandate?.actions?.launch === true })
+    ? dabSuperProjects(h, { rows: projectRows, busy, onToggleProject, onSetProjectLevel, onOpenProjects: onOpenProjects ?? onOpenSuperagent, onOpenSettings, needsProjects, globalLevel: typeof facts.autonomy?.globalLevel === 'string' ? facts.autonomy.globalLevel : (typeof mandate?.level === 'string' ? mandate.level : facts.level), launchGranted: mandate?.actions?.launch === true })
     : null,
 
   // Mini orchestrator avatars: real agents only. A project without a declared
