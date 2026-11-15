@@ -34,7 +34,16 @@ import { AdapterError, defineAdapter } from '../contracts/adapters.js'
 /** Resolve a Cordis service by property first, then by `ctx.get(name)`. */
 function serviceOf(ctx, name) {
   if (ctx === null || ctx === undefined) return undefined
-  const direct = ctx[name]
+  // A Cordis context THROWS on an undeclared service (`cannot get property "x"
+  // without inject`), so the direct read is guarded exactly like `ctx.get`:
+  // this helper answers `undefined` for an absent capability, it never aborts
+  // the caller that is probing for one.
+  let direct
+  try {
+    direct = ctx[name]
+  } catch {
+    direct = undefined
+  }
   if (direct !== undefined) return direct
   if (typeof ctx.get !== 'function') return undefined
   try {
