@@ -255,6 +255,40 @@ export function normalizeActionModes(value) {
     .map(action => [action, source[action]]))
 }
 
+/**
+ * THE effective autonomy level, computed once.
+ *
+ * Three layers can only ever LOWER the global level: the operator's global
+ * choice, the project override, and the ceiling of the integration the action
+ * would cross. The cockpit used to read `identity.level` (a stored field that no
+ * `/mandate/level` call updated) while the gate used this computation, so the
+ * banner could show L0 while the host acted at L3.
+ *
+ * The action is only an input for the integration ceiling (a read on GitHub and a
+ * merge on GitHub do not share one); it never changes the level itself.
+ *
+ * @param {{mandate?: object, projectId?: string|null, action?: string, integration?: string}} [input]
+ * @returns {{level: string, scope: string, projectId: string|null, globalLevel: string,
+ *            projectLevel: string, integrationCeiling: string, projectEnabled: boolean}}
+ */
+export function effectiveAutonomyOf({ mandate, projectId = null, action = 'launch', integration = 'board' } = {}) {
+  const current = normalizeMandate(mandate)
+  const project = typeof projectId === 'string' && Object.hasOwn(current.projects, projectId)
+    ? current.projects[projectId]
+    : null
+  const projectLevel = project !== null ? (project.level ?? current.level) : current.level
+  const integrationCeiling = INTEGRATION_CEILING[integration]?.[action] ?? 'L4'
+  return {
+    level: minLevel(current.level, minLevel(projectLevel, integrationCeiling)),
+    scope: current.scopeMode,
+    projectId: typeof projectId === 'string' ? projectId : null,
+    globalLevel: current.level,
+    projectLevel,
+    integrationCeiling,
+    projectEnabled: project !== null ? project.enabled === true : current.scopeMode === 'all',
+  }
+}
+
 /** Effective mode, including the backward-compatible boolean fallback. */
 export function actionModeOf(mandate, action) {
   const explicit = normalizeActionModes(mandate?.actionModes)[action]

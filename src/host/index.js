@@ -25,8 +25,8 @@ import { promisify } from 'node:util'
 
 import { DEFAULT_POLICY, INTERRUPTED_TURN_KINDS, MODES, STATUS, allowedPermissionOf, isMode, newId, normalizePolicy, textOfContent, truncate } from '../contracts/model.js'
 import {
-  ACTIONS, CRITICAL_ACTIONS, HUMAN_ONLY_ACTIONS, READ_ONLY_ACTIONS, applyMandatePatch, describeMandate, effectivePolicyOf,
-  emptyMandate, migrateLegacyPolicy, normalizeMandate,
+  ACTIONS, CRITICAL_ACTIONS, HUMAN_ONLY_ACTIONS, READ_ONLY_ACTIONS, applyMandatePatch, describeMandate, effectiveAutonomyOf,
+  effectivePolicyOf, emptyMandate, migrateLegacyPolicy, normalizeMandate,
 } from '../contracts/mandate.js'
 import { DECISIONS_PAYLOAD_LIMITS, decisionsPayloadOf } from '../contracts/decisions-schema.js'
 import {
@@ -620,6 +620,12 @@ export function apply(ctx, config = {}) {
       },
       capabilities: capabilitiesOf(),
       portfolio: portfolioOf(),
+      // The mandate WITH its effective values, so a panel never recombines the
+      // three layers itself (the raw document is still what the API accepts).
+      mandate: mandatePublicOf(),
+      // ONE published autonomy fact: panel banner, inspector and settings all read
+      // this instead of recombining mandate/project/identity themselves.
+      autonomy: autonomyPayloadOf(),
       superagent: superagentPublicOf(),
       dryRun: lastDryRun,
       projectionSummary: liveProjection?.counts ?? null,
@@ -2051,17 +2057,41 @@ export function apply(ctx, config = {}) {
     return out
   }
 
-  function mandateView() {
-    const description = describeMandate(state.mandate)
+  /**
+   * The integration whose ceiling applies to the published level. The board's own
+   * backend has no ceiling; the Task Board executor caps some actions at L4 today
+   * (so it is a no-op in practice, but the layering stays the same as the gate).
+   */
+  function autonomyIntegrationOf() {
+    return state.policy.executionBackend === 'taskboard' ? 'taskboard' : 'board'
+  }
+
+  /** One published autonomy fact, computed by the contract for every surface. */
+  function autonomyPayloadOf(projectId = null, action = 'launch') {
+    return effectiveAutonomyOf({ mandate: state.mandate, projectId, action, integration: autonomyIntegrationOf() })
+  }
+
+  /**
+   * The mandate as the panels receive it: the same effective values the gate uses,
+   * so no surface has to recombine them. `effectiveLevels` is bounded to the
+   * selected projects (or every known workspace under the `all` scope).
+   */
+  function mandatePublicOf() {
     return {
       ...state.mandate,
-      description,
-      // The five levels the operator can pick, with the effective one per scope.
       effectiveLevels: Object.fromEntries(
         (state.mandate?.scopeMode === 'all' ? workspaceList().map(workspace => String(workspace.id)) : (state.mandate?.selectedWorkspaces ?? []))
           .slice(0, 50)
-          .map(projectId => [projectId, effectiveFor('launch', { projectId }).level]),
+          .map(projectId => [projectId, autonomyPayloadOf(projectId).level]),
       ),
+      autonomy: autonomyPayloadOf(),
+    }
+  }
+
+  function mandateView() {
+    return {
+      ...mandatePublicOf(),
+      description: describeMandate(state.mandate),
     }
   }
 
@@ -2085,6 +2115,7 @@ export function apply(ctx, config = {}) {
         if (task?.status === 'todo') todo += 1
       }
       const gate = effectiveFor('launch', { projectId })
+      const autonomy = autonomyPayloadOf(projectId)
       return {
         projectId,
         title: typeof workspace.title === 'string' && workspace.title !== '' ? workspace.title : projectId,
@@ -2092,7 +2123,7 @@ export function apply(ctx, config = {}) {
         selected: isProjectSelected(projectId),
         enabled: policy?.enabled === true,
         level: policy?.level ?? null,
-        effectiveLevel: gate.level,
+        effectiveLevel: autonomy.level,
         canLaunchReason: gate.reason,
         priority: policy?.priority ?? 5,
         model: policy?.model ?? null,
@@ -3735,8 +3766,12 @@ export function apply(ctx, config = {}) {
 
   function superagentPublicOf() {
     const agent = ensureSuperAgent()
+    // The autonomy level is DERIVED, never the stored `identity.level`: that field
+    // was a second source of truth that `/mandate/level` never updated.
+    const autonomy = autonomyPayloadOf()
     return {
-      identity: publicIdentityOf(agent.identity),
+      identity: { ...publicIdentityOf(agent.identity), level: autonomy.level },
+      autonomy,
       session: agent.identity.session,
       portfolio: portfolioOf(),
       memory: { digest: agent.memory.digest ?? null, facts: agent.memory.facts.length, decisions: agent.memory.decisions.length },
@@ -4042,6 +4077,10 @@ export function apply(ctx, config = {}) {
   async function runSuperAgentCycleNow(trigger = 'manual') {
     const agent = ensureSuperAgent()
     const now = Date.now()
+    // The identity carries the DERIVED level before anything reads it (the prompt
+    // tells the model its level): `/mandate/level` no longer leaves a stale copy
+    // behind, and the storage keeps one field instead of two truths.
+    agent.identity.level = autonomyPayloadOf().level
     agent.budget = superagentBudgetTick(agent, now)
     const gate = shouldRunCycle({
       now,
