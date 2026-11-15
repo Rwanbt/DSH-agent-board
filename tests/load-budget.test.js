@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict'
 import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 import {
@@ -146,12 +147,12 @@ test('the price of a turn is declared, measured, and only then a fallback', () =
 })
 
 test('the load contract stays on the host: the client only renders what is published', async () => {
-  const root = new URL('../src/client/', import.meta.url)
+  const root = fileURLToPath(new URL('../src/client/', import.meta.url))
   const names = await readdir(root, { recursive: true })
   const sources = names.filter(name => typeof name === 'string' && name.endsWith('.js'))
   assert.ok(sources.length >= 5, 'the client source tree is non-empty')
   for (const name of sources) {
-    const text = await readFile(join(root.pathname.replace(/^\//, ''), name), 'utf8')
+    const text = await readFile(join(root, name), 'utf8')
     assert.ok(!text.includes('load-budget'), `${name} must not import the host-only load contract`)
   }
 })
