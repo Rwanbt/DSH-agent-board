@@ -108,9 +108,11 @@ questions. It is updated as lots land; it is not a product document.
 - **Client decoding is tolerant, host emitting is strict.** The host publishes
   the versioned object; the client accepts the versioned object, the legacy
   array, and anything else as empty.
-- **`null`/`0` = unlimited** for the new concurrency knobs, but the documented
-  default stays the current finite number, and a named hard ceiling
-  (`CONCURRENCY_HARD_CEILING`) only guards keying mistakes.
+- **`null` = unlimited, `0` = a real freeze** for the new concurrency knobs
+  (never the other way round: inverting `0` would turn an operator's freeze into
+  an unlimited grant), the documented default stays the current finite number,
+  and a named hard ceiling (`CONCURRENCY_HARD_CEILING`) only guards keying
+  mistakes.
 
 ## UNCERTAINTIES / TO CONFIRM WHILE IMPLEMENTING
 
@@ -127,7 +129,7 @@ questions. It is updated as lots land; it is not a product document.
 
 | Fact | Value |
 |---|---|
-| Commits on `feat/production-ready-autonomy` | 25 (from `dev` @ `b3ca064`) |
+| Commits on `feat/production-ready-autonomy` | 27 before this correction, 28 with it (from `dev` @ `b3ca064`) |
 | Tests | **760 pass, 0 fail, 0 skipped** (base 693 → +67) |
 | `npm run check` | green |
 | Bundle | regenerated, `git diff --exit-code src/client.js` clean |
