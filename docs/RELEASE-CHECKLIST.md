@@ -25,6 +25,7 @@ DSH host, a provider, or the real Task Board · **EVIDENCE** = what to keep.
 | 1.2 | Whitespace / conflict markers | LOCAL | `git diff --check` | no output |
 | 1.3 | Smoke of the new invariants | LOCAL | `node scripts/smoke-host.mjs` | `smoke: OK` |
 | 1.4 | Projection + 50-session budget | LOCAL | `node --expose-gc scripts/bench/projection-bench.mjs` | table written to `docs/bench/` |
+| 1.5 | The OPERATOR's own document replays | LOCAL | `node scripts/replay-state.mjs [path]` | `wouldChangeAnything: false` once migrated, and a non-zero `load.ceiling` with its `binding` fact |
 
 EVIDENCE: the final `npm run check` summary (test count, `pass`, `fail`) and the
 CI run URL once this branch is pushed.

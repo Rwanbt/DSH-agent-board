@@ -190,3 +190,23 @@ audit trail carries the `from` values.
   per turn, monotonic wave counter, no preemption).
 - No live provider run: the pool and the ceilings were exercised on fixtures and a
   fake `tokenMeter`, never against a real provider.
+
+### Round 3b — the harness, the named block and the measured price
+
+| Fact | Value |
+|---|---|
+| Commits | `b2e9c9e` (load block named in the attention queue), `8ca0e52` (every optional probe survives a throwing context), `c19c051` (measured price + `scripts/replay-state.mjs`) |
+| Tests | **783 pass, 0 fail, 0 skipped** |
+| Bundle | 714 112 bytes, 26 modules |
+| `src/host/services.js` | one guarded `optionalServiceOf`, used by index/native-tools/native-forge/security |
+
+Real-document replay (`node scripts/replay-state.mjs`, read-only, offline, on the
+operator's own `state.json`): 26 keys, `loadModelVersion: 1`, `wouldChangeAnything:
+false` (idempotent), both legacy ceilings `null`, computed ceiling 25, binding
+`hardware`, not blocked. That is the first piece of evidence about a REAL document
+rather than a fixture; the live `/state` route stays unreadable from here (401, peer
+authentication) so the GUI-level check remains the operator's.
+
+Two `Number(null) === 0` traps were found and closed in this round: the migration
+reported a lifted ceiling as `0`, and `lift(null)` turned "unlimited" into a zero.
+The pure idempotence test now pins both.
