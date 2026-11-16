@@ -86,7 +86,7 @@ window.__ModuleLoader__.load({
     const { useState, useEffect, useMemo, useSyncExternalStore, useCallback, useRef } = React
 ${transformed.join('\n\n')}
 
-    return { name: 'dsh-agent-board/client', inject: ['slots'], apply }
+    return { name: 'dsh-agent-board/client', inject: ['slots', 'uiSession', 'uiSession.sessionStatus'], apply }
   },
 })
 `

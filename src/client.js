@@ -12179,6 +12179,6 @@ function apply(ctx) {
 }
 
 
-    return { name: 'dsh-agent-board/client', inject: ['slots'], apply }
+    return { name: 'dsh-agent-board/client', inject: ['slots', 'uiSession', 'uiSession.sessionStatus'], apply }
   },
 })
